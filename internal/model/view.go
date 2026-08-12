@@ -22,6 +22,13 @@ const (
 	fallbackWidth  = 100
 	fallbackHeight = 24
 
+	// Screen rows a collapsed task and a table row each cost, and the rows the
+	// header, footer and status take away from the list. ctrl+d / ctrl+u use these
+	// to jump by half of what is actually on screen.
+	taskLines  = 2 // the task line plus the blank one after it
+	entryLines = 1
+	chromeRows = 8
+
 	// Table columns, shared by the head, the rows and the insert line.
 	tableIndent = "    "
 	colGap      = "   "
@@ -41,8 +48,8 @@ func (m Model) View() string {
 	switch m.mode {
 	case ModeConfirm:
 		hint := "enter / n"
-		if m.cKind == confirmQuit {
-			hint = "y / n"
+		if m.confirmKeys().Keys()[0] == "y" {
+			hint = "y / n" // destructive: the letter, never enter
 		}
 		tail = append(tail, strings.Split(
 			theme.Modal.Render(m.cPrompt+"  "+theme.Dim.Render(hint)), "\n")...)
@@ -117,6 +124,16 @@ func (m Model) rows() int {
 		return fallbackHeight
 	}
 	return m.height
+}
+
+// halfPage is how far ctrl+d / ctrl+u move: half of what fits on screen, in items
+// of the given height. Never zero, or the keys would look broken.
+func (m Model) halfPage(linesPerItem int) int {
+	fits := (m.rows() - chromeRows) / linesPerItem
+	if fits < 4 {
+		return 1
+	}
+	return fits / 2
 }
 
 // header is the caret, the boxed query field, and the day's progress cluster.
@@ -215,20 +232,30 @@ func (m Model) listLines() ([]string, int) {
 		}
 
 		add(theme.Blur.Render(m.tableHead()))
+
+		editing := m.mode == ModeInsert && onTask
+		// A new entry is typed at the top of the table, where it will land.
+		if editing && m.kind == insertNew {
+			add(row(m.insertLine(), true))
+			mark()
+		}
+
 		inTable := onTask && !listFocus &&
 			(m.mode == ModeTable || m.mode == ModeJump || m.mode == ModeConfirm)
 		for j, e := range t.Rows {
+			// An edit happens in place: the inputs stand where the row was.
+			if editing && m.kind == insertEdit && j == m.editRow {
+				add(row(m.insertLine(), true))
+				mark()
+				continue
+			}
 			add(row(m.entryLine(e), inTable && j == m.row))
 			if inTable && j == m.row {
 				mark()
 			}
 		}
-		if len(t.Rows) == 0 && m.mode != ModeInsert {
+		if len(t.Rows) == 0 && !editing {
 			add(theme.Blur.Render(theme.Dim.Render("    no entries yet — a to add one")))
-		}
-		if m.mode == ModeInsert && onTask {
-			add(row(m.insertLine(), true))
-			mark()
 		}
 		if m.mode == ModeJump && onTask {
 			add(theme.Blur.Render("    jump to day " + m.jump.View()))
@@ -254,7 +281,11 @@ func (m Model) taskLine(t store.Task) string {
 		caret = "▾"
 	}
 
-	left := theme.Dim.Render(caret) + "  " + theme.Title.Render(trunc(t.Title, m.cols()/2))
+	title := t.Title
+	if t.Key != "" {
+		title = t.Key + " " + title
+	}
+	left := theme.Dim.Render(caret) + "  " + theme.Title.Render(trunc(title, m.cols()/2))
 	if t.Tag != "" {
 		left += "  " + theme.Chip.Render(strings.ToUpper(t.Tag))
 	}

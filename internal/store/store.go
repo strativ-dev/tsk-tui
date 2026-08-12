@@ -17,7 +17,10 @@ import (
 )
 
 type Task struct {
-	ID    int     `json:"id"`
+	ID int `json:"id"`
+	// Key is the human task key, "SE360-1372". Writing hours needs it: the log
+	// endpoint identifies a task by key, not by ID.
+	Key   string  `json:"key"`
 	Title string  `json:"title"`
 	Tag   string  `json:"tag"`
 	Rows  []Entry `json:"rows"` // newest first

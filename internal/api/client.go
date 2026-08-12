@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,11 +95,9 @@ func FetchTasks(key string) tea.Cmd {
 			if t.Project != nil {
 				tag = t.Project.Name
 			}
-			title := t.Name
-			if t.Key != "" {
-				title = t.Key + " " + t.Name
-			}
-			tasks = append(tasks, store.Task{ID: t.ID, Title: title, Tag: tag})
+			// Key stays its own field: the view prefixes it to the title, and
+			// logging hours needs it on its own.
+			tasks = append(tasks, store.Task{ID: t.ID, Key: t.Key, Title: t.Name, Tag: tag})
 		}
 		return TasksMsg{Tasks: tasks}
 	}
@@ -167,6 +166,118 @@ func FetchDayHours(key, date string) tea.Cmd {
 			UserEmail: payload.User.Email,
 		}
 	}
+}
+
+// LoggedMsg is the result of writing one entry to the ERP. EntryID is the
+// account.analytic.line the server created, which replaces the app's negative id.
+type LoggedMsg struct {
+	TaskID  int
+	LocalID int // the app-side id of the row that was sent, so it can be found again
+	EntryID int
+	Minutes int
+	Err     error
+}
+
+// LogHours is a tea.Cmd: POST /api/v1/timesheets/log, one entry for the key owner.
+// The endpoint identifies the task by key ("SE360-1372"), takes decimal hours, and
+// creates the line unconfirmed. There is no update endpoint, so this is create-only.
+func LogHours(key, taskKey, date, desc string, minutes, taskID, localID int) tea.Cmd {
+	return func() tea.Msg {
+		fail := func(err error) tea.Msg {
+			return LoggedMsg{TaskID: taskID, LocalID: localID, Err: err}
+		}
+
+		key, taskKey = strings.TrimSpace(key), strings.TrimSpace(taskKey)
+		desc = strings.TrimSpace(desc)
+		switch {
+		case key == "":
+			return fail(ErrNoKey)
+		case taskKey == "":
+			return fail(errors.New("task has no key in the ERP, cannot log against it"))
+		case desc == "":
+			return fail(errors.New("the ERP requires a description"))
+		case minutes <= 0 || minutes > 24*60:
+			return fail(fmt.Errorf("%s is out of range, the ERP takes 0 to 24h per entry",
+				parse.FormatTotal(minutes)))
+		}
+
+		day, err := time.Parse(parse.DateLayout, strings.TrimSpace(date))
+		if err != nil {
+			return fail(fmt.Errorf("unreadable date %q", date))
+		}
+
+		body, err := json.Marshal(map[string]any{
+			"task_key":    taskKey,
+			"date":        day.Format("2006-01-02"),
+			"hours":       float64(minutes) / 60,
+			"description": desc,
+		})
+		if err != nil {
+			return fail(err)
+		}
+
+		req, err := http.NewRequest(http.MethodPost, BaseURL()+"/api/v1/timesheets/log",
+			bytes.NewReader(body))
+		if err != nil {
+			return fail(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+		if err != nil {
+			return fail(errors.New("cannot reach " + BaseURL()))
+		}
+		defer resp.Body.Close()
+
+		r := io.LimitReader(resp.Body, 1<<20)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fail(ErrUnauthorized)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			return fail(logError(resp.StatusCode, r))
+		}
+
+		var created struct {
+			ID    int     `json:"id"`
+			Hours float64 `json:"hours"`
+		}
+		if err := json.NewDecoder(r).Decode(&created); err != nil {
+			return fail(fmt.Errorf("bad response from API: %w", err))
+		}
+		return LoggedMsg{
+			TaskID:  taskID,
+			LocalID: localID,
+			EntryID: created.ID,
+			Minutes: int(math.Round(created.Hours * 60)),
+		}
+	}
+}
+
+// logError turns the documented {error, code} body into something worth reading.
+// The codes come from log-hours.md; the ones a person can act on get plainer text.
+func logError(status int, r io.Reader) error {
+	var e struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	_ = json.NewDecoder(r).Decode(&e)
+
+	switch e.Code {
+	case "daily_cap_exceeded":
+		return errors.New("this would push the day past 24h")
+	case "task_not_found":
+		return errors.New("the ERP does not know that task key")
+	case "task_ambiguous":
+		return errors.New("that task key matches more than one project — log it in the ERP")
+	case "no_employee", "no_hourly_cost":
+		return fmt.Errorf("your ERP user is not set up for timesheets (%s) — ask HR", e.Code)
+	}
+	if e.Error != "" {
+		return fmt.Errorf("API %d: %s", status, e.Error)
+	}
+	return fmt.Errorf("API %d", status)
 }
 
 // detail pulls the API's own error message, if it sent one.

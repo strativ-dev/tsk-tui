@@ -73,8 +73,12 @@ type Model struct {
 	// guess for the progress bar. -1 until a sync answers.
 	erpToday int
 
-	login  string       // the key owner's Odoo login, needed by JSON-RPC
-	pulled map[int]bool // task IDs whose lines have been read from Odoo
+	login string // the key owner's Odoo login, needed by JSON-RPC
+	db    string // Odoo database, from the credential store — also a secret
+	// pulled is the tasks Odoo has answered for; pulling is the ones in flight. A
+	// failed pull stays out of both, so re-expanding tries again.
+	pulled  map[int]bool
+	pulling map[int]bool
 
 	tasks    []store.Task
 	cursor   int          // index into filtered()
@@ -99,7 +103,8 @@ func New() Model {
 	search.PromptStyle = theme.Prompt
 	search.Placeholder = "search title or tag…"
 	search.Width = 32
-	search.Focus()
+	// Not focused at launch: the list is what you want to look at first. `i` or
+	// ctrl+u puts the cursor in the field.
 
 	jump := textinput.New()
 	jump.Prompt = "/"
@@ -114,13 +119,14 @@ func New() Model {
 	auth.EchoCharacter = '•'
 
 	m := Model{
-		mode:     ModeSearch,
+		mode:     ModeList, // the task list has focus at launch, not the query field
 		search:   search,
 		jump:     jump,
 		auth:     auth,
 		expanded: map[int]bool{},
 		erpToday: -1,
 		pulled:   map[int]bool{},
+		pulling:  map[int]bool{},
 	}
 	// Field widths mirror the table columns, so the insert row sits in them.
 	for i, ph := range []string{"dd/mm/yy", "what you did", "h:mm"} {
@@ -165,6 +171,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			return m, nil
 		}
+		m.db = msg.DB
 		if msg.Key == "" {
 			return m.askKey("Paste your Odoo API key to fetch your tasks."), textinput.Blink
 		}
@@ -206,15 +213,85 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case api.LoggedMsg:
+		m.syncing = false
+		i, row := indexOfTask(m.tasks, msg.TaskID), -1
+		if i >= 0 {
+			row = indexOfEntry(m.tasks[i].Rows, msg.LocalID)
+		}
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			// The row stays Local, so the hours are still on screen and on disk.
+			m.status = "not logged to the ERP: " + msg.Err.Error() + " — kept locally"
+			return m, nil
+		case i < 0 || row < 0:
+			return m, nil
+		}
+
+		// Confirmed: the ERP owns it now, so it stops counting as unsynced.
+		m.tasks[i].Rows[row].ID = msg.EntryID
+		m.tasks[i].Rows[row].Local = false
+		m.status = "logged " + parse.FormatTotal(msg.Minutes) + " to " + m.tasks[i].Key
+		// The day total is now the ERP's business again.
+		return m, tea.Batch(store.Save(m.tasks), api.FetchDayHours(m.key, parse.Today()))
+
+	case api.UpdatedMsg:
+		m.syncing = false
+		i, row := indexOfTask(m.tasks, msg.TaskID), -1
+		if i >= 0 {
+			row = indexOfEntry(m.tasks[i].Rows, msg.EntryID)
+		}
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.status = "not updated in the ERP: " + msg.Err.Error() + " — kept locally"
+			return m, nil
+		case i < 0 || row < 0:
+			return m, nil
+		}
+		m.tasks[i].Rows[row].Local = false // the ERP now matches what is on screen
+		m.status = "updated " + parse.FormatTotal(msg.Minutes) + " in " + m.tasks[i].Key
+		return m, tea.Batch(store.Save(m.tasks), api.FetchDayHours(m.key, parse.Today()))
+
+	case api.DeletedMsg:
+		m.syncing = false
+		i, row := indexOfTask(m.tasks, msg.TaskID), -1
+		if i >= 0 {
+			row = indexOfEntry(m.tasks[i].Rows, msg.EntryID)
+		}
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			// Still on screen, because it is still in the ERP.
+			m.status = "not deleted: " + msg.Err.Error()
+			return m, nil
+		case i < 0 || row < 0:
+			return m, nil
+		}
+		m.tasks[i].Rows = m.dropRow(i, row)
+		m.clampRow()
+		m.status = "deleted the entry in " + m.tasks[i].Key
+		return m, tea.Batch(store.Save(m.tasks), api.FetchDayHours(m.key, parse.Today()))
+
 	case api.EntriesMsg:
 		m.syncing = false
+		delete(m.pulling, msg.TaskID)
 		i := indexOfTask(m.tasks, msg.TaskID)
 		switch {
 		case errors.Is(msg.Err, api.ErrUnauthorized):
 			m.key = ""
 			return m.askKey(msg.Err.Error()), textinput.Blink
 		case msg.Err != nil:
-			m.status = "timesheet lines unavailable: " + msg.Err.Error()
+			// Not marked pulled: h then l tries again once the cause is fixed.
+			m.err = msg.Err
+			m.status = "no timesheet lines for this task"
 			return m, nil
 		case i < 0:
 			return m, nil
@@ -298,14 +375,36 @@ func indexOfTask(tasks []store.Task, id int) int {
 	return -1
 }
 
+// dropRow removes one entry from a task without disturbing the slice it shares
+// with the copy of the model that is still on screen.
+func (m Model) dropRow(task, row int) []store.Entry {
+	rows := m.tasks[task].Rows
+	if row < 0 || row >= len(rows) {
+		return rows
+	}
+	return append(rows[:row:row], rows[row+1:]...)
+}
+
+func indexOfEntry(rows []store.Entry, id int) int {
+	for i := range rows {
+		if rows[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // pullEntries reads a task's timesheet lines from Odoo, once per task per sync.
+// A failure is not recorded as a pull, so expanding the task again retries it —
+// otherwise a missing db or a dropped connection would look like a task with no
+// hours for the rest of the session.
 func (m Model) pullEntries(taskID int) (Model, tea.Cmd) {
-	if m.pulled[taskID] || m.key == "" || api.DB() == "" {
+	if m.pulled[taskID] || m.pulling[taskID] || m.key == "" {
 		return m, nil
 	}
-	m.pulled[taskID] = true // one attempt per task, success or not
+	m.pulling[taskID] = true
 	m.syncing = true
-	return m, api.FetchEntries(m.key, m.login, taskID)
+	return m, api.FetchEntries(m.key, m.login, m.db, taskID)
 }
 
 func (m *Model) clampCursor() {
@@ -341,6 +440,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.expanded = map[int]bool{}
 		m.clampCursor()
 		return m, nil
+		// ClearSearch is ctrl+u too, so ClearQuery above already handles it here:
+		// in the field, ctrl+u clears and also collapses.
 
 	case key.Matches(msg, keys.Focus):
 		m.search.Blur()
@@ -379,7 +480,7 @@ func (m Model) startSync() (tea.Model, tea.Cmd) {
 
 	cmds := []tea.Cmd{api.FetchTasks(m.key), api.FetchDayHours(m.key, parse.Today())}
 	// A refresh re-reads the lines of whatever is open.
-	m.pulled = map[int]bool{}
+	m.pulled, m.pulling = map[int]bool{}, map[int]bool{}
 	for id := range m.expanded {
 		var cmd tea.Cmd
 		if m, cmd = m.pullEntries(id); cmd != nil {
@@ -410,7 +511,7 @@ func (m Model) updateAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.search.Focus()
 		m.syncing = true
 		m.status = "syncing with " + api.BaseURL() + "…"
-		return m, tea.Batch(store.SaveKey(m.key), api.FetchTasks(m.key), textinput.Blink)
+		return m, tea.Batch(store.SaveKey(m.key, m.db), api.FetchTasks(m.key), textinput.Blink)
 	}
 
 	var cmd tea.Cmd
@@ -443,6 +544,21 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.Up):
 		m.cursor--
+		m.clampCursor()
+
+	case key.Matches(msg, keys.Top):
+		m.cursor = 0
+
+	case key.Matches(msg, keys.Bottom):
+		m.cursor = len(m.filtered()) - 1
+		m.clampCursor()
+
+	case key.Matches(msg, keys.HalfDown):
+		m.cursor += m.halfPage(taskLines)
+		m.clampCursor()
+
+	case key.Matches(msg, keys.HalfUp):
+		m.cursor -= m.halfPage(taskLines)
 		m.clampCursor()
 
 	case key.Matches(msg, keys.Expand):
@@ -500,6 +616,21 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.row--
 		m.clampRow()
 
+	case key.Matches(msg, keys.Top):
+		m.row = 0
+
+	case key.Matches(msg, keys.Bottom):
+		m.row = len(t.Rows) - 1
+		m.clampRow()
+
+	case key.Matches(msg, keys.HalfDown):
+		m.row += m.halfPage(entryLines)
+		m.clampRow()
+
+	case key.Matches(msg, keys.HalfUp):
+		m.row -= m.halfPage(entryLines)
+		m.clampRow()
+
 	case key.Matches(msg, keys.Edit):
 		if len(t.Rows) == 0 {
 			return m, nil
@@ -534,6 +665,16 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		delete(m.expanded, t.ID)
 		m.mode = ModeSearch
 		m.search.Focus()
+		return m, textinput.Blink
+
+	case key.Matches(msg, keys.ClearSearch):
+		// Same as from the list, plus collapsing this task: ctrl+u means "back to a
+		// clean search" wherever it is pressed.
+		delete(m.expanded, t.ID)
+		m.search.SetValue("")
+		m.mode = ModeSearch
+		m.search.Focus()
+		m.clampCursor()
 		return m, textinput.Blink
 	}
 	return m, nil
@@ -690,19 +831,42 @@ func (m Model) commit() (tea.Model, tea.Cmd) {
 		e.ID = store.NextEntryID(m.tasks[i])
 		m.tasks[i].Rows = append([]store.Entry{e}, m.tasks[i].Rows...)
 		m.row = 0
-	} else {
-		if m.editRow >= len(m.tasks[i].Rows) {
-			m.mode = ModeTable
-			return m, nil
-		}
-		e.ID = m.tasks[i].Rows[m.editRow].ID
-		m.tasks[i].Rows[m.editRow] = e
-		m.row = m.editRow
+
+		// A new entry belongs in the ERP, not only on disk. It stays Local until
+		// the server confirms it, so a failed write cannot lose the hours.
+		m.expanded[m.tasks[i].ID] = true
+		m.err = nil
+		m.mode = ModeTable
+		m.syncing = true
+		m.status = "logging " + parse.FormatTotal(e.Minutes) + " to " + m.tasks[i].Key + "…"
+		return m, tea.Batch(
+			store.Save(m.tasks),
+			api.LogHours(m.key, m.tasks[i].Key, e.Date, e.Desc, e.Minutes, m.tasks[i].ID, e.ID),
+		)
 	}
+
+	if m.editRow >= len(m.tasks[i].Rows) {
+		m.mode = ModeTable
+		return m, nil
+	}
+	e.ID = m.tasks[i].Rows[m.editRow].ID
+	m.tasks[i].Rows[m.editRow] = e
+	m.row = m.editRow
 
 	m.expanded[m.tasks[i].ID] = true
 	m.err = nil
 	m.mode = ModeTable
+
+	// A row the ERP owns is edited there too, over RPC `write`. It stays Local
+	// until the server agrees, so a refused edit does not look saved.
+	if e.ID > 0 {
+		m.syncing = true
+		m.status = "updating " + m.tasks[i].Key + " in the ERP…"
+		return m, tea.Batch(
+			store.Save(m.tasks),
+			api.UpdateEntry(m.key, m.login, m.db, m.tasks[i].ID, e.ID, e.Date, e.Desc, e.Minutes),
+		)
+	}
 	return m, store.Save(m.tasks)
 }
 
@@ -769,11 +933,12 @@ func sameNumber(a, b string) bool {
 
 // --- confirm -----------------------------------------------------------------
 
-// confirmKeys is what accepts the open modal. Deleting a row or discarding an
-// entry takes y or enter; quitting takes y alone, so a stray enter cannot end the
-// session.
+// confirmKeys is what accepts the open modal. Anything that destroys something —
+// quitting, deleting an entry — takes y alone, so a stray enter cannot do it.
+// Discarding an entry you are still typing keeps y or enter.
 func (m Model) confirmKeys() key.Binding {
-	if m.cKind == confirmQuit {
+	switch m.cKind {
+	case confirmQuit, confirmDeleteRow:
 		return keys.YesOnly
 	}
 	return keys.Yes
@@ -793,9 +958,16 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mode = ModeTable
 				return m, nil
 			}
-			rows := m.tasks[i].Rows
-			m.tasks[i].Rows = append(rows[:m.row:m.row], rows[m.row+1:]...)
 			m.mode = ModeTable
+
+			// A row the ERP owns is unlinked there first; it stays on screen until
+			// the server confirms, so a refusal cannot hide hours that still exist.
+			if e := m.tasks[i].Rows[m.row]; e.ID > 0 {
+				m.syncing = true
+				m.status = "deleting the entry in the ERP…"
+				return m, api.DeleteEntry(m.key, m.login, m.db, m.tasks[i].ID, e.ID)
+			}
+			m.tasks[i].Rows = m.dropRow(i, m.row)
 			m.clampRow()
 			return m, store.Save(m.tasks)
 

@@ -40,9 +40,8 @@ func preview(t *testing.T, width int) Model {
 func TestViewFitsWidth(t *testing.T) {
 	for _, width := range []int{80, 100, 120, 200} {
 		m := preview(t, width)
-		states := map[string]Model{"search": m}
-		m = send(t, m, special(tea.KeyEsc))
-		states["list"] = m
+		states := map[string]Model{"list": m} // launch state
+		states["search"] = send(t, m, runes("i"))
 		m = send(t, m, runes("l"))
 		states["table"] = m
 		states["insert"] = send(t, m, runes("a"))
@@ -59,18 +58,59 @@ func TestViewFitsWidth(t *testing.T) {
 	}
 }
 
+// `a` types the new entry at the top of the table, where it will land; an edit
+// stands in place of the row being edited, never as an extra row at the bottom.
+func TestInsertRowPlacement(t *testing.T) {
+	tasks := []store.Task{{ID: 1, Key: "AI-286", Title: "task", Rows: []store.Entry{
+		{ID: 141604, Date: "11/08/26", Desc: "newest", Minutes: 240},
+		{ID: 141446, Date: "10/08/26", Desc: "middle", Minutes: 450},
+		{ID: 141348, Date: "07/08/26", Desc: "oldest", Minutes: 450},
+	}}}
+	base := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, runes("l"))
+
+	// tableRows returns the description-bearing lines in render order.
+	tableRows := func(m Model) []string {
+		var out []string
+		for _, l := range strings.Split(m.View(), "\n") {
+			switch {
+			case strings.Contains(l, "✓"): // the insert row
+				out = append(out, "INPUTS")
+			case strings.Contains(l, "newest"), strings.Contains(l, "middle"),
+				strings.Contains(l, "oldest"):
+				out = append(out, strings.Fields(l)[1]) // date, description, hours
+			}
+		}
+		return out
+	}
+
+	got := tableRows(send(t, base, runes("a")))
+	want := []string{"INPUTS", "newest", "middle", "oldest"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("a: rows = %v, want the inputs first", got)
+	}
+
+	// Edit the middle row: inputs take its place, count unchanged.
+	got = tableRows(send(t, base, runes("j"), special(tea.KeyEnter)))
+	want = []string{"newest", "INPUTS", "oldest"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("edit: rows = %v, want the inputs in place of the edited row", got)
+	}
+}
+
 // The caret shows only while the field has focus, and never at the cost of the
 // header shifting sideways.
 func TestCaretFollowsFocus(t *testing.T) {
+	// The app launches on the list, so there is no caret until you ask for the field.
 	m := preview(t, 120)
-	search := strings.Split(m.View(), "\n")[1]
-	if !strings.Contains(search, "❯") {
-		t.Errorf("no caret while the field is focused:\n%s", search)
+	list := strings.Split(m.View(), "\n")[1]
+	if strings.Contains(list, "❯") {
+		t.Errorf("caret shown at launch, when focus is on the list:\n%s", list)
 	}
 
-	list := strings.Split(send(t, m, special(tea.KeyEsc)).View(), "\n")[1]
-	if strings.Contains(list, "❯") {
-		t.Errorf("caret still shown with focus in the list:\n%s", list)
+	search := strings.Split(send(t, m, runes("i")).View(), "\n")[1]
+	if !strings.Contains(search, "❯") {
+		t.Errorf("no caret after i focused the field:\n%s", search)
 	}
 	if a, b := lipgloss.Width(search), lipgloss.Width(list); a != b {
 		t.Errorf("header is %d cells focused, %d unfocused — it shifts", a, b)
@@ -92,7 +132,7 @@ func TestProgressCountsNewEntries(t *testing.T) {
 	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
 		store.LoadedMsg{Tasks: tasks},
 		api.DayHoursMsg{Date: today, Minutes: 60}, // the ERP knows about the pulled hour
-		special(tea.KeyEsc), runes("l"))
+		runes("l"))
 
 	if got, pending := m.todayMinutes(); got != 60 || pending != 0 {
 		t.Fatalf("before adding: %d minutes, %d pending, want 60 and 0", got, pending)
@@ -129,7 +169,7 @@ func TestTableColumnsAlignWithStyling(t *testing.T) {
 
 	// The insert row is deliberately longer (it carries the ✓ / ✕ buttons), so it
 	// is checked by TestViewFitsWidth instead.
-	m := send(t, preview(t, 120), special(tea.KeyEsc), runes("l"))
+	m := send(t, preview(t, 120), runes("l"))
 
 	var table []string
 	for _, line := range strings.Split(m.View(), "\n") {
@@ -181,7 +221,7 @@ func TestCursorStaysInWindow(t *testing.T) {
 	for i := 1; i <= 40; i++ {
 		many = append(many, store.Task{ID: i, Title: fmt.Sprintf("Task %d", i), Tag: "ui"})
 	}
-	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 24}, store.LoadedMsg{Tasks: many}, special(tea.KeyEsc))
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 24}, store.LoadedMsg{Tasks: many})
 	for i := 0; i < 30; i++ {
 		m = send(t, m, runes("j"))
 	}
@@ -194,7 +234,7 @@ func TestCursorStaysInWindow(t *testing.T) {
 // The focus marker must not shift a row sideways, or the list jitters as the
 // cursor moves.
 func TestFocusKeepsColumns(t *testing.T) {
-	m := send(t, preview(t, 120), special(tea.KeyEsc))
+	m := preview(t, 120)
 	lines := strings.Split(m.View(), "\n")
 
 	var focused, unfocused string

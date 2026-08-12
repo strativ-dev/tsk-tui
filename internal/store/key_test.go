@@ -25,7 +25,7 @@ func TestSaveKeyGoesToPass(t *testing.T) {
 	dir := stubPass(t)
 	t.Setenv(PassEnv, "work/tsk-key")
 
-	msg := SaveKey("  odoo-key-1234  ")()
+	msg := SaveKey("  odoo-key-1234  ", "erp-test")()
 	if saved, ok := msg.(KeySavedMsg); !ok || saved.Err != nil {
 		t.Fatalf("SaveKey = %+v", msg)
 	}
@@ -42,14 +42,53 @@ func TestSaveKeyGoesToPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(stdin) != "odoo-key-1234\n" {
-		t.Errorf("key on stdin = %q, want it trimmed", stdin)
+	// Secret on line one, db as metadata under it — pass's own convention.
+	if want := "odoo-key-1234\ndb: erp-test\n"; string(stdin) != want {
+		t.Errorf("entry on stdin = %q, want %q", stdin, want)
+	}
+
+	// With no db known, the entry is the key alone rather than a dangling label.
+	if msg := SaveKey("k", "")().(KeySavedMsg); msg.Err != nil {
+		t.Fatalf("SaveKey without db: %v", msg.Err)
+	}
+	stdin, _ = os.ReadFile(filepath.Join(dir, "stdin"))
+	if string(stdin) != "k\n" {
+		t.Errorf("entry on stdin = %q, want just the key", stdin)
+	}
+}
+
+func TestPassFieldReadsDB(t *testing.T) {
+	cases := map[string]string{
+		"odoo-key\ndb: serp_thing_1\n":                 "serp_thing_1",
+		"odoo-key\nurl: https://x\nDB:  spaced_db  \n": "spaced_db",
+		"odoo-key\n":              "",
+		"odoo-key\nnotdb: nope\n": "",
+		"odoo-key\ndatabase: ignored, only db: counts\n": "",
+	}
+	for entry, want := range cases {
+		if got := passField(entry, "db"); got != want {
+			t.Errorf("passField(%q) = %q, want %q", entry, got, want)
+		}
+	}
+	// The first line is the secret, never a field — a key that looks like one is
+	// still the key.
+	if got := passField("db: not-a-field\n", "db"); got != "" {
+		t.Errorf("passField read the secret line: %q", got)
+	}
+}
+
+func TestLoadKeyDBPrecedence(t *testing.T) {
+	// $TSK_ODOO_DB wins over the pass entry, same as $TSK_API_KEY does for the key.
+	t.Setenv(KeyEnv, "from-env")
+	t.Setenv(DBEnv, " env_db ")
+	if got := LoadKey()().(KeyMsg); got.DB != "env_db" || got.Key != "from-env" {
+		t.Errorf("LoadKey = %+v, want env_db and from-env", got)
 	}
 }
 
 func TestSaveKeyEmpty(t *testing.T) {
 	stubPass(t)
-	if got := SaveKey("   ")().(KeySavedMsg); got.Err == nil {
+	if got := SaveKey("   ", "")().(KeySavedMsg); got.Err == nil {
 		t.Error("SaveKey(blank) = nil error, want a complaint")
 	}
 }
@@ -61,7 +100,7 @@ func TestKeyWithoutPass(t *testing.T) {
 	if got := LoadKey()().(KeyMsg); !errors.Is(got.Err, ErrNoPass) {
 		t.Errorf("LoadKey = %+v, want ErrNoPass", got)
 	}
-	if got := SaveKey("k")().(KeySavedMsg); !errors.Is(got.Err, ErrNoPass) {
+	if got := SaveKey("k", "")().(KeySavedMsg); !errors.Is(got.Err, ErrNoPass) {
 		t.Errorf("SaveKey = %+v, want ErrNoPass", got)
 	}
 }

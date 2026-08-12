@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -51,7 +52,7 @@ func TestAddEntryFlow(t *testing.T) {
 	}})
 
 	// Filter to the second task, then focus the list.
-	m = send(t, m, runes("report"), special(tea.KeyEsc))
+	m = send(t, m, runes("i"), runes("report"), special(tea.KeyEsc))
 	if m.mode != ModeList {
 		t.Fatalf("mode = %v, want ModeList", m.mode)
 	}
@@ -152,20 +153,261 @@ func TestOfflineKeepsLocalTasks(t *testing.T) {
 	}
 }
 
-// ctrl+l from the task list wipes the query and puts the cursor back in the field.
+// Committing a new entry must actually post it, and a confirmation must clear the
+// unsynced state. Before this was wired, ✓ only wrote to tasks.json.
+func TestNewEntryLogsToERP(t *testing.T) {
+	tasks := []store.Task{{ID: 1372, Key: "SE360-1372", Title: "task", Tag: "ui"}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, store.KeyMsg{Key: "k", DB: "db"},
+		runes("l"))
+
+	m = send(t, m, runes("a"))
+	m = send(t, m, special(tea.KeyTab)) // keep today
+	m = send(t, m, runes("wrote the client"), special(tea.KeyTab))
+	m = send(t, m, runes("2:30"), special(tea.KeyTab))
+	m, cmd := sendCmd(t, m, special(tea.KeyEnter)) // ✓
+
+	if cmd == nil {
+		t.Fatal("commit returned no command — nothing was sent to the ERP")
+	}
+	row := m.tasks[0].Rows[0]
+	if !row.Local || row.ID >= 0 {
+		t.Errorf("row = %+v, want it local with a negative id until the ERP confirms", row)
+	}
+	if pending := store.PendingMinutesOn(m.tasks, parse.Today()); pending != 150 {
+		t.Errorf("pending = %d, want 150 while the write is in flight", pending)
+	}
+
+	// The server confirms with its own line id.
+	m = send(t, m, api.LoggedMsg{TaskID: 1372, LocalID: row.ID, EntryID: 141605, Minutes: 150})
+	row = m.tasks[0].Rows[0]
+	if row.ID != 141605 || row.Local {
+		t.Errorf("row = %+v, want the ERP's id and no longer local", row)
+	}
+	if pending := store.PendingMinutesOn(m.tasks, parse.Today()); pending != 0 {
+		t.Errorf("pending = %d, want 0 once the ERP owns the entry", pending)
+	}
+	if !strings.Contains(m.status, "logged") {
+		t.Errorf("status = %q, want confirmation", m.status)
+	}
+}
+
+// A failed write keeps the hours on screen rather than throwing them away.
+func TestFailedLogKeepsRow(t *testing.T) {
+	tasks := []store.Task{{ID: 1372, Key: "SE360-1372", Title: "task", Rows: []store.Entry{
+		{ID: -1, Date: parse.Today(), Desc: "typed", Minutes: 150, Local: true},
+	}}}
+	m := send(t, New(), store.LoadedMsg{Tasks: tasks},
+		api.LoggedMsg{TaskID: 1372, LocalID: -1, Err: errors.New("this would push the day past 24h")})
+
+	if len(m.tasks[0].Rows) != 1 || !m.tasks[0].Rows[0].Local {
+		t.Errorf("rows = %+v, want the entry kept and still local", m.tasks[0].Rows)
+	}
+	if !strings.Contains(m.status, "kept locally") {
+		t.Errorf("status = %q, want it to say the hours were kept", m.status)
+	}
+}
+
+// g / G / ctrl+d / ctrl+b move like vim, in the list and the table. Half-up is
+// ctrl+b rather than vim's ctrl+u, which clears the query here.
+func TestVimMotions(t *testing.T) {
+	var many []store.Task
+	for i := 1; i <= 40; i++ {
+		many = append(many, store.Task{ID: i, Title: fmt.Sprintf("Task %d", i), Tag: "ui"})
+	}
+	// 24 rows: 8 taken by chrome, 16 left, 8 collapsed tasks fit, so half is 4.
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 24}, store.LoadedMsg{Tasks: many})
+	if got := m.halfPage(taskLines); got != 4 {
+		t.Fatalf("halfPage = %d, want 4 for a 24-row terminal", got)
+	}
+
+	m = send(t, m, runes("G"))
+	if m.cursor != 39 {
+		t.Errorf("G left cursor at %d, want the last task (39)", m.cursor)
+	}
+	m = send(t, m, runes("g"))
+	if m.cursor != 0 {
+		t.Errorf("g left cursor at %d, want 0", m.cursor)
+	}
+
+	m = send(t, m, special(tea.KeyCtrlD))
+	if m.cursor != 4 {
+		t.Errorf("ctrl+d left cursor at %d, want 4", m.cursor)
+	}
+	m = send(t, m, special(tea.KeyCtrlD), special(tea.KeyCtrlB))
+	if m.cursor != 4 {
+		t.Errorf("ctrl+d then ctrl+b left cursor at %d, want 4", m.cursor)
+	}
+	// Neither key runs off an end.
+	m = send(t, m, special(tea.KeyCtrlB), special(tea.KeyCtrlB))
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d, want it clamped at 0", m.cursor)
+	}
+	for i := 0; i < 20; i++ {
+		m = send(t, m, special(tea.KeyCtrlD))
+	}
+	if m.cursor != 39 {
+		t.Errorf("cursor = %d, want it clamped at 39", m.cursor)
+	}
+
+	// Same motions inside a task's rows.
+	rows := make([]store.Entry, 20)
+	for i := range rows {
+		rows[i] = store.Entry{ID: i + 1, Date: "11/08/26", Desc: fmt.Sprintf("row %d", i), Minutes: 60}
+	}
+	m = send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 24},
+		store.LoadedMsg{Tasks: []store.Task{{ID: 1, Title: "task", Rows: rows}}}, runes("l"))
+
+	m = send(t, m, runes("G"))
+	if m.row != 19 {
+		t.Errorf("G in the table left row at %d, want 19", m.row)
+	}
+	m = send(t, m, runes("g"))
+	if m.row != 0 {
+		t.Errorf("g in the table left row at %d, want 0", m.row)
+	}
+	m = send(t, m, special(tea.KeyCtrlD))
+	if want := m.halfPage(entryLines); m.row != want {
+		t.Errorf("ctrl+d in the table left row at %d, want %d", m.row, want)
+	}
+}
+
+// A failed pull must be retried when the task is expanded again. It used to be
+// recorded as done regardless, so one failure (a missing db, a dropped connection)
+// left the task looking empty for the rest of the session.
+func TestFailedPullRetries(t *testing.T) {
+	tasks := []store.Task{{ID: 30857, Key: "AI-286", Title: "Momentum implement"}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, store.KeyMsg{Key: "k"}) // no DB: pulls will fail
+
+	m, cmd := sendCmd(t, m, runes("l"))
+	if cmd == nil {
+		t.Fatal("expanding did not try to read the lines")
+	}
+	m = send(t, m, api.EntriesMsg{TaskID: 30857, Err: api.ErrNoDB})
+	if m.pulled[30857] {
+		t.Error("a failed pull was recorded as done")
+	}
+	if m.err == nil {
+		t.Error("the failure was not surfaced — it looked like a task with no hours")
+	}
+
+	// Collapse, expand: it tries again.
+	m = send(t, m, runes("h"))
+	m, cmd = sendCmd(t, m, runes("l"))
+	if cmd == nil {
+		t.Fatal("re-expanding did not retry the read")
+	}
+
+	// This time it answers, and that is recorded so it is not re-read on every key.
+	m = send(t, m, api.EntriesMsg{TaskID: 30857, Rows: []store.Entry{
+		{ID: 141604, Date: "11/08/26", Desc: "Fine tune results", Minutes: 240},
+	}})
+	if !m.pulled[30857] || len(m.tasks[0].Rows) != 1 {
+		t.Errorf("pulled = %v, rows = %+v", m.pulled[30857], m.tasks[0].Rows)
+	}
+	m = send(t, m, runes("h"))
+	if _, cmd = sendCmd(t, m, runes("l")); cmd != nil {
+		t.Error("re-expanding a task already read fired another request")
+	}
+}
+
+// Editing a pulled row pushes the change over RPC, and a refusal keeps the row
+// marked local instead of pretending the ERP agreed.
+func TestEditPushesToERP(t *testing.T) {
+	tasks := []store.Task{{ID: 1372, Key: "SE360-1372", Title: "task", Rows: []store.Entry{
+		{ID: 141605, Date: parse.Today(), Desc: "pulled", Minutes: 60},
+	}}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, store.KeyMsg{Key: "k", DB: "db"},
+		api.DayHoursMsg{Date: parse.Today(), Minutes: 60, UserEmail: "u@e.com"},
+		runes("l"))
+
+	m = send(t, m, special(tea.KeyEnter)) // edit the focused row
+	m = send(t, m, special(tea.KeyTab), special(tea.KeyTab))
+	m = send(t, m, special(tea.KeyCtrlU), runes("3:00"), special(tea.KeyTab))
+	m, cmd := sendCmd(t, m, special(tea.KeyEnter)) // ✓
+
+	if cmd == nil {
+		t.Fatal("edit produced no command — the ERP was never told")
+	}
+	if row := m.tasks[0].Rows[0]; !row.Local || row.Minutes != 180 {
+		t.Errorf("row = %+v, want 180 minutes and still local until confirmed", row)
+	}
+
+	// Refused first: it leaves the row alone, so the success case below still starts
+	// from a local row. (Both branches share one Rows array.)
+	bad := send(t, m, api.UpdatedMsg{TaskID: 1372, EntryID: 141605, Err: errors.New("no")})
+	if row := bad.tasks[0].Rows[0]; !row.Local || row.Minutes != 180 {
+		t.Errorf("row = %+v, want the edit kept locally", row)
+	}
+	if !strings.Contains(bad.status, "kept locally") {
+		t.Errorf("status = %q, want it to admit the ERP is unchanged", bad.status)
+	}
+
+	// Confirmed: no longer diverged from the ERP.
+	ok := send(t, m, api.UpdatedMsg{TaskID: 1372, EntryID: 141605, Minutes: 180})
+	if row := ok.tasks[0].Rows[0]; row.Local {
+		t.Errorf("row = %+v, want Local cleared once the ERP agreed", row)
+	}
+	if !strings.Contains(ok.status, "updated") {
+		t.Errorf("status = %q", ok.status)
+	}
+}
+
+// Deleting a pulled row unlinks it in the ERP first: the row survives a refusal.
+func TestDeletePushesToERP(t *testing.T) {
+	tasks := []store.Task{{ID: 1372, Key: "SE360-1372", Title: "task", Rows: []store.Entry{
+		{ID: 141605, Date: parse.Today(), Desc: "pulled", Minutes: 60},
+		{ID: -1, Date: parse.Today(), Desc: "typed", Minutes: 30, Local: true},
+	}}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, store.KeyMsg{Key: "k", DB: "db"},
+		runes("l"))
+
+	m, cmd := sendCmd(t, m, runes("d"))
+	m, cmd = sendCmd(t, m, runes("y"))
+	if cmd == nil {
+		t.Fatal("delete produced no command — the ERP was never told")
+	}
+	if len(m.tasks[0].Rows) != 2 {
+		t.Errorf("rows = %d, want the row kept until the ERP confirms", len(m.tasks[0].Rows))
+	}
+
+	// A refusal leaves it on screen, because it still exists in the ERP.
+	bad := send(t, m, api.DeletedMsg{TaskID: 1372, EntryID: 141605, Err: errors.New("access denied")})
+	if len(bad.tasks[0].Rows) != 2 || !strings.Contains(bad.status, "not deleted") {
+		t.Errorf("rows = %d, status = %q", len(bad.tasks[0].Rows), bad.status)
+	}
+
+	// Confirmed: gone here too.
+	ok := send(t, m, api.DeletedMsg{TaskID: 1372, EntryID: 141605})
+	if len(ok.tasks[0].Rows) != 1 || ok.tasks[0].Rows[0].Desc != "typed" {
+		t.Errorf("rows = %+v, want only the local row left", ok.tasks[0].Rows)
+	}
+
+	// A local row needs no round trip: it goes at once.
+	m2 := send(t, ok, runes("j"), runes("d"))
+	m2, cmd = sendCmd(t, m2, runes("y"))
+	if len(m2.tasks[0].Rows) != 0 {
+		t.Errorf("rows = %+v, want the local row dropped immediately", m2.tasks[0].Rows)
+	}
+}
+
+// ctrl+u from the task list wipes the query and puts the cursor back in the field.
 func TestClearSearchFromList(t *testing.T) {
 	tasks := []store.Task{
 		{ID: 1, Title: "first ui task", Tag: "ui"},
 		{ID: 2, Title: "backend task", Tag: "backend"},
 		{ID: 3, Title: "second ui task", Tag: "ui"},
 	}
-	m := send(t, New(), store.LoadedMsg{Tasks: tasks}, runes("ui"), special(tea.KeyEsc))
+	m := send(t, New(), store.LoadedMsg{Tasks: tasks}, runes("i"), runes("ui"), special(tea.KeyEsc))
 	m = send(t, m, runes("j")) // sit on the second match
 	if len(m.filtered()) != 2 || m.cursor != 1 {
 		t.Fatalf("setup: %d filtered, cursor %d", len(m.filtered()), m.cursor)
 	}
 
-	m = send(t, m, special(tea.KeyCtrlL))
+	m = send(t, m, special(tea.KeyCtrlU))
 	if m.search.Value() != "" {
 		t.Errorf("query = %q, want it cleared", m.search.Value())
 	}
@@ -180,10 +422,47 @@ func TestClearSearchFromList(t *testing.T) {
 	}
 }
 
+// ctrl+u works from wherever focus is, not just the list: inside a task's table it
+// also collapses the task, and in the field it clears without losing focus.
+func TestClearSearchFromEverywhere(t *testing.T) {
+	tasks := []store.Task{
+		{ID: 1, Title: "first ui task", Tag: "ui", Rows: []store.Entry{
+			{ID: 1, Date: "11/08/26", Desc: "row", Minutes: 60},
+		}},
+		{ID: 2, Title: "backend task", Tag: "backend"},
+	}
+
+	// From the table.
+	m := send(t, New(), store.LoadedMsg{Tasks: tasks}, runes("i"), runes("ui"),
+		special(tea.KeyEsc), runes("l"))
+	if m.mode != ModeTable {
+		t.Fatalf("setup: mode = %v, want ModeTable", m.mode)
+	}
+	m = send(t, m, special(tea.KeyCtrlU))
+	if m.mode != ModeSearch || !m.search.Focused() {
+		t.Errorf("mode = %v, focused = %v, want ModeSearch and focused", m.mode, m.search.Focused())
+	}
+	if m.search.Value() != "" || len(m.filtered()) != 2 {
+		t.Errorf("query = %q, filtered = %d, want cleared and all tasks back",
+			m.search.Value(), len(m.filtered()))
+	}
+	if m.expanded[1] {
+		t.Error("task 1 is still expanded")
+	}
+
+	// From the field itself: clears, keeps focus.
+	m = send(t, m, runes("backend"), special(tea.KeyCtrlU))
+	if m.search.Value() != "" {
+		t.Errorf("query = %q, want cleared", m.search.Value())
+	}
+	if m.mode != ModeSearch || !m.search.Focused() {
+		t.Errorf("mode = %v, focused = %v, want to stay in the field", m.mode, m.search.Focused())
+	}
+}
+
 // q asks before quitting: enter confirms, n dismisses. ctrl+c still leaves at once.
 func TestQuitConfirm(t *testing.T) {
-	m := send(t, New(), store.LoadedMsg{Tasks: []store.Task{{ID: 1, Title: "task"}}},
-		special(tea.KeyEsc))
+	m := send(t, New(), store.LoadedMsg{Tasks: []store.Task{{ID: 1, Title: "task"}}})
 
 	m, cmd := sendCmd(t, m, runes("q"))
 	if quits(cmd) {
@@ -233,7 +512,7 @@ func TestOdooPullKeepsLocalRows(t *testing.T) {
 		{ID: 90211, Date: "12/08/26", Desc: "pulled", Minutes: 60},
 	}}}
 	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30}, store.LoadedMsg{Tasks: tasks},
-		special(tea.KeyEsc), runes("l"))
+		runes("l"))
 
 	// Add an entry, then let a pull land afterwards.
 	m = send(t, m, runes("a"))

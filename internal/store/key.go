@@ -14,6 +14,8 @@ import (
 const (
 	// KeyEnv wins over pass, so CI and one-off shells never touch the store.
 	KeyEnv = "TSK_API_KEY"
+	// DBEnv overrides the Odoo database name from the pass entry.
+	DBEnv = "TSK_ODOO_DB"
 	// PassEnv renames the pass entry.
 	PassEnv = "TSK_PASS_NAME"
 
@@ -24,10 +26,14 @@ const (
 // plaintext as a fallback.
 var ErrNoPass = errors.New("pass not found — install password-store, or export " + KeyEnv)
 
-// KeyMsg carries the resolved API key. The key goes to the model field and the
-// Authorization header, never to tasks.json and never into an error string.
+// KeyMsg carries the resolved credentials. The key goes to the model field and
+// the Authorization header, never to tasks.json and never into an error string.
+// DB is the Odoo database name, treated as a secret for the same reason: it is
+// half of what an attacker needs to talk to the ERP over JSON-RPC, so it lives in
+// the encrypted entry rather than in this repo.
 type KeyMsg struct {
 	Key string
+	DB  string
 	Err error
 }
 
@@ -41,14 +47,16 @@ func PassName() string {
 	return defaultPassName
 }
 
-// LoadKey resolves the key: $TSK_API_KEY first, then `pass show <entry>`.
+// LoadKey resolves the credentials: $TSK_API_KEY first, then `pass show <entry>`.
 // A missing entry is not an error — the model asks for a key.
 func LoadKey() tea.Cmd {
+	envDB := strings.TrimSpace(os.Getenv(DBEnv))
+
 	if v := strings.TrimSpace(os.Getenv(KeyEnv)); v != "" {
-		return func() tea.Msg { return KeyMsg{Key: v} }
+		return func() tea.Msg { return KeyMsg{Key: v, DB: envDB} }
 	}
 	if _, err := exec.LookPath("pass"); err != nil {
-		return func() tea.Msg { return KeyMsg{Err: ErrNoPass} }
+		return func() tea.Msg { return KeyMsg{DB: envDB, Err: ErrNoPass} }
 	}
 
 	var out bytes.Buffer
@@ -58,16 +66,39 @@ func LoadKey() tea.Cmd {
 	// passphrase instead of scribbling over the alt screen. stdout stays captured.
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		if err != nil {
-			return KeyMsg{} // no entry yet, or gpg declined: prompt for it
+			return KeyMsg{DB: envDB} // no entry yet, or gpg declined: prompt for it
 		}
-		return KeyMsg{Key: firstLine(out.String())}
+		db := envDB
+		if db == "" {
+			db = passField(out.String(), "db")
+		}
+		return KeyMsg{Key: firstLine(out.String()), DB: db}
 	})
 }
 
+// passField reads a `name: value` line from a pass entry, following pass's own
+// convention: the secret on line one, metadata on the lines after it.
+func passField(entry, name string) string {
+	lines := strings.Split(entry, "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+	want := strings.ToLower(name) + ":"
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), want) {
+			return strings.TrimSpace(trimmed[len(want):])
+		}
+	}
+	return ""
+}
+
 // SaveKey stores the key with `pass insert`, which encrypts it to your GPG key.
-func SaveKey(key string) tea.Cmd {
+// A known db name is written back as a `db:` line so re-entering a key does not
+// lose it.
+func SaveKey(key, db string) tea.Cmd {
 	return func() tea.Msg {
-		key = strings.TrimSpace(key)
+		key, db = strings.TrimSpace(key), strings.TrimSpace(db)
 		if key == "" {
 			return KeySavedMsg{Err: errors.New("empty API key")}
 		}
@@ -75,8 +106,12 @@ func SaveKey(key string) tea.Cmd {
 			return KeySavedMsg{Err: ErrNoPass}
 		}
 
+		entry := key + "\n"
+		if db != "" {
+			entry += "db: " + db + "\n"
+		}
 		c := exec.Command("pass", "insert", "-m", "-f", PassName())
-		c.Stdin = strings.NewReader(key + "\n")
+		c.Stdin = strings.NewReader(entry)
 		var stderr bytes.Buffer
 		c.Stderr = &stderr
 		if err := c.Run(); err != nil {
