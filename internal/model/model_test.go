@@ -1,10 +1,13 @@
 package model
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/parse"
 	"github.com/tasnimAlam/tsk/internal/store"
 )
@@ -80,6 +83,93 @@ func TestAddEntryFlow(t *testing.T) {
 	m = send(t, m, runes("y"))
 	if len(m.tasks[0].Rows) != 1 || m.tasks[0].Rows[0].Desc != "old" {
 		t.Fatalf("rows after delete = %+v, want only the old entry", m.tasks[0].Rows)
+	}
+}
+
+// A missing key opens the prompt; a 401 reopens it and forgets the key.
+func TestKeyPrompt(t *testing.T) {
+	m := send(t, New(), store.KeyMsg{})
+	if m.mode != ModeAuth {
+		t.Fatalf("mode = %v, want ModeAuth when no key is stored", m.mode)
+	}
+
+	// esc works offline instead.
+	m = send(t, m, special(tea.KeyEsc))
+	if m.mode != ModeSearch || m.key != "" {
+		t.Fatalf("esc left mode %v key %q, want ModeSearch and no key", m.mode, m.key)
+	}
+
+	// Typing a key stores it in the model and clears the input.
+	m = send(t, m, runes("K"))
+	if m.mode != ModeAuth {
+		// K only fires from the list, so get there first.
+		m = send(t, m, special(tea.KeyEsc), runes("K"))
+	}
+	m = send(t, m, runes("odookey1234"), special(tea.KeyEnter))
+	if m.key != "odookey1234" {
+		t.Fatalf("key = %q, want the typed key", m.key)
+	}
+	if m.auth.Value() != "" {
+		t.Errorf("auth input still holds the key: %q", m.auth.Value())
+	}
+	if v := m.View(); strings.Contains(v, "odookey1234") {
+		t.Error("View() rendered the API key")
+	}
+
+	// A rejected key drops it from memory and asks again.
+	m = send(t, m, api.TasksMsg{Err: api.ErrUnauthorized})
+	if m.mode != ModeAuth || m.key != "" {
+		t.Fatalf("after 401: mode %v key %q, want ModeAuth and no key", m.mode, m.key)
+	}
+}
+
+// A fetch failure that is not a 401 keeps whatever is on disk.
+func TestOfflineKeepsLocalTasks(t *testing.T) {
+	local := []store.Task{{ID: 1, Title: "local", Rows: []store.Entry{{ID: 1, Minutes: 60}}}}
+	m := send(t, New(), store.LoadedMsg{Tasks: local}, api.TasksMsg{Err: errors.New("cannot reach host")})
+
+	if m.mode == ModeAuth {
+		t.Error("a network error must not ask for a new key")
+	}
+	if len(m.tasks) != 1 || m.tasks[0].Title != "local" {
+		t.Errorf("tasks = %+v, want the disk copy kept", m.tasks)
+	}
+}
+
+// An Odoo pull must not delete the rows typed in the app — it used to assign
+// msg.Rows straight over them.
+func TestOdooPullKeepsLocalRows(t *testing.T) {
+	tasks := []store.Task{{ID: 7, Title: "Task", Tag: "ui", Rows: []store.Entry{
+		{ID: 90211, Date: "12/08/26", Desc: "pulled", Minutes: 60},
+	}}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30}, store.LoadedMsg{Tasks: tasks},
+		special(tea.KeyEsc), runes("l"))
+
+	// Add an entry, then let a pull land afterwards.
+	m = send(t, m, runes("a"))
+	m = send(t, m, runes("9"), special(tea.KeyTab))
+	m = send(t, m, runes("typed here"), special(tea.KeyTab))
+	m = send(t, m, runes("2:00"), special(tea.KeyTab), special(tea.KeyEnter))
+	if len(m.tasks[0].Rows) != 2 {
+		t.Fatalf("after add: %d rows, want 2", len(m.tasks[0].Rows))
+	}
+
+	m = send(t, m, api.EntriesMsg{TaskID: 7, Rows: []store.Entry{
+		{ID: 90211, Date: "12/08/26", Desc: "pulled", Minutes: 60},
+	}})
+
+	if len(m.tasks[0].Rows) != 2 {
+		t.Fatalf("after pull: %d rows, want the pulled one and the typed one:\n%+v",
+			len(m.tasks[0].Rows), m.tasks[0].Rows)
+	}
+	var typed bool
+	for _, r := range m.tasks[0].Rows {
+		if r.Desc == "typed here" {
+			typed = true
+		}
+	}
+	if !typed {
+		t.Errorf("the typed entry was dropped by the pull: %+v", m.tasks[0].Rows)
 	}
 }
 

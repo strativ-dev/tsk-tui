@@ -20,7 +20,8 @@ cmd/tsk/main.go        program entry, tea.NewProgram(..., tea.WithAltScreen())
 internal/model/        root model, per-mode Update handlers, View
 internal/model/keys.go key.Binding sets per mode (footer help renders from these)
 internal/parse/        pure parsing: hours, dates  (unit-tested, no tea imports)
-internal/store/        persistence (JSON on disk), load/save commands
+internal/store/        persistence (JSON on disk), API key via pass, load/save commands
+internal/api/          ERP tasks API client (GET /api/v1/tasks/my)
 internal/theme/        lipgloss styles, all colors in one place
 ```
 
@@ -57,6 +58,7 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeInsert` | add/edit entry inputs |
 | `ModeJump` | `/dd` date prompt inside a table |
 | `ModeConfirm` | modal; swallows everything except `y` / `n` / `esc` |
+| `ModeAuth` | API key prompt; opens when no key is stored or a fetch returns 401 |
 
 ## Keymap
 
@@ -67,9 +69,12 @@ Search
 
 List (`ModeList`)
 - `j` / `k` — next / previous task
-- `l` — expand task, focus its first row (→ `ModeTable`)
+- `l` / `enter` — expand task, focus its first row (→ `ModeTable`); a task with no
+  entries still opens, so `a` has somewhere to add the first one
 - `h` — collapse task
 - `/` — expand the task and open the date jump (→ `ModeJump`)
+- `r` — fetch tasks from the API
+- `K` — replace the stored API key (→ `ModeAuth`)
 - `i` / `esc` — focus the search input
 - `q` / `ctrl+c` — quit
 
@@ -98,6 +103,70 @@ Jump (`ModeJump`)
 Confirm
 - `y` / `enter` — proceed; `n` / `esc` — cancel
 
+Auth (`ModeAuth`)
+- typing is echoed as `•` — the key is never rendered
+- `enter` — store the key in `pass` and fetch; `esc` — work offline on the local file
+
+## Credentials and sync
+
+The task list comes from `GET /api/v1/tasks/my` (see `my-tasks.md`) with a native
+Odoo API key as a Bearer token.
+
+What the ERP REST API actually offers (probed against erp360, Odoo 16):
+
+| Route | Use |
+|---|---|
+| `GET /api/v1/tasks/my` | task list (no timesheet lines) |
+| `GET /api/v1/timesheets/hour-log-summary?start_date&end_date` | **day totals only** — feeds the progress bar |
+| `POST /api/v1/timesheets/log` | write one entry (not wired up yet) |
+
+The REST API has no line-level read, so timesheet rows come from Odoo's JSON-RPC
+instead (`internal/api/rpc.go`):
+
+1. `common.login(db, email, key)` → `uid`
+2. `object.execute_kw(db, uid, key, "account.analytic.line", "search_read",
+   [[["task_id","=",<id>]]], {fields: [date,name,unit_amount], order: "date desc, id desc"})`
+
+- `$TSK_ODOO_DB` must hold the database name; the server refuses `db.list` and the
+  selector page is filtered, so it cannot be discovered. Without it, rows stay
+  local and the status line says so (`api.ErrNoDB`).
+- The login is the key owner's email, which arrives in the `hour-log-summary`
+  response (`DayHoursMsg.UserEmail`) — nothing else exposes it.
+- `task_id` is the numeric `project.task` id from `/tasks/my`, not the `AI-283`
+  key. Filtering on the key string returns nothing.
+- Lines are read lazily: expanding a task pulls it once (`Model.pulled`), and `r`
+  clears that so open tasks re-read.
+- A pull **merges**, never assigns (`store.MergeRows`). `Entry.Local` marks what the
+  ERP has no matching copy of — an entry typed with `a`, or a pulled line edited
+  here — and app-created entries carry **negative** ids so they can never collide
+  with an `account.analytic.line` id. A local edit beats the pulled copy; a row
+  that is neither takes Odoo's version. Assigning `msg.Rows` directly deleted every
+  locally added row, which is the bug this guards.
+- Nothing writes back yet (`POST /api/v1/timesheets/log` is unwired), so local rows
+  stay local, and deleting a pulled row with `d` only hides it until the next pull.
+- Empty Odoo char fields decode as `false`, hence `odooText`.
+- The bar reads `Model.todayMinutes()`: the ERP's own day total (`Model.erpToday`,
+  `-1` until a sync answers) **plus** `store.PendingMinutesOn` — the app-created
+  entries the ERP has never seen, shown as `+2h30m unsynced` on the TODAY line.
+  Local edits of pulled lines are excluded from that sum, since the ERP total
+  already counts their original hours. Before a sync answers, local rows are the
+  only source.
+
+- Key resolution: `$TSK_API_KEY` first, then `pass show $TSK_PASS_NAME`
+  (default entry `tsk/api-key`). No plaintext fallback file — if `pass` is
+  missing, the app says so and stays offline.
+- `pass show` runs through `tea.ExecProcess`, so a tty pinentry gets the terminal
+  instead of corrupting the alt screen; stdout is captured, stderr is the user's.
+  `pass insert -m -f` takes the key on stdin (no pinentry: encrypt only).
+- The key lives in the `Authorization` header, the `Model.key` field, and nowhere
+  else: not in a URL, not in a log line, not in an error string, never in
+  `tasks.json`. Screens show `store.MaskKey` (`••••1234`); the prompt echoes `•`.
+- Base URL: `$TSK_API_URL`, default `https://erp360.strativ.se`.
+- `store.Merge` keeps remote titles and tags, keeps every local entry, and keeps
+  local-only tasks that still hold hours — a sync never drops logged time.
+- 401 clears the in-memory key and reopens `ModeAuth`; any other failure keeps the
+  disk copy of the list and says so in the status line.
+
 ## Input parsing (`internal/parse`)
 
 Pure functions, normalized **on field exit** — not per keystroke.
@@ -119,11 +188,26 @@ keystroke replaces it, `tab` with no input keeps the original.
 
 ## UI rules
 
-- Search bar at the top, focused on launch. Right of it: a today-progress bar,
-  hours logged today against an **8h goal**, block chars (`█` / `░`), label `6h45m / 8h`
-  and a percentage. Turns green at 100%. Recomputed live.
-- Task line: caret (`▸`/`▾`), title, tag chip, entry count, task total.
-- Expanded table columns: DATE · DESCRIPTION · HOURS (right-aligned).
+Layout follows `Pictures/screenshots/tsk.png`:
+
+- An accent `❯` in the left gutter, then the search field inside a rounded box
+  spanning the width, focused on launch.
+- Right of the box, a two-line progress cluster, right-aligned: bar (`█` / `░`)
+  plus bold `1h45m` and dim `/ 8h`, then `TODAY 22% · 6/6 tasks`. Turns green at
+  100%. Recomputed live.
+- A dim rule under the header, then the list, one blank line between tasks.
+- Task line: caret (`▸`/`▾`), title, tag chip (uppercase, `│ BACKEND │`), and on
+  the right edge the entry count and the bold task total.
+- Every line is `Blur`/`Focus`-wrapped, both two cells wide, so focus never shifts
+  a row. `internal/model/view_test.go` asserts that and that nothing exceeds the
+  terminal width.
+- Expanded table columns: DATE · DESCRIPTION · HOURS (right-aligned). DESCRIPTION
+  is capped at 48 cells — stretched to the edge, the hours end up a screen away
+  from the text they belong to.
+- The header and footer are laid out first and the list is windowed into the rows
+  left over (`view.go: window`), so the search field can never scroll off the top.
+  Hidden lines are announced as `↑ N more` / `↓ N more`, and the window follows
+  the cursor.
 - Focus is shown by a **left border + dim row background**, never color alone.
 - Mode indicator top-right (`-- SEARCH --`), contextual key hints in the footer,
   rendered from the mode's `key.Binding` set so help can never drift from behavior.

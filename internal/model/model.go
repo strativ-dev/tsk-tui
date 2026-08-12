@@ -1,14 +1,18 @@
 package model
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/parse"
 	"github.com/tasnimAlam/tsk/internal/store"
+	"github.com/tasnimAlam/tsk/internal/theme"
 )
 
 // Mode decides which handler consumes a key. Only the active mode reads keys.
@@ -21,6 +25,7 @@ const (
 	ModeInsert
 	ModeJump
 	ModeConfirm
+	ModeAuth
 )
 
 // DailyGoal is the 8h bar the header measures today against.
@@ -56,7 +61,19 @@ type Model struct {
 
 	search textinput.Model
 	jump   textinput.Model
+	auth   textinput.Model
 	fields [3]textinput.Model
+
+	key     string // API key, held in memory only
+	syncing bool
+	status  string
+
+	// erpToday is what the ERP says was logged today, which beats the local
+	// guess for the progress bar. -1 until a sync answers.
+	erpToday int
+
+	login  string       // the key owner's Odoo login, needed by JSON-RPC
+	pulled map[int]bool // task IDs whose lines have been read from Odoo
 
 	tasks    []store.Task
 	cursor   int          // index into filtered()
@@ -77,7 +94,8 @@ type Model struct {
 
 func New() Model {
 	search := textinput.New()
-	search.Prompt = "  "
+	search.Prompt = "" // the ❯ caret sits outside the box, as in the design
+	search.PromptStyle = theme.Prompt
 	search.Placeholder = "search title or tag…"
 	search.Width = 32
 	search.Focus()
@@ -87,30 +105,47 @@ func New() Model {
 	jump.Width = 8
 	jump.CharLimit = 8
 
+	auth := textinput.New()
+	auth.Prompt = "key "
+	auth.Placeholder = "paste your Odoo API key"
+	auth.Width = 40
+	auth.EchoMode = textinput.EchoPassword // never render the key
+	auth.EchoCharacter = '•'
+
 	m := Model{
 		mode:     ModeSearch,
 		search:   search,
 		jump:     jump,
+		auth:     auth,
 		expanded: map[int]bool{},
+		erpToday: -1,
+		pulled:   map[int]bool{},
 	}
-	for i, ph := range []string{"dd/mm/yy", "what you did", "7h30m"} {
+	// Field widths mirror the table columns, so the insert row sits in them.
+	for i, ph := range []string{"dd/mm/yy", "what you did", "h:mm"} {
 		f := textinput.New()
 		f.Prompt = ""
 		f.Placeholder = ph
-		f.Width = []int{10, 40, 8}[i]
+		f.Width = fieldWidth([]int{dateWidth, m.descWidth(), hoursWidth}[i])
 		m.fields[i] = f
 	}
 	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, store.Load)
+	return tea.Batch(textinput.Blink, store.Load, store.LoadKey())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// The query field fills the box: total width minus caret, borders and the
+		// progress cluster on the right.
+		if w := msg.Width - 46; w > 24 {
+			m.search.Width = w
+		}
+		m.fields[fieldDesc].Width = fieldWidth(m.descWidth())
 		return m, nil
 
 	case store.LoadedMsg:
@@ -123,6 +158,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case store.SavedMsg:
 		m.err = msg.Err
 		return m, nil
+
+	case store.KeyMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		if msg.Key == "" {
+			return m.askKey("Paste your Odoo API key to fetch your tasks."), textinput.Blink
+		}
+		m.key = msg.Key
+		return m.startSync()
+
+	case store.KeySavedMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.status = "key encrypted into pass: " + store.PassName()
+		return m, nil
+
+	case api.TasksMsg:
+		m.syncing = false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized), errors.Is(msg.Err, api.ErrNoKey):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.err = msg.Err
+			m.status = "offline — showing the tasks on disk"
+			return m, nil
+		}
+		m.tasks = store.Merge(m.tasks, msg.Tasks)
+		m.err = nil
+		m.status = fmt.Sprintf("synced %d tasks from %s", len(msg.Tasks), api.BaseURL())
+		m.clampCursor()
+		m.clampRow()
+		return m, store.Save(m.tasks)
+
+	case api.DayHoursMsg:
+		if msg.Err == nil && msg.Date == parse.Today() {
+			m.erpToday = msg.Minutes
+		}
+		if msg.UserEmail != "" {
+			m.login = msg.UserEmail
+		}
+		return m, nil
+
+	case api.EntriesMsg:
+		m.syncing = false
+		i := indexOfTask(m.tasks, msg.TaskID)
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.status = "timesheet lines unavailable: " + msg.Err.Error()
+			return m, nil
+		case i < 0:
+			return m, nil
+		}
+		// Odoo owns its lines, but entries typed here are not in the ERP yet and
+		// must survive the pull.
+		before := len(m.tasks[i].Rows)
+		m.tasks[i].Rows = store.MergeRows(m.tasks[i].Rows, msg.Rows)
+		m.pulled[msg.TaskID] = true
+		m.status = fmt.Sprintf("%d lines from Odoo, %d rows total (was %d)",
+			len(msg.Rows), len(m.tasks[i].Rows), before)
+		m.clampRow()
+		return m, store.Save(m.tasks)
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -141,6 +245,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateJump(msg)
 		case ModeConfirm:
 			return m.updateConfirm(msg)
+		case ModeAuth:
+			return m.updateAuth(msg)
 		}
 	}
 	return m, nil
@@ -179,12 +285,26 @@ func (m Model) currentIndex() int {
 	if !ok {
 		return -1
 	}
-	for i := range m.tasks {
-		if m.tasks[i].ID == t.ID {
+	return indexOfTask(m.tasks, t.ID)
+}
+
+func indexOfTask(tasks []store.Task, id int) int {
+	for i := range tasks {
+		if tasks[i].ID == id {
 			return i
 		}
 	}
 	return -1
+}
+
+// pullEntries reads a task's timesheet lines from Odoo, once per task per sync.
+func (m Model) pullEntries(taskID int) (Model, tea.Cmd) {
+	if m.pulled[taskID] || m.key == "" || api.DB() == "" {
+		return m, nil
+	}
+	m.pulled[taskID] = true // one attempt per task, success or not
+	m.syncing = true
+	return m, api.FetchEntries(m.key, m.login, taskID)
 }
 
 func (m *Model) clampCursor() {
@@ -234,6 +354,69 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// --- api key -----------------------------------------------------------------
+
+// askKey opens the key prompt and says why it opened.
+func (m Model) askKey(reason string) Model {
+	m.mode = ModeAuth
+	m.status = reason
+	m.syncing = false
+	m.auth.SetValue("")
+	m.auth.Focus()
+	m.search.Blur()
+	m.jump.Blur()
+	return m
+}
+
+func (m Model) startSync() (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		return m.askKey("An API key is needed to fetch your tasks."), textinput.Blink
+	}
+	m.syncing = true
+	m.status = "syncing with " + api.BaseURL() + "…"
+	m.err = nil
+
+	cmds := []tea.Cmd{api.FetchTasks(m.key), api.FetchDayHours(m.key, parse.Today())}
+	// A refresh re-reads the lines of whatever is open.
+	m.pulled = map[int]bool{}
+	for id := range m.expanded {
+		var cmd tea.Cmd
+		if m, cmd = m.pullEntries(id); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m Model) updateAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Cancel):
+		m.auth.SetValue("")
+		m.auth.Blur()
+		m.mode, m.status = ModeSearch, "no API key — working offline on "+store.Path()
+		m.search.Focus()
+		return m, textinput.Blink
+
+	case key.Matches(msg, keys.Accept):
+		v := strings.TrimSpace(m.auth.Value())
+		if v == "" {
+			return m, nil
+		}
+		m.key = v
+		m.auth.SetValue("") // keep one copy of the key, in m.key
+		m.auth.Blur()
+		m.mode = ModeSearch
+		m.search.Focus()
+		m.syncing = true
+		m.status = "syncing with " + api.BaseURL() + "…"
+		return m, tea.Batch(store.SaveKey(m.key), api.FetchTasks(m.key), textinput.Blink)
+	}
+
+	var cmd tea.Cmd
+	m.auth, cmd = m.auth.Update(msg)
+	return m, cmd
+}
+
 // --- list --------------------------------------------------------------------
 
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -252,10 +435,12 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clampCursor()
 
 	case key.Matches(msg, keys.Expand):
-		if ok && len(t.Rows) > 0 {
+		// An empty task still opens: the table is where `a` adds the first entry.
+		if ok {
 			m.expanded[t.ID] = true
 			m.row = 0
 			m.mode = ModeTable
+			return m.pullEntries(t.ID) // its lines live in Odoo, not on disk
 		}
 
 	case key.Matches(msg, keys.Collapse):
@@ -266,10 +451,17 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Jump):
 		if ok && len(t.Rows) > 0 {
 			m.expanded[t.ID] = true
+			m.row = 0
 			m.jump.SetValue("")
 			m.jump.Focus()
 			m.mode = ModeJump
 		}
+
+	case key.Matches(msg, keys.Refresh):
+		return m.startSync()
+
+	case key.Matches(msg, keys.SetKey):
+		return m.askKey("Replace the API key (current: " + store.MaskKey(m.key) + ")."), textinput.Blink
 
 	case key.Matches(msg, keys.Search), key.Matches(msg, keys.Back):
 		m.mode = ModeSearch
@@ -475,7 +667,13 @@ func (m Model) commit() (tea.Model, tea.Cmd) {
 		m.mode = ModeTable
 		return m, nil
 	}
-	e := store.Entry{Date: date, Desc: strings.TrimSpace(m.fields[fieldDesc].Value()), Minutes: min}
+	// Local: the ERP has no copy of this, or no copy that matches.
+	e := store.Entry{
+		Date:    date,
+		Desc:    strings.TrimSpace(m.fields[fieldDesc].Value()),
+		Minutes: min,
+		Local:   true,
+	}
 
 	if m.kind == insertNew {
 		e.ID = store.NextEntryID(m.tasks[i])
@@ -604,6 +802,8 @@ func modeLabel(m Mode) string {
 		return "-- JUMP --"
 	case ModeConfirm:
 		return "-- CONFIRM --"
+	case ModeAuth:
+		return "-- API KEY --"
 	}
 	return ""
 }

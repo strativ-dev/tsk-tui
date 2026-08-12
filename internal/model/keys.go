@@ -12,12 +12,13 @@ type keyMap struct {
 	Next, Prev, ClearField, Accept key.Binding
 	Cancel, Yes, No                key.Binding
 	ClearQuery, Focus              key.Binding
+	Refresh, SetKey                key.Binding
 }
 
 var keys = keyMap{
 	Down:       key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j", "next")),
 	Up:         key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "prev")),
-	Expand:     key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
+	Expand:     key.NewBinding(key.WithKeys("l", "right", "enter"), key.WithHelp("l/enter", "expand")),
 	Collapse:   key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
 	Jump:       key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "date jump")),
 	Search:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "search")),
@@ -35,6 +36,8 @@ var keys = keyMap{
 	No:         key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n", "no")),
 	ClearQuery: key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear + collapse")),
 	Focus:      key.NewBinding(key.WithKeys("esc", "enter"), key.WithHelp("enter", "task list")),
+	Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "fetch tasks")),
+	SetKey:     key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "api key")),
 }
 
 // help is the footer set for a mode.
@@ -43,7 +46,7 @@ func (k keyMap) help(m Mode) []key.Binding {
 	case ModeSearch:
 		return []key.Binding{k.Focus, k.ClearQuery}
 	case ModeList:
-		return []key.Binding{k.Down, k.Up, k.Expand, k.Collapse, k.Jump, k.Search, k.Quit}
+		return []key.Binding{k.Down, k.Up, k.Expand, k.Collapse, k.Jump, k.Refresh, k.SetKey, k.Search, k.Quit}
 	case ModeTable:
 		return []key.Binding{k.Down, k.Up, k.Edit, k.Add, k.Delete, k.Jump, k.Collapse, k.Back}
 	case ModeInsert:
@@ -52,6 +55,11 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{key.NewBinding(key.WithHelp("0-9 /", "day")), k.Accept, k.Cancel}
 	case ModeConfirm:
 		return []key.Binding{k.Yes, k.No}
+	case ModeAuth:
+		return []key.Binding{
+			key.NewBinding(key.WithHelp("enter", "save key + fetch")),
+			key.NewBinding(key.WithHelp("esc", "work offline")),
+		}
 	}
 	return nil
 }

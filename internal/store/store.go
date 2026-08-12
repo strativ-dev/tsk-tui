@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -26,6 +28,11 @@ type Entry struct {
 	Date    string `json:"date"` // dd/mm/yy
 	Desc    string `json:"desc"`
 	Minutes int    `json:"minutes"`
+	// Local marks an entry the ERP does not have, or has differently: typed with
+	// `a`, or a pulled line edited here. An Odoo pull must not discard these.
+	// App-created entries also carry a negative ID, so they cannot collide with an
+	// account.analytic.line id.
+	Local bool `json:"local,omitempty"`
 }
 
 type LoadedMsg struct {
@@ -44,11 +51,12 @@ func Path() string {
 	return filepath.Join(dir, "tsk", "tasks.json")
 }
 
-// Load is a tea.Cmd. A missing file is not an error — it seeds the sample list.
+// Load is a tea.Cmd. A missing file is not an error — a first run starts empty
+// and fills up from the API.
 func Load() tea.Msg {
 	b, err := os.ReadFile(Path())
 	if errors.Is(err, fs.ErrNotExist) {
-		return LoadedMsg{Tasks: seed()}
+		return LoadedMsg{}
 	}
 	if err != nil {
 		return LoadedMsg{Err: err}
@@ -101,27 +109,74 @@ func MinutesOn(tasks []Task, date string) int {
 	return sum
 }
 
-// NextEntryID is one past the highest entry id in the task.
-func NextEntryID(t Task) int {
-	max := 0
-	for _, r := range t.Rows {
-		if r.ID > max {
-			max = r.ID
+// PendingMinutesOn sums the entries on a date that the ERP has no copy of at all
+// — app-created rows, which carry a negative id. Local *edits* of pulled lines are
+// left out on purpose: the ERP's own day total already counts their original hours,
+// so adding them again would double-count.
+func PendingMinutesOn(tasks []Task, date string) int {
+	sum := 0
+	for _, t := range tasks {
+		for _, r := range t.Rows {
+			if r.Local && r.ID < 0 && r.Date == date {
+				sum += r.Minutes
+			}
 		}
 	}
-	return max + 1
+	return sum
 }
 
-func seed() []Task {
-	today := parse.Today()
-	return []Task{
-		{ID: 1372, Title: "Add hour-log summary API", Tag: "backend", Rows: []Entry{
-			{ID: 2, Date: today, Desc: "Endpoint + serializer", Minutes: 150},
-			{ID: 1, Date: today, Desc: "Model method and tests", Minutes: 195},
-		}},
-		{ID: 1401, Title: "Task TUI keyboard flow", Tag: "ui", Rows: []Entry{
-			{ID: 1, Date: today, Desc: "Search and list modes", Minutes: 60},
-		}},
-		{ID: 1412, Title: "Sprint report export", Tag: "reports", Rows: nil},
+// NextEntryID numbers an entry created in the app. App ids run negative so a
+// pull can tell Odoo's own lines from ours.
+func NextEntryID(t Task) int {
+	low := 0
+	for _, r := range t.Rows {
+		if r.ID < low {
+			low = r.ID
+		}
 	}
+	return low - 1
+}
+
+// MergeRows refreshes the lines Odoo owns without dropping what was typed here:
+// a local edit of a pulled line wins over the pulled copy, and app-created
+// entries are kept alongside. Newest first, as everywhere else.
+func MergeRows(local, remote []Entry) []Entry {
+	edits := make(map[int]Entry, len(local))
+	var added []Entry
+	for _, e := range local {
+		switch {
+		case !e.Local:
+			continue // Odoo's copy is the truth for these
+		case e.ID < 0:
+			added = append(added, e)
+		default:
+			edits[e.ID] = e
+		}
+	}
+
+	out := make([]Entry, 0, len(remote)+len(added))
+	for _, r := range remote {
+		if e, ok := edits[r.ID]; ok {
+			out = append(out, e)
+			continue
+		}
+		out = append(out, r)
+	}
+	out = append(out, added...)
+
+	sort.SliceStable(out, func(i, j int) bool { return after(out[i].Date, out[j].Date) })
+	return out
+}
+
+// after reports whether date a falls later than b; unreadable dates sort last.
+func after(a, b string) bool {
+	ta, errA := time.Parse(parse.DateLayout, a)
+	tb, errB := time.Parse(parse.DateLayout, b)
+	switch {
+	case errA != nil:
+		return false
+	case errB != nil:
+		return true
+	}
+	return ta.After(tb)
 }
