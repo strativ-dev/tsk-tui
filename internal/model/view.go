@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/tasnimAlam/tsk/internal/api"
@@ -39,7 +40,12 @@ func (m Model) View() string {
 	var tail []string
 	switch m.mode {
 	case ModeConfirm:
-		tail = append(tail, strings.Split(theme.Modal.Render(m.cPrompt+"  "+theme.Dim.Render("y / n")), "\n")...)
+		hint := "enter / n"
+		if m.cKind == confirmQuit {
+			hint = "y / n"
+		}
+		tail = append(tail, strings.Split(
+			theme.Modal.Render(m.cPrompt+"  "+theme.Dim.Render(hint)), "\n")...)
 	case ModeAuth:
 		tail = append(tail, strings.Split(m.authModal(), "\n")...)
 	}
@@ -191,9 +197,13 @@ func (m Model) listLines() ([]string, int) {
 	add := func(s string) { lines = append(lines, s) }
 	mark := func() { focus = len(lines) - 1 }
 
+	// A modal opened from the list keeps the task highlighted behind it.
+	listFocus := m.mode == ModeList || m.mode == ModeSearch ||
+		(m.mode == ModeConfirm && m.prev == ModeList)
+
 	for i, t := range tasks {
 		onTask := i == m.cursor
-		focused := onTask && (m.mode == ModeList || m.mode == ModeSearch)
+		focused := onTask && listFocus
 		add(row(m.taskLine(t), focused))
 		if focused {
 			mark()
@@ -205,7 +215,8 @@ func (m Model) listLines() ([]string, int) {
 		}
 
 		add(theme.Blur.Render(m.tableHead()))
-		inTable := onTask && (m.mode == ModeTable || m.mode == ModeJump || m.mode == ModeConfirm)
+		inTable := onTask && !listFocus &&
+			(m.mode == ModeTable || m.mode == ModeJump || m.mode == ModeConfirm)
 		for j, e := range t.Rows {
 			add(row(m.entryLine(e), inTable && j == m.row))
 			if inTable && j == m.row {
@@ -357,8 +368,14 @@ func (m Model) authModal() string {
 }
 
 func (m Model) footer() string {
+	help := keys.help(m.mode)
+	if m.mode == ModeConfirm {
+		// Which key accepts depends on what is being confirmed.
+		help = []key.Binding{m.confirmKeys(), keys.No}
+	}
+
 	parts := []string{theme.Mode.Render(modeLabel(m.mode))}
-	for _, b := range keys.help(m.mode) {
+	for _, b := range help {
 		h := b.Help()
 		parts = append(parts, theme.Mode.Render(h.Key)+theme.Hint.Render(" "+h.Desc))
 	}

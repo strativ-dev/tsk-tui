@@ -43,6 +43,7 @@ type confirmKind int
 const (
 	confirmDeleteRow confirmKind = iota
 	confirmDiscard
+	confirmQuit
 )
 
 // Insert-mode focus positions.
@@ -424,7 +425,17 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, keys.Quit):
-		return m, tea.Quit
+		// q is one key away from every other list key, so it asks first. ctrl+c
+		// still leaves immediately.
+		m.prev, m.mode = ModeList, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+
+	case key.Matches(msg, keys.ClearSearch):
+		m.search.SetValue("")
+		m.mode = ModeSearch
+		m.search.Focus()
+		m.clampCursor() // the unfiltered list is longer than the filtered one
+		return m, textinput.Blink
 
 	case key.Matches(msg, keys.Down):
 		m.cursor++
@@ -758,13 +769,23 @@ func sameNumber(a, b string) bool {
 
 // --- confirm -----------------------------------------------------------------
 
+// confirmKeys is what accepts the open modal. Deleting a row or discarding an
+// entry takes y or enter; quitting takes y alone, so a stray enter cannot end the
+// session.
+func (m Model) confirmKeys() key.Binding {
+	if m.cKind == confirmQuit {
+		return keys.YesOnly
+	}
+	return keys.Yes
+}
+
 func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.No): // checked first: esc is in both sets
 		m.mode = m.prev
 		return m, nil
 
-	case key.Matches(msg, keys.Yes):
+	case key.Matches(msg, m.confirmKeys()):
 		switch m.cKind {
 		case confirmDeleteRow:
 			i := m.currentIndex()
@@ -782,6 +803,9 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.mode = ModeTable
 			return m, nil
+
+		case confirmQuit:
+			return m, tea.Quit
 		}
 	}
 	return m, nil

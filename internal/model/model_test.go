@@ -25,6 +25,22 @@ func runes(s string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []ru
 
 func special(k tea.KeyType) tea.Msg { return tea.KeyMsg{Type: k} }
 
+// sendCmd is send for the cases that care what command came back.
+func sendCmd(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
+	t.Helper()
+	next, cmd := m.Update(msg)
+	return next.(Model), cmd
+}
+
+// quits reports whether a command resolves to tea.Quit.
+func quits(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
+}
+
 // One pass through the whole keyboard flow: search -> list -> table -> insert -> commit.
 func TestAddEntryFlow(t *testing.T) {
 	m := send(t, New(), store.LoadedMsg{Tasks: []store.Task{
@@ -133,6 +149,80 @@ func TestOfflineKeepsLocalTasks(t *testing.T) {
 	}
 	if len(m.tasks) != 1 || m.tasks[0].Title != "local" {
 		t.Errorf("tasks = %+v, want the disk copy kept", m.tasks)
+	}
+}
+
+// ctrl+l from the task list wipes the query and puts the cursor back in the field.
+func TestClearSearchFromList(t *testing.T) {
+	tasks := []store.Task{
+		{ID: 1, Title: "first ui task", Tag: "ui"},
+		{ID: 2, Title: "backend task", Tag: "backend"},
+		{ID: 3, Title: "second ui task", Tag: "ui"},
+	}
+	m := send(t, New(), store.LoadedMsg{Tasks: tasks}, runes("ui"), special(tea.KeyEsc))
+	m = send(t, m, runes("j")) // sit on the second match
+	if len(m.filtered()) != 2 || m.cursor != 1 {
+		t.Fatalf("setup: %d filtered, cursor %d", len(m.filtered()), m.cursor)
+	}
+
+	m = send(t, m, special(tea.KeyCtrlL))
+	if m.search.Value() != "" {
+		t.Errorf("query = %q, want it cleared", m.search.Value())
+	}
+	if m.mode != ModeSearch || !m.search.Focused() {
+		t.Errorf("mode = %v, focused = %v, want ModeSearch and focused", m.mode, m.search.Focused())
+	}
+	if len(m.filtered()) != 3 {
+		t.Errorf("filtered = %d tasks, want all 3 back", len(m.filtered()))
+	}
+	if m.cursor < 0 || m.cursor >= 3 {
+		t.Errorf("cursor = %d, out of range for the widened list", m.cursor)
+	}
+}
+
+// q asks before quitting: enter confirms, n dismisses. ctrl+c still leaves at once.
+func TestQuitConfirm(t *testing.T) {
+	m := send(t, New(), store.LoadedMsg{Tasks: []store.Task{{ID: 1, Title: "task"}}},
+		special(tea.KeyEsc))
+
+	m, cmd := sendCmd(t, m, runes("q"))
+	if quits(cmd) {
+		t.Fatal("q quit immediately, want a confirmation first")
+	}
+	if m.mode != ModeConfirm {
+		t.Fatalf("mode = %v, want ModeConfirm", m.mode)
+	}
+	if !strings.Contains(m.View(), "Quit") {
+		t.Errorf("no quit prompt on screen:\n%s", m.View())
+	}
+
+	// n dismisses, back to the list, still running.
+	back, cmd := sendCmd(t, m, runes("n"))
+	if quits(cmd) {
+		t.Error("n quit the app")
+	}
+	if back.mode != ModeList {
+		t.Errorf("mode after n = %v, want ModeList", back.mode)
+	}
+
+	// y confirms.
+	if _, cmd := sendCmd(t, m, runes("y")); !quits(cmd) {
+		t.Error("y on the quit prompt did not quit")
+	}
+	// enter must not: quitting should not be an enter-key reflex.
+	still, cmd := sendCmd(t, m, special(tea.KeyEnter))
+	if quits(cmd) {
+		t.Error("enter quit the app, want y only")
+	}
+	if still.mode != ModeConfirm {
+		t.Errorf("mode after enter = %v, want the prompt still open", still.mode)
+	}
+	if !strings.Contains(m.View(), "y / n") {
+		t.Errorf("quit prompt should advertise y, not enter:\n%s", m.View())
+	}
+	// ctrl+c bypasses the prompt entirely.
+	if _, cmd := sendCmd(t, back, special(tea.KeyCtrlC)); !quits(cmd) {
+		t.Error("ctrl+c did not quit immediately")
 	}
 }
 

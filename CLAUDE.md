@@ -76,7 +76,8 @@ List (`ModeList`)
 - `r` — fetch tasks from the API
 - `K` — replace the stored API key (→ `ModeAuth`)
 - `i` / `esc` — focus the search input
-- `q` / `ctrl+c` — quit
+- `ctrl+l` — clear the query **and** focus the search input (does not collapse)
+- `q` — ask before quitting (→ `ModeConfirm`); `ctrl+c` quits at once
 
 Table (`ModeTable`)
 - `j` / `k` — next / previous row
@@ -102,6 +103,9 @@ Jump (`ModeJump`)
 
 Confirm
 - `y` / `enter` — proceed; `n` / `esc` — cancel
+- the **quit** prompt takes `y` only (`keys.YesOnly`, chosen by `Model.confirmKeys`),
+  so a stray `enter` cannot end the session. The footer and the modal hint both
+  render from that same choice.
 
 Auth (`ModeAuth`)
 - typing is echoed as `•` — the key is never rendered

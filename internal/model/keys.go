@@ -10,9 +10,9 @@ type keyMap struct {
 	Jump, Search, Quit             key.Binding
 	Edit, Add, Delete, Back        key.Binding
 	Next, Prev, ClearField, Accept key.Binding
-	Cancel, Yes, No                key.Binding
+	Cancel, Yes, YesOnly, No       key.Binding
 	ClearQuery, Focus              key.Binding
-	Refresh, SetKey                key.Binding
+	Refresh, SetKey, ClearSearch   key.Binding
 }
 
 var keys = keyMap{
@@ -33,11 +33,14 @@ var keys = keyMap{
 	Accept:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "commit")),
 	Cancel:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 	Yes:        key.NewBinding(key.WithKeys("y", "enter"), key.WithHelp("y", "yes")),
-	No:         key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n", "no")),
-	ClearQuery: key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear + collapse")),
-	Focus:      key.NewBinding(key.WithKeys("esc", "enter"), key.WithHelp("enter", "task list")),
-	Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "fetch tasks")),
-	SetKey:     key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "api key")),
+	// Quitting is not something enter should do by reflex, so it wants the letter.
+	YesOnly:     key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "quit")),
+	No:          key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n", "no")),
+	ClearQuery:  key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear + collapse")),
+	Focus:       key.NewBinding(key.WithKeys("esc", "enter"), key.WithHelp("enter", "task list")),
+	Refresh:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "fetch tasks")),
+	SetKey:      key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "api key")),
+	ClearSearch: key.NewBinding(key.WithKeys("ctrl+l"), key.WithHelp("ctrl+l", "clear + search")),
 }
 
 // help is the footer set for a mode.
@@ -46,7 +49,8 @@ func (k keyMap) help(m Mode) []key.Binding {
 	case ModeSearch:
 		return []key.Binding{k.Focus, k.ClearQuery}
 	case ModeList:
-		return []key.Binding{k.Down, k.Up, k.Expand, k.Collapse, k.Jump, k.Refresh, k.SetKey, k.Search, k.Quit}
+		return []key.Binding{k.Down, k.Up, k.Expand, k.Collapse, k.Jump, k.Refresh, k.SetKey,
+			k.Search, k.ClearSearch, k.Quit}
 	case ModeTable:
 		return []key.Binding{k.Down, k.Up, k.Edit, k.Add, k.Delete, k.Jump, k.Collapse, k.Back}
 	case ModeInsert:
@@ -54,7 +58,7 @@ func (k keyMap) help(m Mode) []key.Binding {
 	case ModeJump:
 		return []key.Binding{key.NewBinding(key.WithHelp("0-9 /", "day")), k.Accept, k.Cancel}
 	case ModeConfirm:
-		return []key.Binding{k.Yes, k.No}
+		return []key.Binding{k.Yes, k.No} // the quit prompt swaps in YesOnly, see confirmKeys
 	case ModeAuth:
 		return []key.Binding{
 			key.NewBinding(key.WithHelp("enter", "save key + fetch")),
