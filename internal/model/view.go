@@ -67,6 +67,13 @@ func (m Model) View() string {
 			theme.Modal.Render(m.cPrompt+"  "+theme.Dim.Render(hint)), "\n")...)
 	case ModeAuth:
 		tail = append(tail, strings.Split(m.authModal(), "\n")...)
+	case ModeJump:
+		// Above the status line rather than inside a task: a jump reaches every task,
+		// so it does not belong to the one under the cursor.
+		tail = append(tail, theme.Blur.Render(
+			theme.Prompt.Render("jump to date ")+m.jump.View()))
+	case ModeDay:
+		tail = append(tail, strings.Split(m.dayModal(), "\n")...)
 	}
 	// Flattened and cut to the width: a server message can arrive with newlines in it,
 	// and a status line that wraps costs the list a row it was not given.
@@ -248,7 +255,10 @@ func (m Model) listLines() ([]string, int) {
 
 	// A modal opened from the list keeps the task highlighted behind it.
 	listFocus := m.mode == ModeList || m.mode == ModeSearch ||
-		(m.mode == ModeConfirm && m.prev == ModeList)
+		(m.mode == ModeConfirm && m.prev == ModeList) ||
+		// The day modal is opened from the list and covers nothing of it, so the task
+		// the cursor was on keeps saying so behind the modal.
+		(m.mode == ModeDay && !m.jumpInTask)
 
 	for i, t := range tasks {
 		onTask := i == m.cursor
@@ -277,7 +287,8 @@ func (m Model) listLines() ([]string, int) {
 		}
 
 		inTable := onTask && !listFocus &&
-			(m.mode == ModeTable || m.mode == ModeJump || m.mode == ModeConfirm)
+			(m.mode == ModeTable || m.mode == ModeJump || m.mode == ModeConfirm ||
+				m.mode == ModeDay)
 		for j, e := range t.Rows {
 			// An edit happens in place: the inputs stand where the row was.
 			if editing && m.kind == insertEdit && j == m.editRow {
@@ -292,10 +303,6 @@ func (m Model) listLines() ([]string, int) {
 		}
 		if len(t.Rows) == 0 && !editing {
 			add(theme.Blur.Render(theme.Dim.Render("    no entries yet — a to add one")))
-		}
-		if m.mode == ModeJump && onTask {
-			add(theme.Blur.Render("    jump to day " + m.jump.View()))
-			mark()
 		}
 		add("")
 	}
@@ -373,10 +380,16 @@ func (m Model) tableHead() string {
 
 func (m Model) entryLine(e store.Entry) string {
 	desc := m.descWidth()
+	date, text := theme.Dim, lipgloss.NewStyle()
+	if m.onJumpDate(e) {
+		// The row a jump was looking for, in any task: the date and what was done on
+		// it both carry the accent, so a marked row reads at a glance while scrolling.
+		date, text = theme.Match, theme.MatchText
+	}
 	// Pad first, style second: fmt counts the bytes of an ANSI escape as width.
 	return cells(
-		theme.Dim.Render(pad(e.Date, dateWidth)),
-		pad(trunc(oneLine(e.Desc), desc), desc),
+		date.Render(pad(e.Date, dateWidth)),
+		text.Render(pad(trunc(oneLine(e.Desc), desc), desc)),
 		theme.Total.Render(pad(parse.FormatHM(e.Minutes), hoursWidth)))
 }
 
@@ -453,6 +466,70 @@ func (m Model) authModal() string {
 		theme.Dim.Render("or export " + store.KeyEnv + " to skip pass"),
 	}
 	return theme.Modal.Render(strings.Join(lines, "\n"))
+}
+
+// dayModal lists what a date jump found: one line per entry, with the task it belongs
+// to and its hours, then the day's total. It answers "where did the day go" without
+// opening a single task, which is the whole point of asking.
+func (m Model) dayModal() string {
+	rows, total := m.dayRows()
+
+	// Nothing wider than the screen, and the description gives up cells first.
+	keyW, hoursW := 0, hoursWidth
+	for _, r := range rows {
+		if w := lipgloss.Width(r.key); w > keyW {
+			keyW = w
+		}
+	}
+	descW := m.cols() - gutter - 8 - keyW - hoursW // 8: borders, padding, two gaps
+	if descW > descCap {
+		descW = descCap
+	}
+
+	head := theme.Title.Render(m.jumpDate) + theme.Dim.Render(
+		fmt.Sprintf("   %s in %d %s", parse.FormatTotal(total), len(rows), plural(len(rows), "entry", "entries")))
+	lines := []string{head}
+	if len(rows) == 0 {
+		lines = append(lines, theme.Dim.Render("nothing logged on this date"))
+	}
+
+	// A day with more entries than this is not a day worth reading in a modal; the
+	// count in the head still tells the truth about what was left out.
+	const most = 12
+	for i, r := range rows {
+		if i == most {
+			lines = append(lines, theme.Dim.Render(fmt.Sprintf("… %d more", len(rows)-most)))
+			break
+		}
+		desc := trunc(oneLine(r.desc), descW)
+		if desc == "" {
+			desc = "—"
+		}
+		hours := parse.FormatHM(r.mins)
+		if r.local {
+			hours += "*" // typed here, not in the ERP yet
+		}
+		lines = append(lines, theme.Dim.Render(pad(r.key, keyW))+"  "+
+			pad(desc, descW)+"  "+theme.Total.Render(padLeftCell(hours, hoursW+1)))
+	}
+	return theme.Modal.Render(strings.Join(lines, "\n"))
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// padLeftCell right-aligns in w cells, measuring with lipgloss like pad does. Hours
+// are the one column in the modal that reads better against its right edge, since
+// nothing follows them.
+func padLeftCell(s string, w int) string {
+	if d := w - lipgloss.Width(s); d > 0 {
+		return strings.Repeat(" ", d) + s
+	}
+	return s
 }
 
 func (m Model) footer() string {

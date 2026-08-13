@@ -24,6 +24,7 @@ const (
 	ModeTable
 	ModeInsert
 	ModeJump
+	ModeDay
 	ModeConfirm
 	ModeAuth
 )
@@ -84,6 +85,20 @@ type Model struct {
 	cursor   int          // index into filtered()
 	row      int          // row index inside the focused task
 	expanded map[int]bool // task ID -> expanded
+
+	// jumpDate is the date a jump from the list landed on, dd/mm/yy: one day, because
+	// that is what the day modal reports on. jumpQuery is the other kind — the raw
+	// query of a jump inside a task, matched part by part, so /12 finds the 12th of
+	// any month among rows that are not all from this one. One or neither is set.
+	//
+	// Both outlive the prompt: the rows they match stay marked until the query is
+	// cleared or another jump replaces it.
+	jumpDate  string
+	jumpQuery string
+	// jumpInTask records where the prompt was opened. Inside a task's rows a jump is
+	// a move — it walks the cursor to that date — while from the list there is no row
+	// to move to, so it answers with the day modal instead.
+	jumpInTask bool
 
 	focus        int // insert-mode field
 	kind         insertKind
@@ -301,6 +316,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pulled[msg.TaskID] = true
 		m.status = fmt.Sprintf("%d lines from Odoo, %d rows total (was %d)",
 			len(msg.Rows), len(m.tasks[i].Rows), before)
+
+		// A jump reads the tasks it has never seen, and this is one of the answers. The
+		// modal is built from the tasks on every render, so these rows join it as they
+		// land; the count in the status line has to keep up.
+		if m.jumpDate != "" {
+			m.status = jumpStatus(m.jumpDate, m.jumpHits(), len(m.pulling))
+		}
 		m.clampRow()
 		return m, store.Save(m.tasks)
 
@@ -319,6 +341,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInsert(msg)
 		case ModeJump:
 			return m.updateJump(msg)
+		case ModeDay:
+			return m.updateDay(msg)
 		case ModeConfirm:
 			return m.updateConfirm(msg)
 		case ModeAuth:
@@ -436,6 +460,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.ClearQuery):
 		m.search.SetValue("")
 		m.expanded = map[int]bool{}
+		m.jumpDate, m.jumpQuery, m.status = "", "", "" // a clean search drops the marks
 		m.clampCursor()
 		return m, nil
 		// ClearSearch is ctrl+u too, so ClearQuery above already handles it here:
@@ -531,6 +556,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.ClearSearch):
 		m.search.SetValue("")
+		m.jumpDate, m.jumpQuery, m.status = "", "", ""
 		m.mode = ModeSearch
 		m.search.Focus()
 		m.clampCursor() // the unfiltered list is longer than the filtered one
@@ -574,13 +600,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keys.Jump):
-		if ok && len(t.Rows) > 0 {
-			m.expanded[t.ID] = true
-			m.row = 0
-			m.jump.SetValue("")
-			m.jump.Focus()
-			m.mode = ModeJump
-		}
+		// From the list a jump reaches every task, so it needs neither this task open
+		// nor any rows in it to be worth opening.
+		m.jumpInTask = false
+		m.jump.SetValue("")
+		m.jump.Focus()
+		m.mode = ModeJump
+		return m, textinput.Blink
 
 	case key.Matches(msg, keys.Refresh):
 		return m.startSync()
@@ -655,6 +681,9 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, keys.Jump):
+		// Inside the rows a jump is a move, not a report: these rows are on screen, so
+		// walk the cursor to the date instead of covering them with a modal.
+		m.jumpInTask = true
 		m.jump.SetValue("")
 		m.jump.Focus()
 		m.mode = ModeJump
@@ -678,6 +707,7 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// clean search" wherever it is pressed.
 		delete(m.expanded, t.ID)
 		m.search.SetValue("")
+		m.jumpDate, m.jumpQuery, m.status = "", "", ""
 		m.mode = ModeSearch
 		m.search.Focus()
 		m.clampCursor()
@@ -882,18 +912,21 @@ func (m Model) updateJump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Cancel):
 		m.jump.Blur()
-		m.mode = ModeTable
+		m.err = nil
+		m.mode = m.jumpReturn()
 		return m, nil
 
 	case key.Matches(msg, keys.Accept):
-		if t, ok := m.current(); ok {
-			if i := findDay(t.Rows, m.jump.Value()); i >= 0 {
-				m.row = i
-			}
-		}
 		m.jump.Blur()
-		m.mode = ModeTable
-		return m, nil
+		m.err = nil
+		if strings.TrimSpace(m.jump.Value()) == "" {
+			// Enter on an empty prompt is how a standing jump is called off.
+			m.jumpDate, m.jumpQuery = "", ""
+			m.status = ""
+			m.mode = m.jumpReturn()
+			return m, nil
+		}
+		return m.applyJump(m.jump.Value())
 	}
 
 	if msg.Type == tea.KeyRunes { // digits and / only
@@ -908,33 +941,156 @@ func (m Model) updateJump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// findDay returns the first row whose day (and month, if typed) matches.
-func findDay(rows []store.Entry, q string) int {
-	want := strings.Split(strings.TrimSpace(q), "/")
-	if want[0] == "" {
-		return -1
+// jumpReturn is where the prompt hands focus back: into the rows if the task under
+// the cursor is open, otherwise the task list.
+func (m Model) jumpReturn() Mode {
+	if t, ok := m.current(); ok && m.expanded[t.ID] {
+		return ModeTable
 	}
-	for i, r := range rows {
-		got := strings.Split(r.Date, "/")
-		match := true
-		for j := range want {
-			if want[j] == "" {
-				continue
-			}
-			if j >= len(got) || !sameNumber(want[j], got[j]) {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
+	return ModeList
 }
 
-func sameNumber(a, b string) bool {
-	return strings.TrimLeft(a, "0") == strings.TrimLeft(b, "0")
+// applyJump does one of two things with what was typed, depending on where the prompt
+// was opened. Inside a task's rows it is a move: the cursor walks to the first row the
+// query matches, part by part, and the rows stay on screen. From the list there is no
+// row to move to, so it resolves one date and opens the day modal — what was logged on
+// it across every task, without opening any of them.
+func (m Model) applyJump(q string) (tea.Model, tea.Cmd) {
+	m.jumpDate, m.jumpQuery = "", ""
+
+	if m.jumpInTask {
+		// Matched part by part rather than resolved against today: these rows span
+		// months, so /12 has to mean the 12th of whichever month it turns up in.
+		m.jumpQuery = strings.TrimSpace(q)
+		m.mode = ModeTable
+		t, ok := m.current()
+		if !ok {
+			return m, nil
+		}
+		hits, first := 0, -1
+		for j, e := range t.Rows {
+			if !m.onJumpDate(e) {
+				continue
+			}
+			hits++
+			if first < 0 {
+				first = j
+			}
+		}
+		if first >= 0 {
+			m.row = first
+		}
+		m.status = fmt.Sprintf("%s — %d %s in this task", m.jumpQuery, hits,
+			plural(hits, "entry", "entries"))
+		return m, nil
+	}
+
+	// The day modal is about one day, so here the grammar is the date field's: 12 is
+	// the 12th of this month, 12/07 the 12th of July, 12/07/26 exactly that.
+	date, err := parse.Date(q, parse.Today())
+	if err != nil {
+		m.err = err
+		m.jump.Focus() // stay on the prompt; the typed date is not a date
+		return m, textinput.Blink
+	}
+	m.jumpDate = date
+	m.mode = ModeDay
+
+	// Read the tasks this jump cannot see yet. A pull returns a task's whole history,
+	// so one with rows already on disk has nothing to add; one with none has never
+	// been opened, and its hours would silently miss the day.
+	var cmds []tea.Cmd
+	unread := 0
+	for _, t := range m.filtered() {
+		if len(t.Rows) > 0 || m.pulled[t.ID] {
+			continue
+		}
+		var cmd tea.Cmd
+		if m, cmd = m.pullEntries(t.ID); cmd != nil {
+			cmds = append(cmds, cmd)
+			unread++
+		}
+	}
+
+	m.status = jumpStatus(date, m.jumpHits(), unread)
+	return m, tea.Batch(cmds...)
+}
+
+// updateDay is the day modal: it only closes. Nothing in it destroys anything, so esc
+// needs no confirmation.
+func (m Model) updateDay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Accept),
+		key.Matches(msg, keys.Collapse):
+		m.mode = m.jumpReturn()
+	}
+	return m, nil
+}
+
+// dayRow is one line of the day modal: which task, what was done, how long.
+type dayRow struct {
+	key   string
+	desc  string
+	mins  int
+	local bool // typed here and not in the ERP yet
+}
+
+// dayRows is what was logged on jumpDate, newest task order, derived on every render
+// so lines that arrive from a pull join the modal on their own.
+func (m Model) dayRows() (rows []dayRow, total int) {
+	for _, t := range m.filtered() {
+		name := t.Key
+		if name == "" {
+			name = t.Title
+		}
+		for _, e := range t.Rows {
+			if !m.onJumpDate(e) {
+				continue
+			}
+			rows = append(rows, dayRow{key: name, desc: e.Desc, mins: e.Minutes, local: e.Local})
+			total += e.Minutes
+		}
+	}
+	return rows, total
+}
+
+func jumpStatus(date string, hits, unread int) string {
+	s := fmt.Sprintf("%s — no entries", date)
+	if hits == 1 {
+		s = fmt.Sprintf("%s — 1 entry", date)
+	} else if hits > 1 {
+		s = fmt.Sprintf("%s — %d entries", date, hits)
+	}
+	if unread > 0 {
+		s += fmt.Sprintf(", reading %d more tasks…", unread)
+	}
+	return s
+}
+
+// onJumpDate reports whether a row is one the standing jump marked: one exact day for
+// a jump from the list, or every date the query matches for one inside a task.
+func (m Model) onJumpDate(e store.Entry) bool {
+	switch {
+	case m.jumpDate != "":
+		return e.Date == m.jumpDate
+	case m.jumpQuery != "":
+		return parse.DateMatches(e.Date, m.jumpQuery)
+	}
+	return false
+}
+
+// jumpHits counts the marked rows across the list, derived rather than kept, since
+// pulls and edits both change it.
+func (m Model) jumpHits() int {
+	n := 0
+	for _, t := range m.filtered() {
+		for _, e := range t.Rows {
+			if m.onJumpDate(e) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // --- confirm -----------------------------------------------------------------
@@ -1002,6 +1158,8 @@ func modeLabel(m Mode) string {
 		return "-- INSERT --"
 	case ModeJump:
 		return "-- JUMP --"
+	case ModeDay:
+		return "-- DAY --"
 	case ModeConfirm:
 		return "-- CONFIRM --"
 	case ModeAuth:

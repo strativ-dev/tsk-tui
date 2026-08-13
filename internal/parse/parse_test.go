@@ -91,3 +91,33 @@ func TestDate(t *testing.T) {
 		}
 	}
 }
+
+// DateMatches compares only what was typed: a jump inside a task looks at rows from
+// several months, so "12" cannot mean "the 12th of this month".
+func TestDateMatches(t *testing.T) {
+	cases := []struct {
+		date, q string
+		want    bool
+	}{
+		{"12/08/26", "12", true},
+		{"12/07/26", "12", true}, // any month, which is the point
+		{"12/07/25", "12", true}, // any year too
+		{"13/08/26", "12", false},
+		{"12/07/26", "12/7", true},
+		{"12/07/26", "12/07", true}, // a leading zero is the same month
+		{"12/08/26", "12/7", false},
+		{"12/07/26", "12/7/26", true},
+		{"12/07/25", "12/7/26", false},
+		{"12/07/26", "12//26", true}, // unspecified middle part matches anything
+		{"12/08/26", "", false},      // nothing typed matches nothing
+		{"12/08/26", "  ", false},
+		{"12/08/26", "1", false}, // 1 is not 12
+		{"", "12", false},
+		{"12/08/26", "x", false},
+	}
+	for _, c := range cases {
+		if got := DateMatches(c.date, c.q); got != c.want {
+			t.Errorf("DateMatches(%q, %q) = %v, want %v", c.date, c.q, got, c.want)
+		}
+	}
+}

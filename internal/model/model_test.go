@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/parse"
@@ -567,25 +569,236 @@ func TestOdooPullKeepsLocalRows(t *testing.T) {
 	}
 }
 
-func TestJumpToDay(t *testing.T) {
-	rows := []store.Entry{
-		{Date: "12/08/26"},
-		{Date: "09/08/26"},
-		{Date: "09/07/26"},
+// jumpModel is three tasks whose rows straddle two months, all of them collapsed.
+func jumpModel(t *testing.T) Model {
+	t.Helper()
+	tasks := []store.Task{
+		{ID: 1, Key: "AI-1", Title: "one", Rows: []store.Entry{
+			{ID: 11, Date: "13/08/26", Desc: "later that month", Minutes: 60},
+			{ID: 12, Date: "12/07/26", Desc: "july twelfth", Minutes: 90},
+		}},
+		{ID: 2, Key: "AI-2", Title: "two", Rows: []store.Entry{
+			{ID: 21, Date: "12/08/26", Desc: "standup", Minutes: 30},
+		}},
+		{ID: 3, Key: "AI-3", Title: "three", Rows: []store.Entry{
+			{ID: 31, Date: "12/08/26", Desc: "code review", Minutes: 45},
+			{ID: 32, Date: "12/07/26", Desc: "july again", Minutes: 15},
+		}},
 	}
-	cases := []struct {
-		q    string
-		want int
-	}{
-		{"12", 0},
-		{"9", 1},
-		{"9/7", 2},
-		{"31", -1},
-		{"", -1},
-	}
-	for _, c := range cases {
-		if got := findDay(rows, c.q); got != c.want {
-			t.Errorf("findDay(%q) = %d, want %d", c.q, got, c.want)
+	return send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 40},
+		store.LoadedMsg{Tasks: tasks})
+}
+
+// lineWith is the rendered line carrying needle.
+func lineWith(t *testing.T, view, needle string) string {
+	t.Helper()
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, needle) {
+			return l
 		}
+	}
+	t.Fatalf("%q is not on screen:\n%s", needle, view)
+	return ""
+}
+
+// From the list, /12 is the 12th of the current month and answers with the day modal:
+// every entry logged on it, in whatever task, without opening any of them.
+func TestJumpFromListListsTheDay(t *testing.T) {
+	if parse.Today() != "13/08/26" {
+		t.Skip("the day-only grammar resolves against today; fixture assumes 13/08/26")
+	}
+	m := send(t, jumpModel(t), runes("/"), runes("12"), special(tea.KeyEnter))
+
+	if m.jumpDate != "12/08/26" {
+		t.Fatalf("jumpDate = %q, want 12/08/26 — the month and year come from today", m.jumpDate)
+	}
+	if m.mode != ModeDay {
+		t.Fatalf("mode = %v, want the day modal", m.mode)
+	}
+	// Nothing in the list moved or opened: the modal is the answer.
+	if len(m.expanded) != 0 {
+		t.Errorf("expanded = %v, want the tasks left shut", m.expanded)
+	}
+
+	rows, total := m.dayRows()
+	if len(rows) != 2 || total != 75 {
+		t.Fatalf("dayRows = %+v, total = %d, want 2 rows and 75 minutes", rows, total)
+	}
+	view := m.View()
+	for _, want := range []string{"12/08/26", "1h15m in 2 entries", "AI-2", "standup",
+		"0:30", "AI-3", "code review", "0:45", "esc close"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the day modal is missing %q:\n%s", want, view)
+		}
+	}
+	// Only that date: the July rows and the 13th stay out of it.
+	for _, unwanted := range []string{"july twelfth", "july again", "later that month"} {
+		if strings.Contains(view, unwanted) {
+			t.Errorf("the modal lists %q, which is not on 12/08/26:\n%s", unwanted, view)
+		}
+	}
+
+	// esc closes it, with no confirmation in the way.
+	closed := send(t, m, special(tea.KeyEsc))
+	if closed.mode != ModeList {
+		t.Errorf("mode = %v after esc, want the list", closed.mode)
+	}
+	if strings.Contains(closed.View(), "esc close") {
+		t.Errorf("the modal is still up after esc:\n%s", closed.View())
+	}
+}
+
+// Inside a task, /12 is the 12th of whatever month it turns up in. The rows in front
+// of you span months, so resolving the day against today would skip most of them.
+func TestJumpInsideATaskIgnoresMonthAndYear(t *testing.T) {
+	if parse.Today() != "13/08/26" {
+		t.Skip("fixture assumes today is 13/08/26, in a month with no 12th logged here")
+	}
+	// Task one holds 13/08/26 and 12/07/26 — nothing on the 12th of this month.
+	m := send(t, jumpModel(t), runes("l"), runes("/"), runes("12"), special(tea.KeyEnter))
+
+	if m.mode != ModeTable {
+		t.Fatalf("mode = %v, want the rows", m.mode)
+	}
+	if m.jumpQuery != "12" || m.jumpDate != "" {
+		t.Errorf("jumpQuery = %q, jumpDate = %q, want the raw query and no resolved date",
+			m.jumpQuery, m.jumpDate)
+	}
+	if m.row != 1 {
+		t.Errorf("row = %d, want 1 — the July 12th row, found by day alone", m.row)
+	}
+	if !strings.Contains(m.status, "12 — 1 entry in this task") {
+		t.Errorf("status = %q", m.status)
+	}
+	// Every 12th is marked, in any month and any year; the 13th is not.
+	for _, e := range []store.Entry{{Date: "12/07/26"}, {Date: "12/08/26"}, {Date: "12/01/25"}} {
+		if !m.onJumpDate(e) {
+			t.Errorf("%s is not marked by /12", e.Date)
+		}
+	}
+	if m.onJumpDate(store.Entry{Date: "13/08/26"}) {
+		t.Error("13/08/26 is marked by /12")
+	}
+}
+
+// Inside a task's rows the key is a move, not a report: the rows are already on
+// screen, so the cursor walks to the date and no modal covers them.
+func TestJumpInsideATaskMovesTheCursor(t *testing.T) {
+	m := send(t, jumpModel(t), runes("l")) // open task one, cursor on its first row
+	m = send(t, m, runes("/"), runes("12/07/26"), special(tea.KeyEnter))
+
+	if m.mode != ModeTable {
+		t.Fatalf("mode = %v, want the rows, not a modal", m.mode)
+	}
+	if m.row != 1 {
+		t.Errorf("row = %d, want 1 — the july row of this task", m.row)
+	}
+	if !strings.Contains(m.status, "12/07/26 — 1 entry in this task") {
+		t.Errorf("status = %q", m.status)
+	}
+	if v := m.View(); strings.Contains(v, "esc close") {
+		t.Errorf("a modal opened over the rows:\n%s", v)
+	}
+
+	// The marks still stand, so the row it walked to reads as the match.
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+	const accent = "255;192;0"
+	if l := lineWith(t, m.View(), "july twelfth"); !strings.Contains(l, accent) {
+		t.Errorf("the row jumped to is not highlighted:\n%s", l)
+	}
+	if l := lineWith(t, m.View(), "later that month"); strings.Contains(l, accent) {
+		t.Errorf("a row on another date is highlighted:\n%s", l)
+	}
+}
+
+// A date nothing was logged on says so instead of looking like a broken key.
+func TestJumpWithNoMatch(t *testing.T) {
+	m := send(t, jumpModel(t), runes("/"), runes("1/1/20"), special(tea.KeyEnter))
+	if !strings.Contains(m.status, "01/01/20 — no entries") {
+		t.Errorf("status = %q", m.status)
+	}
+	if len(m.expanded) != 0 {
+		t.Errorf("expanded = %v, want nothing opened", m.expanded)
+	}
+	if !strings.Contains(m.View(), "nothing logged on this date") {
+		t.Errorf("the modal does not say the day is empty:\n%s", m.View())
+	}
+}
+
+// An impossible date keeps the prompt open rather than silently doing nothing.
+func TestJumpRejectsImpossibleDate(t *testing.T) {
+	m := send(t, jumpModel(t), runes("/"), runes("31/02"), special(tea.KeyEnter))
+	if m.mode != ModeJump || m.err == nil {
+		t.Errorf("mode = %v, err = %v, want the prompt still open with an error", m.mode, m.err)
+	}
+	if m.jumpDate != "" {
+		t.Errorf("jumpDate = %q, want it untouched", m.jumpDate)
+	}
+}
+
+// A jump has to read the tasks it has never opened, or their hours quietly miss the
+// search — Odoo holds the lines, and a task with none on disk was never pulled.
+func TestJumpReadsUnopenedTasks(t *testing.T) {
+	tasks := []store.Task{
+		{ID: 1, Key: "AI-1", Title: "read already", Rows: []store.Entry{
+			{ID: 11, Date: "12/07/26", Desc: "july", Minutes: 60},
+		}},
+		{ID: 2, Key: "AI-2", Title: "never opened"}, // no rows: Odoo may have some
+	}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 40},
+		store.LoadedMsg{Tasks: tasks}, store.KeyMsg{Key: "k", DB: "db"})
+
+	m = send(t, m, runes("/"), runes("12/07/26"))
+	m, cmd := sendCmd(t, m, special(tea.KeyEnter))
+	if cmd == nil {
+		t.Fatal("the jump asked Odoo for nothing — task 2 was never read")
+	}
+	if !m.pulling[2] {
+		t.Errorf("pulling = %v, want the unopened task in flight", m.pulling)
+	}
+	if m.pulling[1] {
+		t.Error("the task that already has rows was re-read; a pull returns its whole history")
+	}
+	if !strings.Contains(m.status, "reading 1 more") {
+		t.Errorf("status = %q, want it to say a task is still being read", m.status)
+	}
+
+	// The answer joins the open modal, since the modal is built from the tasks on
+	// every render rather than captured when it opened.
+	m = send(t, m, api.EntriesMsg{TaskID: 2, Rows: []store.Entry{
+		{ID: 21, Date: "12/07/26", Desc: "arrived late", Minutes: 30},
+	}})
+	rows, total := m.dayRows()
+	if len(rows) != 2 || total != 90 {
+		t.Errorf("dayRows = %+v, total = %d, want the pulled row to have joined", rows, total)
+	}
+	if !strings.Contains(m.View(), "arrived late") {
+		t.Errorf("the pulled row is not in the modal:\n%s", m.View())
+	}
+	if !strings.Contains(m.status, "12/07/26 — 2 entries") {
+		t.Errorf("status = %q, want the count to have caught up", m.status)
+	}
+}
+
+// The marks are a standing filter, so there has to be a way to drop them: an empty
+// prompt, or the ctrl+u that already means "back to a clean search".
+func TestJumpCleared(t *testing.T) {
+	// esc out of the modal first: it is up when the jump lands, and it only closes.
+	m := send(t, jumpModel(t), runes("/"), runes("12/07/26"), special(tea.KeyEnter),
+		special(tea.KeyEsc))
+
+	empty := send(t, m, runes("/"), special(tea.KeyEnter))
+	if empty.jumpDate != "" || empty.status != "" {
+		t.Errorf("jumpDate = %q, status = %q after an empty prompt", empty.jumpDate, empty.status)
+	}
+	if empty.mode == ModeDay {
+		t.Error("an empty prompt opened the modal instead of clearing the marks")
+	}
+
+	cleared := send(t, m, special(tea.KeyCtrlU))
+	if cleared.jumpDate != "" {
+		t.Errorf("jumpDate = %q after ctrl+u", cleared.jumpDate)
 	}
 }

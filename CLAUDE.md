@@ -61,7 +61,8 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeList` | task list (**default at launch**) |
 | `ModeTable` | rows of an expanded task |
 | `ModeInsert` | add/edit entry inputs |
-| `ModeJump` | `/dd` date prompt inside a table |
+| `ModeJump` | `/dd` date prompt |
+| `ModeDay` | modal listing a date's entries across all tasks; `esc` closes |
 | `ModeConfirm` | modal; swallows everything except `y` / `n` / `esc` |
 | `ModeAuth` | API key prompt; opens when no key is stored or a fetch returns 401 |
 
@@ -83,7 +84,8 @@ List (`ModeList`) — the mode the app starts in
 - `l` — expand task, focus its first row (→ `ModeTable`); a task with no
   entries still opens, so `a` has somewhere to add the first one
 - `h` — collapse task
-- `/` — expand the task and open the date jump (→ `ModeJump`)
+- `/` — date jump (→ `ModeJump`); from here it lists the whole day in a modal
+  (→ `ModeDay`), so it needs neither this task open nor any rows in it
 - `r` — fetch tasks from the API
 - `K` — replace the stored API key (→ `ModeAuth`)
 - `i` / `esc` — focus the search input
@@ -98,7 +100,8 @@ Table (`ModeTable`)
 - `d` — delete the focused row (→ `ModeConfirm`). The modal names it —
   `Delete this entry "Retry backoff" of 11/08/26?` — since an unlink cannot be undone;
   a row Odoo returned with no name reads `Delete the entry of 11/08/26?`
-- `/` — date jump prompt (→ `ModeJump`)
+- `/` — date jump prompt (→ `ModeJump`); inside a task it moves the cursor rather than
+  opening the day modal, and matches part by part — `/12` is the 12th of any month
 - `h` — collapse the task, focus the task line (→ `ModeList`)
 - `esc` — focus the task line without collapsing
 - `i` — **collapse the task** and focus the search input
@@ -113,8 +116,38 @@ Insert (`ModeInsert`)
 - `esc` — **edit**: cancel immediately, no modal. **New entry**: → `ModeConfirm`
 
 Jump (`ModeJump`)
-- digits and `/` build the query; `enter` jumps to the first row whose day matches
-- `esc` — cancel, back to `ModeTable`
+- digits and `/` build the date. **`enter` does one of two things, depending on where
+  `/` was pressed** (`Model.jumpInTask`) — the two situations want different answers,
+  and read the same input differently:
+  - **Inside a task's rows** (`ModeTable`) it is a **move**, and the query is matched
+    **part by part** (`parse.DateMatches`, `Model.jumpQuery`): `12` is the 12th of
+    **any month in any year**, `12/7` any 12th of July, `12/7/26` that date alone. A
+    task's rows span months, so resolving `12` against today would skip most of them.
+    The cursor walks to the first row that matches; those rows are already on screen,
+    so covering them with a modal would hide the thing you asked about. No tasks are
+    pulled — an open task's lines are already read
+  - **From the list** it is a **report on one day**, so the query is **resolved** with
+    the insert field's grammar (`parse.Date` against today, `Model.jumpDate`): `12` is
+    the 12th of *this* month. It opens the **day modal** (`ModeDay`,
+    `view.go: dayModal`): one line per entry logged on that date in any task — task
+    key, description, hours — with the day's total in its head. **Nothing in the list
+    opens or moves**; the modal is the answer. `esc` (or `enter`) closes it, no
+    confirmation, since it destroys nothing
+- Either way the matched rows are **marked**, by whichever of the two rules applied
+  (`Model.onJumpDate`): date reversed out (`theme.Match`), description in accent
+  (`theme.MatchText`). So `/12` inside a task marks every 12th it can see. Marks
+  **stand** after the prompt closes, so they survive scrolling and editing; `enter` on
+  an empty prompt clears them, and so does `ctrl+u` wherever it is pressed
+- Both the marks and the modal's contents are **derived on render** (`onJumpDate`,
+  `Model.dayRows`), never captured, so a line that arrives later joins on its own
+- A jump from the list **pulls the tasks it has never read**: a pull returns a task's
+  whole history, so one with rows on disk has nothing to add, while one with none was
+  never opened and its hours would silently miss the day. The status line counts them
+  (`12/08/26 — 2 entries, reading 3 more tasks…`) and the modal grows as answers land
+- The modal lists at most 12 entries and says `… N more`; its head counts them all
+- An impossible date (`31/02`) keeps the prompt open with the error rather than
+  quietly doing nothing
+- `esc` — cancel, back to the rows if the task under the cursor is open, else the list
 
 Confirm
 - `y` / `enter` — proceed; `n` / `esc` — cancel
@@ -300,6 +333,16 @@ Date, relative to the row's existing date (or today for a new entry):
 ```
 When editing a row, the date field opens **pre-filled and visually selected**; the first
 keystroke replaces it, `tab` with no input keeps the original.
+
+`DateMatches` is the other reading of the same input, for a jump inside a task — it
+compares only the parts that were typed instead of filling the rest in:
+
+```
+DateMatches("12/07/26", "12")      → true   (any month, any year)
+DateMatches("12/07/26", "12/7")    → true
+DateMatches("12/07/26", "12/7/26") → true
+DateMatches("13/08/26", "12")      → false
+```
 
 ## UI rules
 

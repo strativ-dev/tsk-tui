@@ -142,6 +142,36 @@ func Date(in, base string) (string, error) {
 	return t.Format(DateLayout), nil
 }
 
+// DateMatches reports whether a stored date satisfies a partial query, comparing only
+// the parts that were typed: "12" is the 12th of any month in any year, "12/7" any
+// 12th of July, "12/7/26" that date alone. Leading zeros do not matter, so 7 and 07
+// are the same month.
+//
+// This is what a jump inside a task's rows wants. Resolving "12" against today would
+// pin it to this month, and the rows in front of you are not all from this month.
+func DateMatches(date, q string) bool {
+	want := strings.Split(strings.TrimSpace(q), "/")
+	if want[0] == "" {
+		return false
+	}
+	got := strings.Split(strings.TrimSpace(date), "/")
+	for i, w := range want {
+		if w == "" {
+			continue // "12//26" — an unspecified middle part matches anything
+		}
+		if i >= len(got) || !sameNumber(w, got[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameNumber(a, b string) bool {
+	x, errA := strconv.Atoi(strings.TrimSpace(a))
+	y, errB := strconv.Atoi(strings.TrimSpace(b))
+	return errA == nil && errB == nil && x == y
+}
+
 // Today is the date a new entry starts with.
 func Today() string { return time.Now().Format(DateLayout) }
 

@@ -198,7 +198,13 @@ func (k keyMap) help(m Mode) []key.Binding {
 	case ModeInsert:
 		return []key.Binding{k.Next, k.Prev, k.ClearField, k.Accept, k.Cancel}
 	case ModeJump:
-		return []key.Binding{key.NewBinding(key.WithHelp("0-9 /", "day")), k.Accept, k.Cancel}
+		return []key.Binding{
+			key.NewBinding(key.WithHelp("12 · 12/7 · 12/7/26", "date")),
+			key.NewBinding(key.WithHelp("enter", "go to it, or list the day")),
+			k.Cancel,
+		}
+	case ModeDay:
+		return []key.Binding{key.NewBinding(key.WithHelp("esc", "close"))}
 	case ModeConfirm:
 		return []key.Binding{k.Yes, k.No} // destructive prompts swap in YesOnly, see confirmKeys
 	case ModeAuth:

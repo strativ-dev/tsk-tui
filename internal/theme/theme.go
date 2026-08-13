@@ -62,8 +62,13 @@ var (
 	Sep = lipgloss.NewStyle().Foreground(Rule)
 	// Total is a task's summed hours, the one number that should catch the eye.
 	Total = lipgloss.NewStyle().Bold(true)
-	Modal = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Accent).
-		Padding(0, 2)
+	// Match and MatchText are a row a date jump found. The date is reversed out so it
+	// stands out among the dim ones; its description takes the accent, since that is
+	// what you are scanning for.
+	Match     = lipgloss.NewStyle().Foreground(Chrome).Background(Accent).Bold(true)
+	MatchText = lipgloss.NewStyle().Foreground(Accent)
+	Modal     = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(Accent).
+			Padding(0, 2)
 )
