@@ -642,11 +642,19 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openInsert(insertNew, parse.Today(), "", "")
 
 	case key.Matches(msg, keys.Delete):
-		if len(t.Rows) == 0 {
+		if m.row >= len(t.Rows) {
 			return m, nil
 		}
+		// Name the row. The unlink cannot be undone, so the modal has to say which
+		// line is about to go, not just that one is.
+		r := t.Rows[m.row]
 		m.prev, m.mode = ModeTable, ModeConfirm
-		m.cKind, m.cPrompt = confirmDeleteRow, "Delete this entry?"
+		m.cKind = confirmDeleteRow
+		if desc := trunc(r.Desc, 40); desc != "" {
+			m.cPrompt = fmt.Sprintf("Delete this entry %q of %s?", desc, r.Date)
+		} else {
+			m.cPrompt = fmt.Sprintf("Delete the entry of %s?", r.Date)
+		}
 
 	case key.Matches(msg, keys.Jump):
 		m.jump.SetValue("")

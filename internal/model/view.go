@@ -23,7 +23,7 @@ const (
 	fallbackHeight = 24
 
 	// Screen rows a collapsed task and a table row each cost, and the rows the
-	// header, footer and status take away from the list. ctrl+d / ctrl+u use these
+	// header, footer and status take away from the list. ctrl+f / ctrl+b use these
 	// to jump by half of what is actually on screen.
 	taskLines  = 2 // the task line plus the blank one after it
 	entryLines = 1
@@ -32,8 +32,12 @@ const (
 	// Table columns, shared by the head, the rows and the insert line.
 	tableIndent = "    "
 	colGap      = "   "
-	dateWidth   = 8 // dd/mm/yy
-	hoursWidth  = 5 // h:mm, or hh:mm
+	// One cell wider than the value they hold: the insert row puts a textinput in
+	// each of these columns, and an input always draws a cursor cell after its
+	// Width. At dateWidth 8 a normalized 12/08/26 did not fit its own input, so the
+	// field scrolled and showed 2/08/26.
+	dateWidth  = 9 // dd/mm/yy
+	hoursWidth = 6 // h:mm, or hh:mm
 	descCap     = 48
 )
 
@@ -126,7 +130,7 @@ func (m Model) rows() int {
 	return m.height
 }
 
-// halfPage is how far ctrl+d / ctrl+u move: half of what fits on screen, in items
+// halfPage is how far ctrl+f / ctrl+b move: half of what fits on screen, in items
 // of the given height. Never zero, or the keys would look broken.
 func (m Model) halfPage(linesPerItem int) int {
 	fits := (m.rows() - chromeRows) / linesPerItem
@@ -154,7 +158,11 @@ func (m Model) header() string {
 	if boxWidth < 24 {
 		boxWidth = 24
 	}
-	box := theme.SearchBox.Width(boxWidth).Render(field)
+	frame := theme.SearchBox
+	if m.mode == ModeSearch {
+		frame = theme.SearchBoxFocus
+	}
+	box := frame.Width(boxWidth).Render(field)
 
 	return lipgloss.JoinHorizontal(lipgloss.Center, caret, box, "  ", prog)
 }
@@ -221,7 +229,11 @@ func (m Model) listLines() ([]string, int) {
 	for i, t := range tasks {
 		onTask := i == m.cursor
 		focused := onTask && listFocus
-		add(row(m.taskLine(t), focused))
+		// The title stays accent-colored for the task the cursor is in, even once focus
+		// has moved down into its rows — otherwise expanding a task drops the only
+		// mark of which one you are inside. The border and background still track the
+		// focused line.
+		add(row(m.taskLine(t, onTask), focused))
 		if focused {
 			mark()
 		}
@@ -275,7 +287,7 @@ func row(s string, focused bool) string {
 }
 
 // taskLine is caret · title · tag chip ......... entry count · total.
-func (m Model) taskLine(t store.Task) string {
+func (m Model) taskLine(t store.Task, focused bool) string {
 	caret := "▸"
 	if m.expanded[t.ID] {
 		caret = "▾"
@@ -285,9 +297,10 @@ func (m Model) taskLine(t store.Task) string {
 	if t.Key != "" {
 		title = t.Key + " " + title
 	}
-	left := theme.Dim.Render(caret) + "  " + theme.Title.Render(trunc(title, m.cols()/2))
+
+	chip := ""
 	if t.Tag != "" {
-		left += "  " + theme.Chip.Render(strings.ToUpper(t.Tag))
+		chip = "  " + theme.Chip.Render(strings.ToUpper(t.Tag))
 	}
 
 	count := fmt.Sprintf("%d entries", len(t.Rows))
@@ -297,6 +310,21 @@ func (m Model) taskLine(t store.Task) string {
 	right := theme.Dim.Render(count) + "   " + theme.Total.Render(fmt.Sprintf("%7s",
 		parse.FormatTotal(store.Total(t.Rows))))
 
+	// The title gets every cell the fixed parts leave: caret, chip, the right
+	// cluster, and the two cells spread keeps between the two halves. Measured
+	// rather than guessed — it used to be a flat half of the screen, which threw
+	// away most of a wide terminal.
+	room := m.cols() - gutter - lipgloss.Width(caret) - 2 -
+		lipgloss.Width(chip) - lipgloss.Width(right) - 2
+	if room < 10 {
+		room = 10 // a title this cramped is unreadable either way; keep it a line
+	}
+
+	style := theme.Title
+	if focused {
+		style = theme.TitleFocus
+	}
+	left := theme.Dim.Render(caret) + "  " + style.Render(trunc(title, room)) + chip
 	return spread(left, right, m.cols()-gutter)
 }
 
@@ -304,7 +332,10 @@ func (m Model) tableHead() string {
 	return theme.Header.Render(cells(
 		pad("DATE", dateWidth),
 		pad("DESCRIPTION", m.descWidth()),
-		padLeft("HOURS", hoursWidth)))
+		// Left-aligned, like the hours input on the insert row: a textinput fills its
+		// column and draws its cursor after the text, so it cannot be right-aligned.
+		// Right-aligning only the head and the rows left h:mm two cells adrift.
+		pad("HOURS", hoursWidth)))
 }
 
 func (m Model) entryLine(e store.Entry) string {
@@ -313,7 +344,7 @@ func (m Model) entryLine(e store.Entry) string {
 	return cells(
 		theme.Dim.Render(pad(e.Date, dateWidth)),
 		pad(trunc(e.Desc, desc), desc),
-		theme.Total.Render(padLeft(parse.FormatHM(e.Minutes), hoursWidth)))
+		theme.Total.Render(pad(parse.FormatHM(e.Minutes), hoursWidth)))
 }
 
 // cells lays out one table row: a shared indent, then columns two cells apart.
@@ -330,17 +361,10 @@ func fieldWidth(col int) int {
 	return col - 1
 }
 
-// pad and padLeft measure with lipgloss, so styled text lands in the right column.
+// pad measures with lipgloss, so styled text lands in the right column.
 func pad(s string, w int) string {
 	if d := w - lipgloss.Width(s); d > 0 {
 		return s + strings.Repeat(" ", d)
-	}
-	return s
-}
-
-func padLeft(s string, w int) string {
-	if d := w - lipgloss.Width(s); d > 0 {
-		return strings.Repeat(" ", d) + s
 	}
 	return s
 }

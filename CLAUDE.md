@@ -71,10 +71,11 @@ Search
 List (`ModeList`) — the mode the app starts in
 - `j` / `k` — next / previous task
 - `g` / `G` — first / last task
-- `ctrl+d` / `ctrl+b` — half a screen down / up (`Model.halfPage`, sized from the
+- `ctrl+f` / `ctrl+b` — half a screen down / up (`Model.halfPage`, sized from the
   terminal height, so it moves by half of what is actually visible). Half-up is
-  `ctrl+b`, not vim's `ctrl+u`, because `ctrl+u` clears the query in every mode
-- `l` / `enter` — expand task, focus its first row (→ `ModeTable`); a task with no
+  `ctrl+b`, not vim's `ctrl+u`, because `ctrl+u` clears the query in every mode, and
+  half-down is `ctrl+f` so the pair reads as one forward/back set
+- `l` — expand task, focus its first row (→ `ModeTable`); a task with no
   entries still opens, so `a` has somewhere to add the first one
 - `h` — collapse task
 - `/` — expand the task and open the date jump (→ `ModeJump`)
@@ -86,10 +87,12 @@ List (`ModeList`) — the mode the app starts in
 
 Table (`ModeTable`)
 - `j` / `k` — next / previous row
-- `g` / `G` — first / last row; `ctrl+d` / `ctrl+b` — half a screen
+- `g` / `G` — first / last row; `ctrl+f` / `ctrl+b` — half a screen
 - `enter` — edit the focused row in place (→ `ModeInsert`, kind=edit)
 - `a` — new entry at the top, prefilled with today's date (→ `ModeInsert`, kind=new)
-- `d` — delete the focused row (→ `ModeConfirm`)
+- `d` — delete the focused row (→ `ModeConfirm`). The modal names it —
+  `Delete this entry "Retry backoff" of 11/08/26?` — since an unlink cannot be undone;
+  a row Odoo returned with no name reads `Delete the entry of 11/08/26?`
 - `/` — date jump prompt (→ `ModeJump`)
 - `h` — collapse the task, focus the task line (→ `ModeList`)
 - `esc` — focus the task line without collapsing
@@ -266,14 +269,29 @@ Layout follows `Pictures/screenshots/tsk.png`:
 - Every line is `Blur`/`Focus`-wrapped, both two cells wide, so focus never shifts
   a row. `internal/model/view_test.go` asserts that and that nothing exceeds the
   terminal width.
-- Expanded table columns: DATE · DESCRIPTION · HOURS (right-aligned). DESCRIPTION
+- Expanded table columns: DATE · DESCRIPTION · HOURS, all left-aligned in their
+  column. HOURS was right-aligned in the head and the rows, but the insert row puts a
+  `textinput` there and an input fills its column and left-aligns its own text, so
+  `h:mm` sat two cells off `HOURS`. One offset per column, checked by
+  `TestHoursColumnStartsAtOneOffset`. DESCRIPTION
   is capped at 48 cells — stretched to the edge, the hours end up a screen away
   from the text they belong to.
+- `dateWidth` and `hoursWidth` are **one cell wider than the value they hold** (9 and
+  6). The insert row puts a `textinput` in each column and an input always draws a
+  cursor cell after its `Width` (`fieldWidth(col) = col-1`), so a column sized exactly
+  to `dd/mm/yy` cannot show a normalized date: the field scrolled and `12/08/26` read
+  as `2/08/26`.
 - The header and footer are laid out first and the list is windowed into the rows
   left over (`view.go: window`), so the search field can never scroll off the top.
   Hidden lines are announced as `↑ N more` / `↓ N more`, and the window follows
   the cursor.
-- Focus is shown by a **left border + dim row background**, never color alone.
+- Focus is shown by a **left border + dim row background**, never color alone. On top
+  of that the accent colors whatever holds the keys: the title of the task the cursor
+  is in — kept once it is expanded and focus has moved into its rows, so you can still
+  see which task you are inside (`theme.TitleFocus`) — and the search frame while the
+  field has the cursor
+  (`theme.SearchBoxFocus`). Colors are additive here, not the signal on their own —
+  `TestFocusIsAccentColored` covers both.
 - Mode indicator top-right (`-- SEARCH --`), contextual key hints in the footer,
   rendered from the mode's `key.Binding` set so help can never drift from behavior.
 

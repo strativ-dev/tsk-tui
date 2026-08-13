@@ -98,6 +98,137 @@ func TestInsertRowPlacement(t *testing.T) {
 	}
 }
 
+// A normalized value has to fit the input it was written into. Typing a bare day
+// and tabbing away fills in the month and year, but the date column was one cell
+// too narrow for its own input — the field scrolled and 12/08/26 read as 2/08/26.
+func TestInsertFieldsShowNormalizedValues(t *testing.T) {
+	tasks := []store.Task{{ID: 1, Key: "AI-286", Title: "task"}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, runes("l"), runes("a"))
+
+	// Day only, normalized against today: month and year are kept.
+	date, err := parse.Date("12", parse.Today())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = send(t, m, runes("12"), special(tea.KeyTab))
+	if !strings.Contains(m.View(), date) {
+		t.Errorf("date field does not show %s in full:\n%s", date, m.View())
+	}
+
+	// Same for two-digit hours, the widest thing the hours column holds.
+	m = send(t, m, runes("desc"), special(tea.KeyTab), runes("10:30"), special(tea.KeyTab))
+	if !strings.Contains(m.View(), "10:30") {
+		t.Errorf("hours field does not show 10:30 in full:\n%s", m.View())
+	}
+}
+
+// Focus is accent-colored in both halves of the screen: the search frame while the
+// query field has the keys, the task title while the list does.
+func TestFocusIsAccentColored(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	accent := "255;192;0" // theme.Accent as truecolor
+	m := preview(t, 120)  // launches on the list, so the frame is quiet
+
+	find := func(view, needle string) string {
+		for _, l := range strings.Split(view, "\n") {
+			if strings.Contains(l, needle) {
+				return l
+			}
+		}
+		t.Fatalf("%q missing from view:\n%s", needle, view)
+		return ""
+	}
+
+	// The cursor starts on the first task; the second is not under it.
+	if l := find(m.View(), "Ship odds"); !strings.Contains(l, accent) {
+		t.Errorf("focused task title is not accent-colored:\n%s", l)
+	}
+	if l := find(m.View(), "Parlay builder"); strings.Contains(l, accent) {
+		t.Errorf("unfocused task line is accent-colored:\n%s", l)
+	}
+
+	// Expanding keeps it: the rows have focus now, but the title still says which
+	// task you are inside.
+	if l := find(send(t, m, runes("l")).View(), "Ship odds"); !strings.Contains(l, accent) {
+		t.Errorf("expanded task title lost the accent:\n%s", l)
+	}
+
+	// The frame is the top border line of the box, quiet until i moves the cursor in.
+	top := strings.Split(m.View(), "\n")[0]
+	if strings.Contains(top, accent) {
+		t.Errorf("search frame is accent-colored while the list has focus:\n%s", top)
+	}
+	if top = strings.Split(send(t, m, runes("i")).View(), "\n")[0]; !strings.Contains(top, accent) {
+		t.Errorf("search frame is not accent-colored while the field has focus:\n%s", top)
+	}
+}
+
+// The hours column has to start at one offset on all three kinds of line. The head
+// and the rows were right-aligned while the insert row's input left-aligns itself,
+// which left h:mm two cells adrift of HOURS.
+// Plain profile on purpose: the styled case is TestTableColumnsAlignWithStyling's
+// job, and with colors on the cursor splits the placeholder mid-string.
+func TestHoursColumnStartsAtOneOffset(t *testing.T) {
+	tasks := []store.Task{{ID: 1, Title: "task", Tag: "ui", Rows: []store.Entry{
+		{ID: 1, Date: "11/08/26", Desc: "short", Minutes: 450},
+	}}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, runes("l"))
+
+	// column is where needle starts, in cells rather than bytes.
+	column := func(view, needle string) int {
+		for _, l := range strings.Split(view, "\n") {
+			if i := strings.Index(l, needle); i >= 0 {
+				return lipgloss.Width(l[:i])
+			}
+		}
+		t.Fatalf("%q missing from view:\n%s", needle, view)
+		return -1
+	}
+
+	head := column(m.View(), "HOURS")
+	if row := column(m.View(), "7:30"); row != head {
+		t.Errorf("row hours start at %d, HOURS at %d", row, head)
+	}
+	if ins := column(send(t, m, runes("a")).View(), "h:mm"); ins != head {
+		t.Errorf("insert hours start at %d, HOURS at %d", ins, head)
+	}
+}
+
+// A long title runs to the entry count, not to a flat half of the screen. It was
+// truncated at cols()/2, which threw away most of a wide terminal.
+func TestTitleFillsTheLine(t *testing.T) {
+	// 110 cells: past the old cols()/2 cap at this width, inside what the fixed
+	// parts of the line actually leave over.
+	long := "Rework the sportsbook odds ingestion retry queue, its dead letter handling " +
+		"and the replay tooling"
+	tasks := []store.Task{{ID: 1, Title: long, Tag: "backend", Rows: []store.Entry{
+		{ID: 1, Date: "11/08/26", Desc: "spike", Minutes: 120},
+	}}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 160, Height: 30}, store.LoadedMsg{Tasks: tasks})
+
+	var line string
+	for _, l := range strings.Split(m.View(), "\n") {
+		if strings.Contains(l, "Rework") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("task line missing from view:\n%s", m.View())
+	}
+	if strings.Contains(line, "…") {
+		t.Errorf("title truncated at 160 cells, where it fits whole:\n%s", line)
+	}
+	// Still one line, chip and total still on it.
+	if !strings.Contains(line, "BACKEND") || !strings.Contains(line, "2h") {
+		t.Errorf("title crowded out the chip or the total:\n%s", line)
+	}
+}
+
 // The caret shows only while the field has focus, and never at the cost of the
 // header shifting sideways.
 func TestCaretFollowsFocus(t *testing.T) {

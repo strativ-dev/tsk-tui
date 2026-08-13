@@ -208,8 +208,9 @@ func TestFailedLogKeepsRow(t *testing.T) {
 	}
 }
 
-// g / G / ctrl+d / ctrl+b move like vim, in the list and the table. Half-up is
-// ctrl+b rather than vim's ctrl+u, which clears the query here.
+// g / G / ctrl+f / ctrl+b move like vim, in the list and the table. Half-up is
+// ctrl+b rather than vim's ctrl+u, which clears the query here, so half-down is
+// ctrl+f to keep the pair symmetric.
 func TestVimMotions(t *testing.T) {
 	var many []store.Task
 	for i := 1; i <= 40; i++ {
@@ -230,13 +231,13 @@ func TestVimMotions(t *testing.T) {
 		t.Errorf("g left cursor at %d, want 0", m.cursor)
 	}
 
-	m = send(t, m, special(tea.KeyCtrlD))
+	m = send(t, m, special(tea.KeyCtrlF))
 	if m.cursor != 4 {
-		t.Errorf("ctrl+d left cursor at %d, want 4", m.cursor)
+		t.Errorf("ctrl+f left cursor at %d, want 4", m.cursor)
 	}
-	m = send(t, m, special(tea.KeyCtrlD), special(tea.KeyCtrlB))
+	m = send(t, m, special(tea.KeyCtrlF), special(tea.KeyCtrlB))
 	if m.cursor != 4 {
-		t.Errorf("ctrl+d then ctrl+b left cursor at %d, want 4", m.cursor)
+		t.Errorf("ctrl+f then ctrl+b left cursor at %d, want 4", m.cursor)
 	}
 	// Neither key runs off an end.
 	m = send(t, m, special(tea.KeyCtrlB), special(tea.KeyCtrlB))
@@ -244,7 +245,7 @@ func TestVimMotions(t *testing.T) {
 		t.Errorf("cursor = %d, want it clamped at 0", m.cursor)
 	}
 	for i := 0; i < 20; i++ {
-		m = send(t, m, special(tea.KeyCtrlD))
+		m = send(t, m, special(tea.KeyCtrlF))
 	}
 	if m.cursor != 39 {
 		t.Errorf("cursor = %d, want it clamped at 39", m.cursor)
@@ -266,9 +267,9 @@ func TestVimMotions(t *testing.T) {
 	if m.row != 0 {
 		t.Errorf("g in the table left row at %d, want 0", m.row)
 	}
-	m = send(t, m, special(tea.KeyCtrlD))
+	m = send(t, m, special(tea.KeyCtrlF))
 	if want := m.halfPage(entryLines); m.row != want {
-		t.Errorf("ctrl+d in the table left row at %d, want %d", m.row, want)
+		t.Errorf("ctrl+f in the table left row at %d, want %d", m.row, want)
 	}
 }
 
@@ -352,6 +353,30 @@ func TestEditPushesToERP(t *testing.T) {
 	}
 	if !strings.Contains(ok.status, "updated") {
 		t.Errorf("status = %q", ok.status)
+	}
+}
+
+// The modal names the row it is about to unlink — which description, which date.
+func TestDeletePromptNamesTheRow(t *testing.T) {
+	tasks := []store.Task{{ID: 1, Title: "task", Rows: []store.Entry{
+		{ID: 9, Date: "11/08/26", Desc: "Retry backoff", Minutes: 90},
+		{ID: 8, Date: "10/08/26", Desc: "", Minutes: 60}, // Odoo hands back empty names
+	}}}
+	base := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, runes("l"))
+
+	m := send(t, base, runes("d"))
+	if want := `Delete this entry "Retry backoff" of 11/08/26?`; m.cPrompt != want {
+		t.Errorf("prompt = %q, want %q", m.cPrompt, want)
+	}
+	if !strings.Contains(m.View(), "Retry backoff") {
+		t.Errorf("the modal does not show the row:\n%s", m.View())
+	}
+
+	// A row with no description still reads as a sentence.
+	m = send(t, base, runes("j"), runes("d"))
+	if want := "Delete the entry of 10/08/26?"; m.cPrompt != want {
+		t.Errorf("prompt = %q, want %q", m.cPrompt, want)
 	}
 }
 

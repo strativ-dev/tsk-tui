@@ -18,6 +18,9 @@ var focusBorder = lipgloss.Border{Left: "▏"}
 
 var (
 	Title = lipgloss.NewStyle().Bold(true)
+	// TitleFocus is the task the cursor is on. Same weight, accent color, so the
+	// border and background of Focus are not the only thing carrying the cursor.
+	TitleFocus = Title.Foreground(Accent)
 	Tag   = lipgloss.NewStyle().Foreground(Link)
 	Dim   = lipgloss.NewStyle().Foreground(Muted)
 	Mode  = lipgloss.NewStyle().Foreground(Accent).Bold(true)
@@ -42,11 +45,13 @@ var (
 
 	Header = lipgloss.NewStyle().Foreground(Muted).Bold(true)
 
-	// SearchBox frames the query field across the top.
+	// SearchBox frames the query field across the top; SearchBoxFocus is the same
+	// frame in the accent color, so the box says where the keys are going.
 	SearchBox = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(Rule).
 			Padding(0, 1)
+	SearchBoxFocus = SearchBox.BorderForeground(Accent)
 	// Chip is a tag: vertical bars only, so a task stays one line tall.
 	Chip = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), false, true).

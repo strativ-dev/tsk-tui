@@ -19,7 +19,7 @@ type keyMap struct {
 var keys = keyMap{
 	Down:       key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j", "next")),
 	Up:         key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "prev")),
-	Expand:     key.NewBinding(key.WithKeys("l", "right", "enter"), key.WithHelp("l/enter", "expand")),
+	Expand:     key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
 	Collapse:   key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
 	Jump:       key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "date jump")),
 	Search:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "search")),
@@ -44,14 +44,15 @@ var keys = keyMap{
 	SetKey:     key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "api key")),
 	// ctrl+l is unusable in practice: tmux and vim grab it. ctrl+u it is, which also
 	// matches what ctrl+u already does inside the search field.
-	ClearSearch: key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear + search")),
+	ClearSearch: key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear search")),
 
 	// vim motions. The paired keys carry no help of their own; the first of each
 	// pair spells both out, so the footer stays one line per idea.
 	Top:    key.NewBinding(key.WithKeys("g"), key.WithHelp("g/G", "top/bottom")),
 	Bottom: key.NewBinding(key.WithKeys("G")),
-	// Half up is ctrl+b, not vim's ctrl+u, because ctrl+u clears the query here.
-	HalfDown: key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d/b", "half page")),
+	// Half up is ctrl+b, not vim's ctrl+u, because ctrl+u clears the query here, so
+	// half down is ctrl+f to keep the pair symmetric.
+	HalfDown: key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("ctrl+f/b", "half page")),
 	HalfUp:   key.NewBinding(key.WithKeys("ctrl+b")),
 }
 
