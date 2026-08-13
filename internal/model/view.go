@@ -47,7 +47,7 @@ const (
 	// field scrolled and showed 2/08/26.
 	dateWidth  = 9 // dd/mm/yy
 	hoursWidth = 6 // h:mm, or hh:mm
-	descCap     = 48
+	descCap    = 48
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -60,10 +60,9 @@ func (m Model) View() string {
 	var tail []string
 	switch m.mode {
 	case ModeConfirm:
-		hint := "enter / n"
-		if m.confirmKeys().Keys()[0] == "y" {
-			hint = "y / n" // destructive: the letter, never enter
-		}
+		// Read off the bindings themselves. Spelling the keys out here meant a rebind
+		// could leave a destructive prompt advertising a key that no longer accepts it.
+		hint := m.confirmKeys().Help().Key + " / " + keys.No.Help().Key
 		tail = append(tail, strings.Split(
 			theme.Modal.Render(m.cPrompt+"  "+theme.Dim.Render(hint)), "\n")...)
 	case ModeAuth:

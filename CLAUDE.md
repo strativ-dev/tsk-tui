@@ -11,6 +11,9 @@ Reference UI prototype: `Task TUI Interactive.dc.html` / spec PDF in the design 
 - `github.com/charmbracelet/bubbletea` — runtime
 - `github.com/charmbracelet/bubbles` — `textinput`, `viewport`, `key`, `help`
 - `github.com/charmbracelet/lipgloss` — styling
+- `github.com/BurntSushi/toml` — the config file. TOML over YAML because this file is
+  all short bare-looking scalars (`y`, `n`, `on`, `j`) and quoting is mandatory here;
+  over stdlib JSON because a hand-edited keymap wants comments
 - Go 1.22+, no CGO
 
 ## Layout
@@ -18,7 +21,9 @@ Reference UI prototype: `Task TUI Interactive.dc.html` / spec PDF in the design 
 ```
 cmd/tsk/main.go        program entry, tea.NewProgram(..., tea.WithAltScreen())
 internal/model/        root model, per-mode Update handlers, View
-internal/model/keys.go key.Binding sets per mode (footer help renders from these)
+internal/model/keys.go key.Binding sets per mode (footer help renders from these),
+                       plus ApplyKeys/KeysTOML for the config file
+internal/config/       ~/.config/tsk/config.toml — [keys] overrides, validated
 internal/parse/        pure parsing: hours, dates  (unit-tested, no tea imports)
 internal/store/        persistence (JSON on disk), API key via pass, load/save commands
 internal/api/          ERP tasks API client (GET /api/v1/tasks/my)
@@ -121,6 +126,49 @@ Confirm
 Auth (`ModeAuth`)
 - typing is echoed as `•` — the key is never rendered
 - `enter` — store the key in `pass` and fetch; `esc` — work offline on the local file
+
+## Configuration (`internal/config`)
+
+Every binding above is a **default**, not a fact: `~/.config/tsk/config.toml` can
+rebind any of them. No file, or a file with no `[keys]` table, means the compiled-in
+defaults stand — that is the normal case, not an error.
+
+```toml
+# Only the lines you want to change.
+[keys]
+half_down = ["ctrl+d"]   # back to vim's key
+down      = ["j", "down", "n"]
+quit      = []           # an empty list unbinds; ctrl+c always quits
+```
+
+- Action names are the `keyMap` field names in snake_case (`HalfDown` → `half_down`),
+  resolved by reflection in `model.ApplyKeys`, so the accepted names cannot drift from
+  the struct. `model.Actions()` lists them and every error message offers them.
+- `tsk --print-keys` writes the live keymap, commented, as a `[keys]` table:
+  `mkdir -p ~/.config/tsk && tsk --print-keys > ~/.config/tsk/config.toml`. **No
+  example file is checked in** — a second copy of the keymap in the repo is a copy to
+  fall out of date, and the binary already knows its own defaults. Its output loads
+  back as a no-op, which is what keeps the documented defaults honest.
+- A rebound action keeps its help **description** and takes its help **key** from the
+  first key given, so the footer follows a rebind with nothing else to edit. An action
+  rebound to the key it already had keeps its label verbatim — that is what preserves
+  the paired hints (`g/G`, `ctrl+f/b`, held on the first of each pair) for a config
+  seeded from `--print-keys`, which necessarily lists every action. Move the primary
+  key of a pair and the footer shows that single key instead.
+- Key spellings are bubbletea's: a single character, a `ctrl+`/`alt+`/`shift+`
+  compound, or one of `enter esc tab shift+tab space backspace delete up down left
+  right home end pgup pgdown`. A misspelling (`ctrl-d`) is **refused at startup** —
+  it would otherwise just never match, which reads as "rebinding is broken". So is an
+  unknown action name. Either prints to stderr and exits 1 rather than entering the
+  alt screen with a keymap you cannot drive.
+- Two actions on one key resolve by the order of the `switch` in the handler, which is
+  deterministic and immediately visible; nothing validates it.
+- `keys` is a package var and `ApplyKeys` is its only writer, called once from
+  `main` before `tea.NewProgram`. Loading deliberately does **not** happen in
+  `model.New`: `New` runs in every test, and a test must not read the developer's
+  config. Tests that rebind restore `keys = defaultKeys()` in `t.Cleanup`.
+- The modal's `y / n` hint is read off `confirmKeys().Help()`, not spelled out, or a
+  rebind would leave a destructive prompt advertising a key that no longer accepts it.
 
 ## Credentials and sync
 

@@ -21,9 +21,9 @@ var (
 	// TitleFocus is the task the cursor is on. Same weight, accent color, so the
 	// border and background of Focus are not the only thing carrying the cursor.
 	TitleFocus = Title.Foreground(Accent)
-	Tag   = lipgloss.NewStyle().Foreground(Link)
-	Dim   = lipgloss.NewStyle().Foreground(Muted)
-	Mode  = lipgloss.NewStyle().Foreground(Accent).Bold(true)
+	Tag        = lipgloss.NewStyle().Foreground(Link)
+	Dim        = lipgloss.NewStyle().Foreground(Muted)
+	Mode       = lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	// Prompt is the "> " in front of the search field.
 	Prompt = lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	Hint   = lipgloss.NewStyle().Foreground(Muted)
