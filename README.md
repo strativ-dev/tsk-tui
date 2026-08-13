@@ -30,34 +30,19 @@ binary, no CGO.
 
 ## Features
 
-- **All your tasks in one list.** It pulls the tasks assigned to you in ERP360, so you
-  never go hunting through the web UI to find the right one.
-- **See the hours already logged.** Open a task and it shows every entry on it — date,
-  what you did, how long — as a table.
-- **Log time in a few keystrokes.** Type the date, what you did, and the hours. It saves
-  straight into ERP360, exactly as if you had filled in the web form.
+- **All your tasks in one list.** Pulled from ERP360, no hunting through the web UI.
+- **See the hours already logged.** Open a task, its entries show up as a table.
+- **Log time in a few keystrokes.** Date, what you did, hours — saved straight into ERP360.
 - **Fix mistakes.** Change or delete any entry you logged, from the same screen.
-- **Your typed hours are never lost.** If the connection drops mid-save, the entry stays
-  on screen and on your machine, and the app tells you it has not reached the ERP yet.
-  Nothing you typed disappears quietly.
-- **Only your own hours.** A task may have several people logging to it. You see yours —
-  never a colleague's, and their time never gets counted into your totals.
-- **"Where did Tuesday go?"** Ask for a date and it lists everything you logged that
-  day, across every task, with the total for the day.
-- **A progress bar for today.** How far you are through your 8 hours, updated as you
-  type, including entries not yet sent to the ERP.
-- **Find a task by typing.** Start typing part of a task's name or project and the list
-  narrows as you go.
-- **No mouse, ever.** The keys available right now are always listed along the bottom of
-  the screen, so there is nothing to memorise.
-- **Change any key.** If a key gets in the way of your terminal or your habits, rebind it
-  in a small text file.
-- **Your API key stays private.** It is either read from your encrypted password store or
-  taken from your environment — never saved into the app's own files, never shown on
-  screen (you see `••••1234`), never written into an error message.
-- **Works with no internet.** Your tasks and hours are kept on your machine, so the app
-  still opens on a train and still accepts entries; they go to the ERP when you are back
-  online.
+- **Typed hours are never lost.** A failed save keeps them on screen and says so.
+- **Only your own hours.** A colleague's time on the same task never counts as yours.
+- **"Where did Tuesday go?"** One key lists a whole day across every task, with its total.
+- **A progress bar for today.** How far through your 8 hours, updated as you type.
+- **Find a task by typing.** The list narrows as you go.
+- **No mouse, ever.** The keys you can press are always listed along the bottom.
+- **Change any key.** Rebind anything you like in a small text file.
+- **Your API key stays private.** Encrypted at rest, never written to a file or a screen.
+- **Works with no internet.** Everything is cached; entries reach the ERP when you are back.
 
 ## Installation
 
