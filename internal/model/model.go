@@ -102,7 +102,6 @@ func New() Model {
 	search.Prompt = "" // the ❯ caret sits outside the box, as in the design
 	search.PromptStyle = theme.Prompt
 	search.Placeholder = "search title or tag…"
-	search.Width = 32
 	// Not focused at launch: the list is what you want to look at first. `i` or
 	// ctrl+u puts the cursor in the field.
 
@@ -128,6 +127,9 @@ func New() Model {
 		pulled:   map[int]bool{},
 		pulling:  map[int]bool{},
 	}
+	// Sized for the fallback width until the first WindowSizeMsg lands, so the field
+	// cannot wrap its own box on the very first frame either.
+	m.search.Width = m.searchFieldWidth()
 	// Field widths mirror the table columns, so the insert row sits in them.
 	for i, ph := range []string{"dd/mm/yy", "what you did", "h:mm"} {
 		f := textinput.New()
@@ -147,11 +149,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		// The query field fills the box: total width minus caret, borders and the
-		// progress cluster on the right.
-		if w := msg.Width - 46; w > 24 {
-			m.search.Width = w
-		}
+		m.search.Width = m.searchFieldWidth()
 		m.fields[fieldDesc].Width = fieldWidth(m.descWidth())
 		return m, nil
 
@@ -650,7 +648,7 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		r := t.Rows[m.row]
 		m.prev, m.mode = ModeTable, ModeConfirm
 		m.cKind = confirmDeleteRow
-		if desc := trunc(r.Desc, 40); desc != "" {
+		if desc := trunc(oneLine(r.Desc), 40); desc != "" {
 			m.cPrompt = fmt.Sprintf("Delete this entry %q of %s?", desc, r.Date)
 		} else {
 			m.cPrompt = fmt.Sprintf("Delete the entry of %s?", r.Date)

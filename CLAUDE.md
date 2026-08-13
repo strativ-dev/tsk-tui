@@ -265,7 +265,21 @@ Layout follows `Pictures/screenshots/tsk.png`:
   100%. Recomputed live.
 - A dim rule under the header, then the list, one blank line between tasks.
 - Task line: caret (`▸`/`▾`), title, tag chip (uppercase, `│ BACKEND │`), and on
-  the right edge the entry count and the bold task total.
+  the right edge the entry count and the bold task total. The caret and the right
+  cluster are fixed; what is left goes to the chip (a third of the screen at most,
+  measured from `cols()` so the same tag is cut to the same width on every row) and
+  then to the title, which loses cells last because it identifies the task. Odoo
+  project names run to 50 cells — `VALUE-DRIVEN ENGAGEMENT, INTERNAL MEETINGS & TASKS`
+  — and an uncapped chip pushed the line off an 80-cell screen.
+- **Everything the ERP wrote goes through `oneLine`** — task names, tags, timesheet
+  descriptions, error and status text. VD-427's Odoo name contains a newline, which
+  rendered the task as two lines: the list grew past the terminal, the terminal
+  scrolled, and the search box went off the top. `TestErpTextCannotGrowTheView` holds
+  the line count and the width.
+- The query field is sized by `searchFieldWidth()`, against the **widest** the progress
+  cluster gets (`progReserve`), not against the cluster as rendered. The box shrinks
+  when the TODAY line gains `+2h30m unsynced`, and a field wider than its box wraps
+  inside it, growing the header from three lines to four and shoving the list down.
 - Every line is `Blur`/`Focus`-wrapped, both two cells wide, so focus never shifts
   a row. `internal/model/view_test.go` asserts that and that nothing exceeds the
   terminal width.

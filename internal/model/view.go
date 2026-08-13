@@ -15,6 +15,15 @@ import (
 
 const (
 	barWidth = 12
+	// caretCol is the gutter in front of the search box: " ❯ " when the field has
+	// focus, three spaces when it does not, so the header never shifts sideways.
+	caretCol = 3
+	// progReserve is the widest the progress cluster gets — "TODAY 100% · +12h30m
+	// unsynced · 22/22 tasks" and a little room. The search field is sized against
+	// this rather than against the cluster as currently rendered: the box shrinks
+	// when the TODAY line grows, and a field wider than the box wraps inside it,
+	// which grows the header a line and shoves the whole list down.
+	progReserve = 46
 	// gutter is the indent every line shares, one cell of which the focus border
 	// or the blur padding occupies.
 	gutter = 2
@@ -60,11 +69,15 @@ func (m Model) View() string {
 	case ModeAuth:
 		tail = append(tail, strings.Split(m.authModal(), "\n")...)
 	}
+	// Flattened and cut to the width: a server message can arrive with newlines in it,
+	// and a status line that wraps costs the list a row it was not given.
 	if m.err != nil {
-		tail = append(tail, theme.Blur.Render(theme.Err.Render("! "+m.err.Error())))
+		tail = append(tail, theme.Blur.Render(theme.Err.Render(
+			trunc("! "+oneLine(m.err.Error()), m.cols()-gutter))))
 	}
 	if m.status != "" {
-		tail = append(tail, theme.Blur.Render(theme.Dim.Render(m.status)))
+		tail = append(tail, theme.Blur.Render(theme.Dim.Render(
+			trunc(oneLine(m.status), m.cols()-gutter))))
 	}
 	tail = append(tail, strings.Split(m.footer(), "\n")...)
 
@@ -165,6 +178,18 @@ func (m Model) header() string {
 	box := frame.Width(boxWidth).Render(field)
 
 	return lipgloss.JoinHorizontal(lipgloss.Center, caret, box, "  ", prog)
+}
+
+// searchFieldWidth is the textinput.Width the query field gets: the narrowest the
+// box can be — the progress cluster at its widest — less the box's two padding cells
+// and the cursor cell the input draws after its Width. Sized against the worst case
+// on purpose, so no query can wrap the box onto a second line and shove the list
+// down; the box itself still hugs the cluster as actually rendered.
+func (m Model) searchFieldWidth() int {
+	if w := m.cols() - caretCol - progReserve - 9; w > 16 {
+		return w
+	}
+	return 16
 }
 
 // progress is two right-aligned lines: the bar with today's total, and the
@@ -293,14 +318,9 @@ func (m Model) taskLine(t store.Task, focused bool) string {
 		caret = "▾"
 	}
 
-	title := t.Title
+	title := oneLine(t.Title)
 	if t.Key != "" {
 		title = t.Key + " " + title
-	}
-
-	chip := ""
-	if t.Tag != "" {
-		chip = "  " + theme.Chip.Render(strings.ToUpper(t.Tag))
 	}
 
 	count := fmt.Sprintf("%d entries", len(t.Rows))
@@ -310,14 +330,28 @@ func (m Model) taskLine(t store.Task, focused bool) string {
 	right := theme.Dim.Render(count) + "   " + theme.Total.Render(fmt.Sprintf("%7s",
 		parse.FormatTotal(store.Total(t.Rows))))
 
-	// The title gets every cell the fixed parts leave: caret, chip, the right
-	// cluster, and the two cells spread keeps between the two halves. Measured
-	// rather than guessed — it used to be a flat half of the screen, which threw
-	// away most of a wide terminal.
-	room := m.cols() - gutter - lipgloss.Width(caret) - 2 -
-		lipgloss.Width(chip) - lipgloss.Width(right) - 2
-	if room < 10 {
-		room = 10 // a title this cramped is unreadable either way; keep it a line
+	// What the caret, the right cluster and spread's two-cell gap leave over is split
+	// between the two variable parts, measured rather than guessed. The chip is cut
+	// first and to no more than a third: tags are Odoo project names, and
+	// "VALUE-DRIVEN ENGAGEMENT, INTERNAL MEETINGS & TASKS" is 50 cells on its own,
+	// which used to push the line clean off an 80-cell screen. The title takes the
+	// rest — it identifies the task, so it loses cells last.
+	room := m.cols() - gutter - lipgloss.Width(caret) - 2 - lipgloss.Width(right) - 2
+
+	chip := ""
+	if tag := oneLine(t.Tag); tag != "" {
+		const chrome = 6 // the two spaces in front, two borders, two padding cells
+		// A third of the screen, not of what this row has left, so the same tag is cut
+		// to the same width on every line. Clamped to the row's own space as a floor,
+		// which only bites when the entry count and total are unusually wide.
+		w := m.cols()/3 - chrome
+		if w > room-4 {
+			w = room - 4
+		}
+		if w > 3 {
+			chip = "  " + theme.Chip.Render(strings.ToUpper(trunc(tag, w)))
+			room -= lipgloss.Width(chip)
+		}
 	}
 
 	style := theme.Title
@@ -343,7 +377,7 @@ func (m Model) entryLine(e store.Entry) string {
 	// Pad first, style second: fmt counts the bytes of an ANSI escape as width.
 	return cells(
 		theme.Dim.Render(pad(e.Date, dateWidth)),
-		pad(trunc(e.Desc, desc), desc),
+		pad(trunc(oneLine(e.Desc), desc), desc),
 		theme.Total.Render(pad(parse.FormatHM(e.Minutes), hoursWidth)))
 }
 
@@ -447,9 +481,23 @@ func spread(left, right string, width int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
+// oneLine flattens text that came from the ERP. An Odoo task name or timesheet
+// description can hold newlines and tabs — VD-427's name does — and one newline in a
+// task line renders it as two, so every row below slides down and the header scrolls
+// off the top of the screen. Runs of whitespace collapse to a single space.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 func trunc(s string, n int) string {
-	if n <= 1 || lipgloss.Width(s) <= n {
+	if lipgloss.Width(s) <= n {
 		return s
+	}
+	// Cramped is still better than overflowing: a line wider than the terminal wraps,
+	// and the whole layout below it slides.
+	switch {
+	case n <= 0:
+		return ""
+	case n == 1:
+		return "…"
 	}
 	return string([]rune(s)[:n-1]) + "…"
 }

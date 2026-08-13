@@ -123,6 +123,57 @@ func TestInsertFieldsShowNormalizedValues(t *testing.T) {
 	}
 }
 
+// Every line the view emits has to be one line. Odoo handed back VD-427 with a
+// newline inside its name, which rendered the task as two lines: the list grew past
+// the terminal, the terminal scrolled, and the search box went off the top.
+func TestErpTextCannotGrowTheView(t *testing.T) {
+	tasks := []store.Task{
+		{ID: 1, Key: "VD-427", Title: "\nProject Pulse: Meeting & Growth Framework FE",
+			Tag: "VALUE-DRIVEN ENGAGEMENT,\nINTERNAL MEETINGS & TASKS", Rows: []store.Entry{
+				{ID: 1, Date: "11/08/26", Desc: "stand-up\nnotes\twritten up", Minutes: 30},
+			}},
+		{ID: 2, Key: "VD-433", Title: "FE team all hands", Tag: "meetings"},
+	}
+	for _, width := range []int{80, 120, 200} {
+		m := send(t, New(), tea.WindowSizeMsg{Width: width, Height: 24},
+			store.LoadedMsg{Tasks: tasks})
+		m.status = "synced 22 tasks"
+
+		for name, s := range map[string]Model{
+			"list":   m,
+			"table":  send(t, m, runes("l")),
+			"delete": send(t, m, runes("l"), runes("d")),
+		} {
+			lines := strings.Split(s.View(), "\n")
+			if len(lines) > 24 {
+				t.Errorf("width %d, %s: view is %d lines, terminal is 24", width, name, len(lines))
+			}
+			for i, l := range lines {
+				if got := lipgloss.Width(l); got > width {
+					t.Errorf("width %d, %s: line %d is %d cells:\n%s", width, name, i, got, l)
+				}
+			}
+		}
+		// The title still reads, just flattened onto its own line.
+		if v := m.View(); !strings.Contains(v, "VD-427 Project Pulse") {
+			t.Errorf("width %d: the flattened title is missing:\n%s", width, v)
+		}
+	}
+}
+
+// A query longer than the box must not wrap inside it: the box grows a line, the
+// list is shoved down and the view no longer fits the terminal.
+func TestLongQueryKeepsTheHeaderThreeLines(t *testing.T) {
+	long := "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi"
+	for _, width := range []int{80, 100, 120, 200} {
+		m := send(t, preview(t, width), runes("i"), runes(long))
+		if h := len(strings.Split(m.header(), "\n")); h != 3 {
+			t.Errorf("width %d: header is %d lines with a long query, want 3:\n%s",
+				width, h, m.header())
+		}
+	}
+}
+
 // Focus is accent-colored in both halves of the screen: the search frame while the
 // query field has the keys, the task title while the list does.
 func TestFocusIsAccentColored(t *testing.T) {
