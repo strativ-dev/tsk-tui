@@ -14,6 +14,11 @@ func TestMinutes(t *testing.T) {
 		{"7.5", 450},
 		{"7:30", 450},
 		{"0:45", 45},
+		// Either side of the colon may be left off.
+		{":30", 30},
+		{":05", 5},
+		{" :30 ", 30},
+		{"7:", 420},
 		{"7", 420},
 		{" 7H30M ", 450},
 		{"0", 0},
@@ -30,7 +35,9 @@ func TestMinutes(t *testing.T) {
 		}
 	}
 
-	bad := []string{"", "abc", "7:75", "-3", "h", "7h30", "1:2:3", "7m30h"}
+	bad := []string{"", "abc", "7:75", "-3", "h", "7h30", "1:2:3", "7m30h", ":", " : ", ":60",
+		// Minutes are two digits at most, and digits only.
+		":005", ":300", "7:005", ":+3", "7:-0", ":3x"}
 	for _, in := range bad {
 		if got, err := Minutes(in); err == nil {
 			t.Errorf("Minutes(%q) = %d, want error", in, got)

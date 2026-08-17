@@ -321,7 +321,7 @@ Pure functions, normalized **on field exit** — not per keystroke.
 
 Hours → minutes:
 ```
-7h30m → 450    7.5  → 450    90m → 90    7:30 → 450    7 → 420
+7h30m → 450    7.5  → 450    90m → 90    7:30 → 450    7 → 420    :30 → 30
 ```
 Render minutes as `h:mm` in the table, `6h45m` for task totals.
 

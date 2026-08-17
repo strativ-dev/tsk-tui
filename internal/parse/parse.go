@@ -24,7 +24,7 @@ var hmRe = regexp.MustCompile(`^(?:([0-9]+(?:\.[0-9]+)?)h)?(?:([0-9]+(?:\.[0-9]+
 
 // Minutes reads a duration written any of the ways a person writes one:
 //
-//	7h30m -> 450   7.5 -> 450   90m -> 90   7:30 -> 450   7 -> 420
+//	7h30m -> 450   7.5 -> 450   90m -> 90   7:30 -> 450   7 -> 420   :30 -> 30
 func Minutes(s string) (int, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" {
@@ -55,10 +55,34 @@ func Minutes(s string) (int, error) {
 	}
 
 	if hs, ms, ok := strings.Cut(s, ":"); ok {
-		h, err1 := strconv.Atoi(strings.TrimSpace(hs))
-		m, err2 := strconv.Atoi(strings.TrimSpace(ms))
-		if err1 != nil || err2 != nil || h < 0 || m < 0 || m > 59 {
+		hs, ms = strings.TrimSpace(hs), strings.TrimSpace(ms)
+		// Either side may be left off — ":30" is half an hour, "7:" is seven of them.
+		// A lone ":" says nothing and is refused.
+		if hs == "" && ms == "" {
 			return 0, ErrHours
+		}
+		h, m := 0, 0
+		if hs != "" {
+			if !digits(hs) {
+				return 0, ErrHours
+			}
+			v, err := strconv.Atoi(hs)
+			if err != nil {
+				return 0, ErrHours
+			}
+			h = v
+		}
+		if ms != "" {
+			// Minutes are two digits at most: ":005" is a typo, not five minutes, and
+			// reading it as one would log hours nobody meant to log.
+			if !digits(ms) || len(ms) > 2 {
+				return 0, ErrHours
+			}
+			v, err := strconv.Atoi(ms)
+			if err != nil || v > 59 {
+				return 0, ErrHours
+			}
+			m = v
 		}
 		return h*60 + m, nil
 	}
@@ -68,6 +92,20 @@ func Minutes(s string) (int, error) {
 		return 0, ErrHours
 	}
 	return int(math.Round(f * 60)), nil
+}
+
+// digits reports whether s is nothing but ASCII digits. Atoi would accept "+30" and
+// "-0" either side of the colon, which is not a time anybody types.
+func digits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // FormatHM renders minutes for a table cell: 450 -> "7:30".

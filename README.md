@@ -237,6 +237,7 @@ Durations are read however you write them, and normalized when you leave the fie
 
 ```
 7h30m → 7:30      7.5 → 7:30      90m → 1:30      7:30 → 7:30      7 → 7:00
+:30 → 0:30        7: → 7:00
 ```
 
 Dates fill in what you leave out, relative to the row you are editing (or today for a
