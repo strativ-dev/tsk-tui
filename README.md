@@ -40,7 +40,7 @@ binary, no CGO.
 - **A progress bar for today.** How far through your 8 hours, updated as you type.
 - **A month at a glance.** `d` opens a dashboard: hours logged per day, against what was expected.
 - **Find a task by typing.** The list narrows as you go.
-- **No mouse, ever.** The keys you can press are always listed along the bottom.
+- **No mouse, ever.** `?` lists the keys the current screen takes.
 - **Change any key.** Rebind anything you like in a small text file.
 - **Your API key stays private.** Encrypted at rest, never written to a file or a screen.
 - **Works with no internet.** Everything is cached; entries reach the ERP when you are back.
@@ -195,14 +195,16 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
-| `d` / `t` | dashboard tab / back to tasks (`2` / `1` also work) |
-| on the dashboard | `g` / `G` jump to the start or end of the month, `ctrl+f` / `ctrl+b` move half a screen; `r` re-reads it |
+| `d` / `t` | dashboard / back to the tasks (`2` / `1` too) |
 | `r` | re-fetch tasks from the ERP |
-| `?` | show or hide the key list |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
 | `ctrl+u` | clear the search and focus it |
+| `?` | show or hide the key list |
 | `q` | quit (asks first; `ctrl+c` quits at once) |
+
+`d` / `t` and `?` work from anywhere that is not typing into a field, so they reach the
+tabs and the key list from inside a task too.
 
 **Inside a task**
 
@@ -215,7 +217,27 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `/` | jump to a date within this task |
 | `h` | collapse and go back to the task line |
 | `esc` | back to the task line, still expanded |
+| `i` | collapse and focus the search field |
+| `ctrl+u` | collapse, clear the search, focus it |
 | `q` | quit (asks first; `n` returns to these rows) |
+
+**Dashboard** (`d` or `2`)
+
+One chart: hours logged per day for the whole month, weekends and holidays labelled
+instead of drawn. It opens on today.
+
+| Key | Does |
+|---|---|
+| `g` / `G` | start / end of the month |
+| `ctrl+f` / `ctrl+b` | half a screen of days, down / up |
+| `r` | re-read the month from the ERP |
+| `t` | back to the tasks (`1` too) |
+| `i` / `ctrl+u` | back to the tasks, in the search field |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
+There is no `j` / `k` here: the chart is one picture of the month, not a list, so it moves
+a screenful at a time. The month, its totals and the axis stay put while the days move.
 
 **Editing an entry**
 
@@ -224,7 +246,7 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `tab` / `shift+tab` | date → description → hours → ✓ → ✕ |
 | `enter` | next field, or commit on ✓ |
 | `ctrl+u` | clear the current field |
-| `esc` | cancel |
+| `esc` | cancel — immediately when editing, after a prompt for a new entry |
 
 **Search field**
 
