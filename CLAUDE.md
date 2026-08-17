@@ -506,8 +506,15 @@ Layout follows `Pictures/screenshots/tsk.png`:
   field has the cursor
   (`theme.SearchBoxFocus`). Colors are additive here, not the signal on their own —
   `TestFocusIsAccentColored` covers both.
-- Mode indicator top-right (`-- SEARCH --`), contextual key hints in the footer,
-  rendered from the mode's `key.Binding` set so help can never drift from behavior.
+- Mode indicator top-right (`-- SEARCH --`), and the mode's keys in the footer, rendered
+  from its `key.Binding` set so help can never drift from behavior. The list is **closed by
+  default** and toggled with `?` (`Model.showHelp`): open, the list mode's keys wrap to
+  three lines, which is worth a screen when you want them and not on every screen forever.
+  Closed, the footer still advertises `? keys` — one keystroke, nothing to discover. The
+  footer keeps its line either way, so opening the list windows the body rather than moving
+  it. `?` is matched where the tab keys are, so the typing modes protect it: `why?` in a
+  description stays typeable. A **modal is the exception** — it holds the keyboard, so `?`
+  cannot reach the toggle and its `y`/`n` hint shows regardless.
 - **A spinner marks every wait** (`bubbles/spinner`, `Model.spin`): in front of the status
   line, and in place of the body's empty state while the first answer is outstanding
   (`reading your tasks…`, `reading this month's hour log…`) — an empty list mid-sync is not

@@ -98,6 +98,10 @@ type Model struct {
 	pulled  map[int]bool
 	pulling map[int]bool
 
+	// showHelp opens the footer's key list. Closed by default: the keys are worth one
+	// line of the screen when you want them, not on every screen forever.
+	showHelp bool
+
 	// tab is the screen; mode is the focus inside it.
 	tab Tab
 	// The dashboard's month, as the ERP reported it. dashMonth is the first of the
@@ -430,10 +434,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == ModeConfirm {
 			return m.updateConfirm(msg)
 		}
-		// Tabs come before modes, but never while a field is taking letters — t and d
-		// have to stay typeable in the search box and in an entry's description.
+		// Tabs and the key list come before modes, but never while a field is taking
+		// letters — t, d and ? have to stay typeable in the search box and in an entry's
+		// description.
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump && m.mode != ModeAuth {
 			switch {
+			case key.Matches(msg, keys.Help):
+				m.showHelp = !m.showHelp
+				return m, nil
 			case key.Matches(msg, keys.DashTab):
 				return m.showDash()
 			case key.Matches(msg, keys.TasksTab):

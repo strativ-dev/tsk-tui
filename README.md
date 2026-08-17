@@ -177,8 +177,9 @@ loads, but timesheet lines cannot: the status line will say `no Odoo database`.
 `tsk` starts on the task list. Press `l` to open a task, `a` to add an entry, `enter`
 to edit the row under the cursor, `x` to delete it, `q` to quit.
 
-Every mode's keys are in the footer, always. The footer is generated from the same
-bindings the app matches on, so it cannot drift from what the keys actually do.
+Press `?` for the keys the current mode takes — the footer lists them, `?` again puts them
+away. It is generated from the same bindings the app matches on, so it cannot drift from
+what the keys actually do.
 
 ### Keymap
 
@@ -197,6 +198,7 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `d` / `t` | dashboard tab / back to tasks (`2` / `1` also work) |
 | on the dashboard | `g` / `G` jump to the start or end of the month, `ctrl+f` / `ctrl+b` move half a screen; `r` re-reads it |
 | `r` | re-fetch tasks from the ERP |
+| `?` | show or hide the key list |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
 | `ctrl+u` | clear the search and focus it |

@@ -23,6 +23,7 @@ type keyMap struct {
 	Refresh, SetKey, ClearSearch   key.Binding
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab              key.Binding
+	Help                           key.Binding
 }
 
 // keys is what the handlers and the footer read. ApplyKeys is its only writer, called
@@ -77,6 +78,11 @@ func defaultKeys() keyMap {
 		// picked out inside the label.
 		TasksTab: key.NewBinding(key.WithKeys("t", "1"), key.WithHelp("t", "tasks")),
 		DashTab:  key.NewBinding(key.WithKeys("d", "2"), key.WithHelp("d", "dashboard")),
+
+		// The footer's key list, off by default and toggled from anywhere that is not
+		// typing. ? is the one key the closed footer still advertises, so the rest are
+		// always one keystroke away without costing a line of every screen.
+		Help: key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "keys")),
 	}
 }
 

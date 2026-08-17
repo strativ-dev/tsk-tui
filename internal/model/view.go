@@ -937,22 +937,32 @@ func padLeftCell(s string, w int) string {
 	return s
 }
 
+// footer is the mode indicator and, when the key list is open, the keys the mode takes.
+// Closed it advertises one key — ? — which is what buys the list back; the screen keeps
+// the line either way, so opening it does not shove the body around.
 func (m Model) footer() string {
-	help := keys.help(m.mode)
-	if m.tab == TabDash && m.mode != ModeConfirm {
-		// It moves in screenfuls, not days, and there is no i: the query field filters
-		// tasks and this is not that tab.
-		help = []key.Binding{keys.Top, keys.HalfDown, keys.TasksTab, keys.Refresh, keys.Quit}
-	}
-	if m.mode == ModeConfirm {
-		// Which key accepts depends on what is being confirmed.
-		help = []key.Binding{m.confirmKeys(), keys.No}
-	}
-
 	label := modeLabel(m.mode)
 	if m.tab == TabDash && m.mode != ModeConfirm && m.mode != ModeAuth {
 		label = "-- DASHBOARD --"
 	}
+
+	// A modal is the exception: whatever accepts it has to be on screen, since it is
+	// holding the keyboard and ? will not reach the toggle.
+	help := []key.Binding{keys.Help}
+	switch {
+	case m.mode == ModeConfirm:
+		// Which key accepts depends on what is being confirmed.
+		help = []key.Binding{m.confirmKeys(), keys.No}
+	case !m.showHelp:
+	case m.tab == TabDash:
+		// It moves in screenfuls, not days, and there is no i: the query field filters
+		// tasks and this is not that tab.
+		help = []key.Binding{keys.Top, keys.HalfDown, keys.TasksTab, keys.Refresh,
+			keys.Quit, keys.Help}
+	default:
+		help = append(keys.help(m.mode), keys.Help)
+	}
+
 	parts := []string{theme.Mode.Render(label)}
 	for _, b := range help {
 		h := b.Help()

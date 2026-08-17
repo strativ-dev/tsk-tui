@@ -98,7 +98,7 @@ func TestRebindDrivesTheHandler(t *testing.T) {
 		t.Errorf("j still moves the cursor (now %d) after being unbound", m.cursor)
 	}
 	// The footer renders from the same binding, so it moves too.
-	if v := m.View(); !strings.Contains(v, "n next") {
+	if v := send(t, m, runes("?")).View(); !strings.Contains(v, "n next") {
 		t.Errorf("footer does not show the rebound key:\n%s", v)
 	}
 }

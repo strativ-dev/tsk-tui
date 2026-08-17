@@ -237,7 +237,11 @@ func TestTabBarAndFooter(t *testing.T) {
 		t.Errorf("no superscript tab numbers:\n%s", bar)
 	}
 
-	footer := m.View()
+	// The key list is closed until ? opens it, and then it is this tab's keys.
+	if closed := m.View(); strings.Contains(closed, "r fetch tasks") {
+		t.Errorf("the key list is open before ? was pressed:\n%s", closed)
+	}
+	footer := send(t, m, runes("?")).View()
 	if strings.Contains(footer, "i search") {
 		t.Errorf("the dashboard footer offers the query field:\n%s", footer)
 	}
@@ -434,7 +438,7 @@ func TestDashJumpsToTheEnds(t *testing.T) {
 	}
 
 	// The footer offers the two screenful motions, and no j / k — there is no cursor.
-	foot := m.footer()
+	foot := send(t, m, runes("?")).footer()
 	for _, want := range []string{"g/G", "ctrl+f/b"} {
 		if !strings.Contains(foot, want) {
 			t.Errorf("the footer does not offer %s:\n%s", want, foot)
@@ -525,6 +529,56 @@ func TestSummaryTargetsTheWholeMonth(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "12:00") || !strings.Contains(view, "/ 32:00") {
 		t.Errorf("the summary does not read 12:00 / 32:00:\n%s", view)
+	}
+}
+
+// The key list is off until ? asks for it, on both tabs, and ? closes it again. The
+// footer keeps its line either way, so opening the list never shoves the body around.
+func TestHelpTogglesTheKeyList(t *testing.T) {
+	tasks := []store.Task{{ID: 1, Key: "AI-1", Title: "task"}}
+	list := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
+		store.LoadedMsg{Tasks: tasks})
+
+	for _, tc := range []struct {
+		name  string
+		m     Model
+		key   string // a hint only that tab's open list carries
+		lines int
+	}{
+		{"tasks", list, "l expand", 30},
+		{"dashboard", send(t, dashModel(t, 100, 30), runes("t"), runes("d")), "r fetch tasks", 30},
+	} {
+		closed := tc.m.View()
+		if strings.Contains(closed, tc.key) {
+			t.Errorf("%s: the key list is open before ? was pressed:\n%s", tc.name, closed)
+		}
+		// Closed, the footer still says which key buys it back.
+		if !strings.Contains(closed, "? keys") {
+			t.Errorf("%s: nothing advertises ?:\n%s", tc.name, closed)
+		}
+
+		open := send(t, tc.m, runes("?"))
+		if !strings.Contains(open.View(), tc.key) {
+			t.Errorf("%s: ? did not open the key list:\n%s", tc.name, open.View())
+		}
+		if again := send(t, open, runes("?")); again.showHelp {
+			t.Errorf("%s: ? did not close it again", tc.name)
+		}
+		// The line count does not move, so neither does the body.
+		if got := len(strings.Split(open.View(), "\n")); got > tc.lines {
+			t.Errorf("%s: the open list made the view %d lines:\n%s", tc.name, got, open.View())
+		}
+	}
+
+	// ? has to stay typeable where letters are typed.
+	q := send(t, list, runes("i"), runes("?"))
+	if q.showHelp || q.search.Value() != "?" {
+		t.Errorf("query = %q, help = %v — ? was swallowed by the toggle",
+			q.search.Value(), q.showHelp)
+	}
+	desc := send(t, list, runes("l"), runes("a"), special(tea.KeyTab), runes("why?"))
+	if desc.showHelp || desc.fields[fieldDesc].Value() != "why?" {
+		t.Errorf("description = %q, help = %v", desc.fields[fieldDesc].Value(), desc.showHelp)
 	}
 }
 
