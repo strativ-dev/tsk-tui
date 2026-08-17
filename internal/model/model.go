@@ -696,6 +696,12 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Back):
 		m.mode = ModeList
 
+	case key.Matches(msg, keys.Quit):
+		// Same prompt as from the list, and "no" comes back to these rows rather than
+		// collapsing the task you were reading.
+		m.prev, m.mode = ModeTable, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+
 	case key.Matches(msg, keys.Search):
 		delete(m.expanded, t.ID)
 		m.mode = ModeSearch

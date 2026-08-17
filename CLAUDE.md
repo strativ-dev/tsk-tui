@@ -104,6 +104,8 @@ Table (`ModeTable`)
   opening the day modal, and matches part by part — `/12` is the 12th of any month
 - `h` — collapse the task, focus the task line (→ `ModeList`)
 - `esc` — focus the task line without collapsing
+- `q` — ask before quitting, as in the list (→ `ModeConfirm`); `n` comes back to these
+  rows rather than collapsing the task
 - `i` — **collapse the task** and focus the search input
 - `ctrl+u` — collapse the task, clear the query, focus the search input
 

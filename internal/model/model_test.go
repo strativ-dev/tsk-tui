@@ -382,6 +382,48 @@ func TestDeletePromptNamesTheRow(t *testing.T) {
 	}
 }
 
+// q asks before quitting from inside a task's rows too, and "no" hands the rows back
+// rather than dropping you out of the task you were reading.
+func TestQuitFromTableAsksFirst(t *testing.T) {
+	tasks := []store.Task{{ID: 1, Key: "AI-1", Title: "task", Rows: []store.Entry{
+		{ID: 9, Date: "11/08/26", Desc: "row", Minutes: 60},
+	}}}
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
+		store.LoadedMsg{Tasks: tasks}, runes("l"))
+	if m.mode != ModeTable {
+		t.Fatalf("mode = %v, want the rows to have focus", m.mode)
+	}
+
+	m = send(t, m, runes("q"))
+	if m.mode != ModeConfirm || m.cKind != confirmQuit {
+		t.Fatalf("mode = %v, kind = %v, want the quit prompt", m.mode, m.cKind)
+	}
+	if !strings.Contains(m.View(), "Quit tsk?") {
+		t.Errorf("the modal is not on screen:\n%s", m.View())
+	}
+	// Destructive, so enter must not fire it — only y.
+	if enter := send(t, m, special(tea.KeyEnter)); enter.mode != ModeConfirm {
+		t.Errorf("enter left the prompt (mode = %v); quitting takes y only", enter.mode)
+	}
+
+	back := send(t, m, runes("n"))
+	if back.mode != ModeTable {
+		t.Errorf("mode = %v after n, want the rows again", back.mode)
+	}
+	if !back.expanded[1] {
+		t.Error("the task was collapsed by a cancelled quit")
+	}
+
+	// y quits: the model hands back a command, and it is tea.Quit.
+	_, cmd := sendCmd(t, m, runes("y"))
+	if cmd == nil {
+		t.Fatal("y produced no command — nothing quits")
+	}
+	if msg := cmd(); msg == nil || fmt.Sprintf("%T", msg) != "tea.QuitMsg" {
+		t.Errorf("command produced %#v, want tea.QuitMsg", msg)
+	}
+}
+
 // Deleting a pulled row unlinks it in the ERP first: the row survives a refusal.
 func TestDeletePushesToERP(t *testing.T) {
 	tasks := []store.Task{{ID: 1372, Key: "SE360-1372", Title: "task", Rows: []store.Entry{

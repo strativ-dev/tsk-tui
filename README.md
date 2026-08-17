@@ -210,6 +210,7 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `/` | jump to a date within this task |
 | `h` | collapse and go back to the task line |
 | `esc` | back to the task line, still expanded |
+| `q` | quit (asks first; `n` returns to these rows) |
 
 **Editing an entry**
 

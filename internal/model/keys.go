@@ -194,7 +194,7 @@ func (k keyMap) help(m Mode) []key.Binding {
 			k.Refresh, k.SetKey, k.Search, k.ClearSearch, k.Quit}
 	case ModeTable:
 		return []key.Binding{k.Down, k.Up, k.Top, k.HalfDown, k.Edit, k.Add, k.Delete,
-			k.Jump, k.Collapse, k.ClearSearch, k.Back}
+			k.Jump, k.Collapse, k.ClearSearch, k.Back, k.Quit}
 	case ModeInsert:
 		return []key.Binding{k.Next, k.Prev, k.ClearField, k.Accept, k.Cancel}
 	case ModeJump:
