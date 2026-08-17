@@ -12,6 +12,19 @@ const (
 	Muted       = lipgloss.Color("#8A8F99")
 	// Rule draws the boxes and separators: visible on black, quieter than text.
 	Rule = lipgloss.Color("#2B2B3A")
+
+	// Dashboard palette, from the design spec. The three hour colors are thresholds:
+	// under 4h, under 8h, on target. The spec draws one-colour bars and tints only the
+	// number, warning that red-amber-green is the colourblind trap; the bars carry the
+	// colour here by choice, so the redundant signals it relies on stay — the 4h and 8h
+	// ticks, the printed number, and the labelled axis.
+	HourLow  = lipgloss.Color("#E0574F") // < 4h
+	HourMid  = lipgloss.Color("#E0A030") // 4h to < 8h
+	HourHigh = lipgloss.Color("#5FBF7F") // >= 8h
+	// TrackColor is the unfilled remainder and its threshold ticks.
+	TrackColor = lipgloss.Color("#2A2A33")
+	// OffBand is a day nothing was expected of.
+	OffBand = lipgloss.Color("#1E1E26")
 )
 
 var focusBorder = lipgloss.Border{Left: "▏"}
@@ -58,8 +71,33 @@ var (
 		BorderForeground(Link).
 		Foreground(Link).
 		Padding(0, 1)
-	// Sep is the rule under the header.
-	Sep = lipgloss.NewStyle().Foreground(Rule)
+	// Sep is the rule under the header; Track draws the empty part of a bar and the
+	// threshold ticks inside it.
+	Sep   = lipgloss.NewStyle().Foreground(Rule)
+	Track = lipgloss.NewStyle().Foreground(TrackColor)
+
+	// Tab bar. Pill is the active tab, reversed out in the accent so the screen you are
+	// on is the one thing the primary colour marks up here. The key hint is highlighted
+	// inside the word itself: accent on an inactive tab, and dark ink underlined on the
+	// pill, where accent on accent would say nothing.
+	Pill    = lipgloss.NewStyle().Foreground(Chrome).Background(Accent).Bold(true)
+	HintKey = lipgloss.NewStyle().Foreground(Accent).Bold(true)
+	PillKey = lipgloss.NewStyle().Foreground(Chrome).Background(Accent).Bold(true).Underline(true)
+
+	// Off is a day the ERP expected nothing of — weekend, holiday, leave. The band
+	// spans the whole track on purpose: width itself says "nothing was expected".
+	Off = lipgloss.NewStyle().Foreground(Muted).Background(OffBand)
+
+	// The three hour bands. Low/Mid/High colour a number on its own; the Fill trio is
+	// the bar itself — a solid band with the hours in dark ink on it, so the label reads
+	// inside the bar instead of costing width beside it.
+	Low  = lipgloss.NewStyle().Foreground(HourLow)
+	Mid  = lipgloss.NewStyle().Foreground(HourMid)
+	High = lipgloss.NewStyle().Foreground(HourHigh)
+
+	LowFill  = lipgloss.NewStyle().Foreground(Chrome).Background(HourLow).Bold(true)
+	MidFill  = lipgloss.NewStyle().Foreground(Chrome).Background(HourMid).Bold(true)
+	HighFill = lipgloss.NewStyle().Foreground(Chrome).Background(HourHigh).Bold(true)
 	// Total is a task's summed hours, the one number that should catch the eye.
 	Total = lipgloss.NewStyle().Bold(true)
 	// Match and MatchText are a row a date jump found. The date is reversed out so it

@@ -2,7 +2,9 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
@@ -47,6 +49,19 @@ const (
 	// field scrolled and showed 2/08/26.
 	dateWidth  = 9 // dd/mm/yy
 	hoursWidth = 6 // h:mm, or hh:mm
+
+	// Dashboard chart. dashScale is the hours the full bar stands for — 10, so an 8h
+	// day sits short of the end and overtime still has somewhere to go. dashBars caps
+	// the bar on a wide terminal; dashLabel holds "mon 17".
+	dashScale = 10.0
+	dashBars  = 34
+	dashLabel = 6
+	// Screen rows one day costs when the chart is ruled: its bar and the rule under it.
+	// ctrl+f / ctrl+b move by half a screen of these.
+	dashRowLines = 2
+	// minDayRows is how few rows of days the chart will squeeze into before it gives up
+	// its pinned head and axis: two days and the rule between them.
+	minDayRows = 3
 	descCap    = 48
 )
 
@@ -54,8 +69,12 @@ const (
 // footer are laid out first and the list gets whatever rows are left, so the
 // search field can never be pushed off the top of the screen.
 func (m Model) View() string {
-	head := append(strings.Split(m.header(), "\n"),
-		theme.Sep.Render(strings.Repeat("─", m.cols())), "")
+	head := []string{m.tabBar()}
+	if m.tab == TabTasks {
+		// The query field filters tasks, so it belongs to that tab and nowhere else.
+		head = append(head, strings.Split(m.header(), "\n")...)
+	}
+	head = append(head, theme.Sep.Render(strings.Repeat("─", m.cols())), "")
 
 	var tail []string
 	switch m.mode {
@@ -82,15 +101,42 @@ func (m Model) View() string {
 			trunc("! "+oneLine(m.err.Error()), m.cols()-gutter))))
 	}
 	if m.status != "" {
-		tail = append(tail, theme.Blur.Render(theme.Dim.Render(
-			trunc(oneLine(m.status), m.cols()-gutter))))
+		// The spinner goes in front of the status line while a request is out, so a wait
+		// on a screen that already has content still shows as movement rather than as a
+		// sentence that might be stale.
+		lead, room := "", m.cols()-gutter
+		if m.busy() {
+			lead, room = m.spin.View()+" ", room-2
+		}
+		tail = append(tail, theme.Blur.Render(
+			lead+theme.Dim.Render(trunc(oneLine(m.status), room))))
 	}
 	tail = append(tail, strings.Split(m.footer(), "\n")...)
 
-	// The list takes the rows left between header and footer, and is padded out to
+	// The chart's month totals and its axis are pinned above and below the days rather
+	// than scrolling with them: they are what the bars are read against, so scrolling
+	// them off the screen loses the scale the colours lean on. A terminal too short for
+	// both gives the days back their rows — the axis first, then the totals, since a
+	// chart with two visible days is not a chart.
+	if m.tab == TabDash {
+		dHead, dFoot := m.dashHead(), m.dashFoot()
+		for _, frame := range []*[]string{&dFoot, &dHead} {
+			if m.rows()-len(head)-len(tail)-len(dHead)-len(dFoot) >= minDayRows {
+				break
+			}
+			*frame = nil
+		}
+		head = append(head, dHead...)
+		tail = append(dFoot, tail...)
+	}
+
+	// The body takes the rows left between header and footer, and is padded out to
 	// them, which pins the status line and the key hints to the bottom of the screen.
 	budget := m.rows() - len(head) - len(tail)
 	body, focus := m.listLines()
+	if m.tab == TabDash {
+		body, focus = m.dashLines(budget)
+	}
 	body = window(body, focus, budget)
 	for len(body) < budget {
 		body = append(body, "")
@@ -157,6 +203,359 @@ func (m Model) halfPage(linesPerItem int) int {
 		return 1
 	}
 	return fits / 2
+}
+
+// tabBar is the row of screens across the top, the active one reversed out. The key
+// that reaches a tab is highlighted inside the word itself — btop style, no brackets
+// and no separate legend to keep in step. On the pill, accent on light would fail
+// contrast, so the hint switches to dark ink and an underline.
+func (m Model) tabBar() string {
+	tabs := []struct {
+		tab   Tab
+		label string
+		key   key.Binding
+	}{
+		{TabTasks, "tasks", keys.TasksTab},
+		{TabDash, "dashboard", keys.DashTab},
+	}
+
+	var b strings.Builder
+	b.WriteString("  ")
+	for i, t := range tabs {
+		active := t.tab == m.tab
+		body, hint := theme.Dim, theme.HintKey
+		if active {
+			body, hint = theme.Pill, theme.PillKey
+		}
+		// A superscript index sits at the top-left of the label, btop style, and is a key
+		// in its own right: 1 and 2 in bar order, alongside the letter.
+		b.WriteString(body.Render(" ") + hint.Render(superscript(i+1)) +
+			hinted(t.label, t.key, body, hint) + body.Render(" "))
+		b.WriteString("  ")
+	}
+	return b.String()
+}
+
+// hinted renders label with the binding's key picked out inside it. A key that is not
+// a letter of the word — a rebind to alt+d, say — is spelled out after it instead,
+// since there is nothing in the word to highlight.
+func hinted(label string, b key.Binding, body, hint lipgloss.Style) string {
+	k := b.Help().Key
+	if len([]rune(k)) == 1 {
+		if i := strings.Index(label, k); i >= 0 {
+			return body.Render(label[:i]) + hint.Render(k) + body.Render(label[i+len(k):])
+		}
+	}
+	return body.Render(label) + theme.Dim.Render(" "+k)
+}
+
+// superscript is a tab's position as a raised digit, so the number reads as a label on
+// the word rather than another word beside it. Beyond nine it falls back to the digit.
+func superscript(n int) string {
+	const raised = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+	if n < 0 || n > 9 {
+		return fmt.Sprint(n)
+	}
+	return string([]rune(raised)[n])
+}
+
+// dashHead is the chart's frame above the days: the month, its totals against the
+// target, and what a tick inside a bar means. It is laid out with the header rather than
+// with the body, so the days scroll under numbers that stay put.
+func (m Model) dashHead() []string {
+	if len(m.dashDays) == 0 {
+		return nil
+	}
+
+	logged, target, worked, workdays := m.dashTotals()
+	month := time.Now()
+	if t, err := time.Parse("2006-01-02", m.dashMonth); err == nil {
+		month = t
+	}
+
+	return []string{
+		// No "month to date" note: the target beside `logged` is the whole month, and the
+		// last row is today, marked as today, which says where the days stop.
+		theme.Blur.Render(theme.Title.Render(strings.ToUpper(month.Format("January 2006")))),
+		"",
+		theme.Blur.Render(theme.Dim.Render("logged  ") + monthBar(logged, target) +
+			"  " + theme.Total.Render(hoursLabel(logged)) +
+			theme.Dim.Render(" / "+hoursLabel(target)) + "   " + m.todayDelta() +
+			theme.Dim.Render(fmt.Sprintf("   %d of %d days", worked, workdays))),
+		"",
+		theme.Blur.Render(theme.Header.Render("HOURS PER DAY") +
+			theme.Dim.Render("   ") + theme.Track.Render("┆") + theme.Dim.Render(" 4h · 8h")),
+		"",
+	}
+}
+
+// todayDelta is where today stands against the hours expected of it — the one figure on
+// that line you can still do something about. The month's own gap is left to the bar and
+// the two numbers beside it: a shortfall spread over three weeks is not a number anybody
+// acts on before the end of the day.
+func (m Model) todayDelta() string {
+	today := time.Now().Format("2006-01-02")
+	for _, d := range m.dashDays {
+		if d.Date != today {
+			continue
+		}
+		switch {
+		case d.Expected == 0:
+			// Weekend, holiday, leave: nothing was expected, so there is no gap.
+			return theme.Dim.Render("today off")
+		case d.Actual >= d.Expected:
+			return theme.Dim.Render("today ") + theme.High.Render("+"+hoursLabel(d.Actual-d.Expected))
+		default:
+			return theme.Dim.Render("today ") + theme.Low.Render("−"+hoursLabel(d.Expected-d.Actual))
+		}
+	}
+	// The ERP did not report today at all — say so rather than implying a full day owed.
+	return theme.Dim.Render("today —")
+}
+
+// dashFoot is the ruler under the bars, pinned to the bottom of the chart for the same
+// reason as the head: the colours are read against a labelled axis, which says nothing
+// once it has scrolled off screen.
+//
+// The two lines are handed over separately — window() and the row budget count elements,
+// so one element holding a newline would make the view a row taller than the terminal.
+func (m Model) dashFoot() []string {
+	if len(m.dashDays) == 0 {
+		return nil
+	}
+	out := []string{""}
+	for _, l := range strings.Split(dashAxis(m.barCells()), "\n") {
+		out = append(out, theme.Blur.Render(l))
+	}
+	return out
+}
+
+// dashLines is the body of the chart: one row per day of the **whole** month, so the
+// holidays and weekends still to come are on it, with the index of today's row — the row
+// the window is built around when the month is taller than the terminal. Derived from
+// dashDays on every render, like every other body.
+//
+// budget is the rows it has. The rule between days is what it gives up first when the
+// month does not fit: separation is worth a line each until the lines are what is scarce.
+func (m Model) dashLines(budget int) ([]string, int) {
+	if len(m.dashDays) == 0 {
+		if m.dashLoading {
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading this month's hour log…"))}, -1
+		}
+		return []string{theme.Blur.Render(
+			theme.Dim.Render("no hour log yet — r to read this month"))}, -1
+	}
+
+	// One rule between days, none after the last: a bar sits against its own row rather
+	// than in a column of colour, which is the only way a stack of full days reads as
+	// separate days. Ruled, a month costs 2n-1 rows — dropped, it may fit whole, and a
+	// whole month on screen beats a windowed one now that the chart takes no motions.
+	barCells := m.barCells()
+	ruled := 2*len(m.dashDays)-1 <= budget || len(m.dashDays) > budget
+	rule := theme.Blur.Render(theme.Track.Render(
+		strings.Repeat("─", dashLabel+2+barCells)))
+	today, hold, focus := time.Now().Format("2006-01-02"), m.dashDayIndex(), -1
+	var lines []string
+	for i, d := range m.dashDays {
+		if i > 0 && ruled {
+			lines = append(lines, rule)
+		}
+		lines = append(lines, theme.Blur.Render(m.dashRow(d, barCells, today)))
+		if i == hold {
+			focus = len(lines) - 1 // the row the window is built around
+		}
+	}
+	return lines, focus
+}
+
+// barCells is the width of the bar area: what the day label and the hours leave over,
+// capped so a wide terminal does not stretch one day across the screen. The bars and the
+// axis under them read it, so they cannot disagree.
+func (m Model) barCells() int {
+	n := m.cols() - gutter - dashLabel - 8
+	if n > dashBars {
+		n = dashBars
+	}
+	if n < 8 {
+		n = 8
+	}
+	return n
+}
+
+// dashRow is one day: weekday and date, then either why nothing was expected of it or
+// a bar of the hours that counted against the hours that were due.
+func (m Model) dashRow(d api.DayLog, barCells int, today string) string {
+	day, err := time.Parse("2006-01-02", d.Date)
+	label := pad(d.Date, dashLabel)
+	if err == nil {
+		label = pad(strings.ToLower(day.Format("Mon"))+" "+day.Format("_2"), dashLabel)
+	}
+
+	// Days the ERP expected nothing of say so instead of drawing an empty bar.
+	if note := dayNote(d); note != "" {
+		return theme.Dim.Render(label) + "  " +
+			theme.Off.Render(center(note, barCells))
+	}
+
+	// A working day that has not happened yet draws the bare track and no number: the ERP
+	// reports 8 expected hours for it, and an empty red 0:00 bar would read as a day the
+	// hours were missed on rather than one nobody could have worked.
+	if d.Date > today && d.Actual == 0 { // ISO dates sort as strings
+		return theme.Dim.Render(label) + "  " +
+			theme.Track.Render(strings.Repeat("┈", barCells))
+	}
+
+	style := theme.Dim
+	if d.Date == today {
+		style = theme.TitleFocus // the day being logged into right now
+	}
+	return style.Render(label) + "  " + dashBar(d.Actual, barCells, d.Date == today)
+}
+
+// dashBar is one day's bar, exactly barCells wide however long the bar is: a solid band
+// of colour, the hours printed inside it at its right end in dark ink, then the dotted
+// track and the 4h / 8h ticks in whatever it did not fill.
+//
+// The label sits inside the band rather than after it so it costs no width and the bar
+// keeps meaning what the axis says. The band carries no pattern — the rule between days
+// is what tells one bar from the next.
+func dashBar(hours float64, cells int, today bool) string {
+	fill, band, fillStyle := cellsFor(hours, cells), hourBand(hours), hourFill(hours)
+
+	label := hoursLabel(hours)
+	if today {
+		// Say it, rather than leaving a glyph to be decoded: a running total must not
+		// look like a finished one.
+		label += " today"
+	}
+
+	// The unfilled remainder, with a tick where a threshold falls beyond the fill.
+	rest := []rune(strings.Repeat("┈", cells-fill))
+	for _, h := range []float64{4, 8} {
+		// Strictly past the fill: a bar sitting exactly on 8h has reached that
+		// threshold, so a tick at its edge would read as part of the bar.
+		if at := cellsFor(h, cells) - fill; at > 0 && at < len(rest) {
+			rest[at] = '┆'
+		}
+	}
+
+	// Room for the label inside the band, a space either side of it?
+	if inside := len(label) + 2; fill >= inside {
+		return fillStyle.Render(strings.Repeat(" ", fill-inside)+" "+label+" ") +
+			theme.Track.Render(string(rest))
+	}
+	// Too short to hold its own number: the number moves into the track, in the band's
+	// colour, and eats the dots it covers so the row stays the same width.
+	n := min(len(label)+2, len(rest))
+	return fillStyle.Render(strings.Repeat(" ", fill)) +
+		band.Render(" "+label+" ") + theme.Track.Render(string(rest[n:]))
+}
+
+// hourFill is the band a bar is drawn on: same thresholds as hourBand, as a background.
+func hourFill(hours float64) lipgloss.Style {
+	switch {
+	case hours >= 8:
+		return theme.HighFill
+	case hours >= 4:
+		return theme.MidFill
+	default:
+		return theme.LowFill
+	}
+}
+
+// hourBand is the colour for a day's hours: under 4h, under 8h, on target. Deliberately
+// not read off Expected — a day the ERP expects 4h of is still a short day.
+func hourBand(hours float64) lipgloss.Style {
+	switch {
+	case hours >= 8:
+		return theme.High
+	case hours >= 4:
+		return theme.Mid
+	default:
+		return theme.Low
+	}
+}
+
+// cellsFor is how much of a barCells-wide track a number of hours fills.
+func cellsFor(hours float64, barCells int) int {
+	n := int(math.Round(hours / dashScale * float64(barCells)))
+	if n > barCells {
+		n = barCells
+	}
+	if n < 0 {
+		n = 0
+	}
+	return n
+}
+
+// monthBar is the month's hours against its target so far, in the same block glyphs as
+// the day bars — the number alone made a 14h shortfall look like a rounding error.
+func monthBar(logged, target float64) string {
+	const w = 20
+	filled := w
+	if target > 0 {
+		filled = int(math.Round(logged / target * float64(w)))
+	}
+	if filled > w {
+		filled = w
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	style := theme.Mid
+	if logged >= target && target > 0 {
+		style = theme.High
+	}
+	return style.Render(strings.Repeat("█", filled)) +
+		theme.Track.Render(strings.Repeat("┈", w-filled))
+}
+
+// dayNote is why a day has no hours to show, or "" when hours were expected.
+func dayNote(d api.DayLog) string {
+	switch {
+	case d.Holiday:
+		return "holiday"
+	case d.OnLeave && !d.HalfDay:
+		return "leave"
+	case d.Weekend:
+		return "weekend"
+	case d.Expected == 0:
+		return "no hours expected"
+	}
+	return ""
+}
+
+// dashAxis is the ruler under the bars, labelled every second hour. A label that would
+// run past the end of the bar is left out rather than pushing the line wider.
+func dashAxis(barCells int) string {
+	marks := []byte(strings.Repeat(" ", barCells+1))
+	for h := 0; h <= int(dashScale); h += 2 {
+		at := int(math.Round(float64(h) / dashScale * float64(barCells)))
+		label := fmt.Sprint(h)
+		if at+len(label) > len(marks) {
+			continue
+		}
+		copy(marks[at:], label)
+	}
+	indent := strings.Repeat(" ", dashLabel+2)
+	return indent + theme.Track.Render("└"+strings.Repeat("─", barCells)) + "\n" +
+		indent + " " + theme.Dim.Render(strings.TrimRight(string(marks), " "))
+}
+
+// hoursLabel turns the ERP's decimal hours into the h:mm the rest of the app uses:
+// 8.25 -> "8:15". A tenth of an hour is not a unit anybody logs in.
+func hoursLabel(h float64) string {
+	return parse.FormatHM(int(math.Round(h * 60)))
+}
+
+// center pads s into w cells, for the weekend and holiday blocks.
+func center(s string, w int) string {
+	if lipgloss.Width(s) >= w {
+		return trunc(s, w)
+	}
+	left := (w - lipgloss.Width(s)) / 2
+	return strings.Repeat(" ", left) + s + strings.Repeat(" ", w-left-lipgloss.Width(s))
 }
 
 // header is the caret, the boxed query field, and the day's progress cluster.
@@ -245,6 +644,12 @@ func (m Model) todayMinutes() (total, pending int) {
 func (m Model) listLines() ([]string, int) {
 	tasks := m.filtered()
 	if len(tasks) == 0 {
+		// An empty list mid-sync is not an answer yet, so it says it is still reading
+		// rather than "no tasks match", which reads as the ERP having none.
+		if m.busy() && m.search.Value() == "" {
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading your tasks…"))}, -1
+		}
 		return []string{theme.Blur.Render(theme.Dim.Render("no tasks match"))}, -1
 	}
 
@@ -534,12 +939,21 @@ func padLeftCell(s string, w int) string {
 
 func (m Model) footer() string {
 	help := keys.help(m.mode)
+	if m.tab == TabDash && m.mode != ModeConfirm {
+		// It moves in screenfuls, not days, and there is no i: the query field filters
+		// tasks and this is not that tab.
+		help = []key.Binding{keys.Top, keys.HalfDown, keys.TasksTab, keys.Refresh, keys.Quit}
+	}
 	if m.mode == ModeConfirm {
 		// Which key accepts depends on what is being confirmed.
 		help = []key.Binding{m.confirmKeys(), keys.No}
 	}
 
-	parts := []string{theme.Mode.Render(modeLabel(m.mode))}
+	label := modeLabel(m.mode)
+	if m.tab == TabDash && m.mode != ModeConfirm && m.mode != ModeAuth {
+		label = "-- DASHBOARD --"
+	}
+	parts := []string{theme.Mode.Render(label)}
 	for _, b := range help {
 		h := b.Help()
 		parts = append(parts, theme.Mode.Render(h.Key)+theme.Hint.Render(" "+h.Desc))

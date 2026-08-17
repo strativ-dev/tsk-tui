@@ -22,6 +22,7 @@ type keyMap struct {
 	ClearQuery, Focus              key.Binding
 	Refresh, SetKey, ClearSearch   key.Binding
 	Top, Bottom, HalfDown, HalfUp  key.Binding
+	TasksTab, DashTab              key.Binding
 }
 
 // keys is what the handlers and the footer read. ApplyKeys is its only writer, called
@@ -30,16 +31,18 @@ var keys = defaultKeys()
 
 func defaultKeys() keyMap {
 	return keyMap{
-		Down:       key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j", "next")),
-		Up:         key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "prev")),
-		Expand:     key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
-		Collapse:   key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
-		Jump:       key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "date jump")),
-		Search:     key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "search")),
-		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Edit:       key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit row")),
-		Add:        key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add entry")),
-		Delete:     key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete row")),
+		Down:     key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j", "next")),
+		Up:       key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k", "prev")),
+		Expand:   key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l", "expand")),
+		Collapse: key.NewBinding(key.WithKeys("h", "left"), key.WithHelp("h", "collapse")),
+		Jump:     key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "date jump")),
+		Search:   key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "search")),
+		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Edit:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "edit row")),
+		Add:      key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add entry")),
+		// x, not d: d switches to the dashboard tab from every mode, and a key that
+		// deletes an hour log must not be one keystroke away from a tab switch.
+		Delete:     key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "delete row")),
 		Back:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Next:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next field")),
 		Prev:       key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev field")),
@@ -67,6 +70,13 @@ func defaultKeys() keyMap {
 		// half down is ctrl+f to keep the pair symmetric.
 		HalfDown: key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("ctrl+f/b", "half page")),
 		HalfUp:   key.NewBinding(key.WithKeys("ctrl+b")),
+
+		// Tabs, from anywhere that is not typing into a field. Delete-row moved to x so
+		// d can mean one thing everywhere. The digits are aliases in bar order, the way
+		// btop numbers its screens; the help key stays the letter, which is the one
+		// picked out inside the label.
+		TasksTab: key.NewBinding(key.WithKeys("t", "1"), key.WithHelp("t", "tasks")),
+		DashTab:  key.NewBinding(key.WithKeys("d", "2"), key.WithHelp("d", "dashboard")),
 	}
 }
 
@@ -191,7 +201,7 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{k.Focus, k.ClearQuery}
 	case ModeList:
 		return []key.Binding{k.Down, k.Up, k.Top, k.HalfDown, k.Expand, k.Collapse, k.Jump,
-			k.Refresh, k.SetKey, k.Search, k.ClearSearch, k.Quit}
+			k.DashTab, k.Refresh, k.SetKey, k.Search, k.ClearSearch, k.Quit}
 	case ModeTable:
 		return []key.Binding{k.Down, k.Up, k.Top, k.HalfDown, k.Edit, k.Add, k.Delete,
 			k.Jump, k.Collapse, k.ClearSearch, k.Back, k.Quit}

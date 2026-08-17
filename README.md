@@ -38,6 +38,7 @@ binary, no CGO.
 - **Only your own hours.** A colleague's time on the same task never counts as yours.
 - **"Where did Tuesday go?"** One key lists a whole day across every task, with its total.
 - **A progress bar for today.** How far through your 8 hours, updated as you type.
+- **A month at a glance.** `d` opens a dashboard: hours logged per day, against what was expected.
 - **Find a task by typing.** The list narrows as you go.
 - **No mouse, ever.** The keys you can press are always listed along the bottom.
 - **Change any key.** Rebind anything you like in a small text file.
@@ -174,7 +175,7 @@ loads, but timesheet lines cannot: the status line will say `no Odoo database`.
 ## Usage
 
 `tsk` starts on the task list. Press `l` to open a task, `a` to add an entry, `enter`
-to edit the row under the cursor, `d` to delete it, `q` to quit.
+to edit the row under the cursor, `x` to delete it, `q` to quit.
 
 Every mode's keys are in the footer, always. The footer is generated from the same
 bindings the app matches on, so it cannot drift from what the keys actually do.
@@ -193,6 +194,8 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
+| `d` / `t` | dashboard tab / back to tasks (`2` / `1` also work) |
+| on the dashboard | `g` / `G` jump to the start or end of the month, `ctrl+f` / `ctrl+b` move half a screen; `r` re-reads it |
 | `r` | re-fetch tasks from the ERP |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
@@ -206,7 +209,7 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `j` / `k`, `g` / `G`, `ctrl+f` / `ctrl+b` | move between rows |
 | `a` | new entry at the top, dated today |
 | `enter` | edit the focused row in place |
-| `d` | delete the focused row (asks; `y` only) |
+| `x` | delete the focused row (asks; `y` only) |
 | `/` | jump to a date within this task |
 | `h` | collapse and go back to the task line |
 | `esc` | back to the task line, still expanded |
@@ -325,6 +328,7 @@ The REST API and JSON-RPC each cover part of the job:
 | `POST /api/v1/timesheets/log` | creating one entry |
 | JSON-RPC `account.analytic.line` `search_read` | reading a task's lines |
 | JSON-RPC `write` / `unlink` | editing and deleting a line |
+| JSON-RPC `get_employee_hour_logs` | the dashboard's month of daily hours |
 
 Worth knowing:
 

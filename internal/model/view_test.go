@@ -46,7 +46,7 @@ func TestViewFitsWidth(t *testing.T) {
 		states["table"] = m
 		states["insert"] = send(t, m, runes("a"))
 		states["jump"] = send(t, m, runes("/"))
-		states["confirm"] = send(t, m, runes("d"))
+		states["confirm"] = send(t, m, runes("x"))
 
 		for name, s := range states {
 			for i, line := range strings.Split(s.View(), "\n") {
@@ -142,7 +142,7 @@ func TestErpTextCannotGrowTheView(t *testing.T) {
 		for name, s := range map[string]Model{
 			"list":   m,
 			"table":  send(t, m, runes("l")),
-			"delete": send(t, m, runes("l"), runes("d")),
+			"delete": send(t, m, runes("l"), runes("x")),
 		} {
 			lines := strings.Split(s.View(), "\n")
 			if len(lines) > 24 {
@@ -208,12 +208,12 @@ func TestFocusIsAccentColored(t *testing.T) {
 		t.Errorf("expanded task title lost the accent:\n%s", l)
 	}
 
-	// The frame is the top border line of the box, quiet until i moves the cursor in.
-	top := strings.Split(m.View(), "\n")[0]
+	// The frame is the box's top border, found by content: the tab bar sits above it.
+	top := find(m.View(), "╭")
 	if strings.Contains(top, accent) {
 		t.Errorf("search frame is accent-colored while the list has focus:\n%s", top)
 	}
-	if top = strings.Split(send(t, m, runes("i")).View(), "\n")[0]; !strings.Contains(top, accent) {
+	if top = find(send(t, m, runes("i")).View(), "╭"); !strings.Contains(top, accent) {
 		t.Errorf("search frame is not accent-colored while the field has focus:\n%s", top)
 	}
 }
@@ -285,12 +285,14 @@ func TestTitleFillsTheLine(t *testing.T) {
 func TestCaretFollowsFocus(t *testing.T) {
 	// The app launches on the list, so there is no caret until you ask for the field.
 	m := preview(t, 120)
-	list := strings.Split(m.View(), "\n")[1]
+	// The field's own line, located by content rather than index — the tab bar is above.
+	fieldLine := func(v string) string { return lineWith(t, v, "search title or tag") }
+	list := fieldLine(m.View())
 	if strings.Contains(list, "❯") {
 		t.Errorf("caret shown at launch, when focus is on the list:\n%s", list)
 	}
 
-	search := strings.Split(send(t, m, runes("i")).View(), "\n")[1]
+	search := fieldLine(send(t, m, runes("i")).View())
 	if !strings.Contains(search, "❯") {
 		t.Errorf("no caret after i focused the field:\n%s", search)
 	}
@@ -388,7 +390,8 @@ func TestSearchFieldAlwaysVisible(t *testing.T) {
 		if n := len(lines); n > 24 {
 			t.Errorf("view is %d lines tall, terminal is 24", n)
 		}
-		if !strings.Contains(lines[1], "│") {
+		// The box sits in the first few rows — under the tab bar, above the rule.
+		if !strings.Contains(strings.Join(lines[:4], "\n"), "│") {
 			t.Errorf("search box missing from the top of the view:\n%s", view)
 		}
 		if !strings.Contains(view, "SEARCH") && !strings.Contains(view, "LIST") && !strings.Contains(view, "TABLE") {

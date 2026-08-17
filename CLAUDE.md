@@ -9,7 +9,7 @@ Reference UI prototype: `Task TUI Interactive.dc.html` / spec PDF in the design 
 ## Stack
 
 - `github.com/charmbracelet/bubbletea` — runtime
-- `github.com/charmbracelet/bubbles` — `textinput`, `viewport`, `key`, `help`
+- `github.com/charmbracelet/bubbles` — `textinput`, `viewport`, `key`, `help`, `spinner`
 - `github.com/charmbracelet/lipgloss` — styling
 - `github.com/BurntSushi/toml` — the config file. TOML over YAML because this file is
   all short bare-looking scalars (`y`, `n`, `on`, `j`) and quoting is mandatory here;
@@ -26,7 +26,8 @@ internal/model/keys.go key.Binding sets per mode (footer help renders from these
 internal/config/       ~/.config/tsk/config.toml — [keys] overrides, validated
 internal/parse/        pure parsing: hours, dates  (unit-tested, no tea imports)
 internal/store/        persistence (JSON on disk), API key via pass, load/save commands
-internal/api/          ERP tasks API client (GET /api/v1/tasks/my)
+internal/api/          ERP tasks API client (GET /api/v1/tasks/my), Odoo JSON-RPC,
+                       and the dashboard's monthly hour log (api/hours.go)
 internal/theme/        lipgloss styles, all colors in one place
 ```
 
@@ -50,6 +51,109 @@ type Entry struct {
 
 Store minutes, never a formatted string. Totals and the daily progress bar are
 **derived on every render** — never cached in the model.
+
+## Tabs
+
+`Model.tab` is the screen; `Model.mode` is the focus inside it. Two so far:
+
+| Tab | Keys | What |
+|---|---|---|
+| `TabTasks` | `t` · `1` | the task list and everything reached from it (**default at launch**) |
+| `TabDash` | `d` · `2` | this month's hours per day, from the ERP |
+
+- The tab bar is the **first line of every screen** (`view.go: tabBar`), the active tab
+  reversed out in the **accent** (`theme.Pill`) — on this line the primary colour marks
+  one thing, which screen you are on: `¹tasks  ²dashboard`. Each tab carries **its position as a
+  raised digit** at the top-left of the label, btop style, and the **letter picked out
+  inside the word itself** (`hinted`) — accent on an inactive tab, dark ink underlined on
+  the pill, where accent on light would fail contrast. Both come off the binding, so a
+  rebind shows in the bar with nothing else to edit.
+- **Digits are aliases in bar order** (`1`, `2`). They are matched in the same place as
+  the letters, so the excluded typing modes protect them: a query of `2` and a `/12` date
+  prompt both keep their digits.
+- Tab keys are matched **before** the mode handlers, but **not** while a field is taking
+  letters (`ModeSearch`, `ModeInsert`, `ModeJump`, `ModeAuth`) — `t` and `d` have to stay
+  typeable in the query box and in a description. A modal (`ModeConfirm`) keeps the
+  keyboard whichever tab is behind it.
+- **`x` deletes a row, not `d`.** `d` means one thing everywhere, and a key that unlinks
+  an hour log must not be one keystroke from a tab switch.
+- The query field renders on `TabTasks` only: it filters tasks, so it belongs to that
+  tab. The dashboard's body replaces the list body; the footer and status line are shared.
+
+## Dashboard (`TabDash`)
+
+One chart: hours logged per day this month, `d` to open, `t` to go back.
+
+- Data comes from `account.analytic.line.get_employee_hour_logs`
+  (`api.FetchHourLogs`), one call for the whole month. The browser reaches it over
+  `/web/dataset/call_kw` with a session cookie; we have an API key, so it goes through
+  the same `execute_kw` path as the rest — an **empty ids list** (it is an `@api.model`
+  method) and any timestamp inside the month to report on.
+- The bar is **`actual`**, the track behind it **`expected`**. `logged_this_day` is the
+  raw sum of that day's lines and disagrees — 06/08/26 has `actual` 8 and
+  `logged_this_day` 16 — so the chart would show a 16h day. `office_hours + home_hours`
+  is attendance, a different question from timesheet hours.
+- **The whole month is on it**, the days still to come included — that is where this
+  month's holidays and weekends are, and they are worth seeing before the week starts. A
+  working day that has not happened draws the **bare track and no number**: the ERP reports
+  8 expected hours for it, and an empty red `0:00` bar read as a day the hours were missed
+  on rather than one nobody could have worked.
+- **The target is the whole month** (`dashTotals`): `logged  ███┈┈┈  80:00 / 152:00`, since
+  152:00 over 22 days is what the month is billed against and what a bar is worth filling
+  towards. Hours logged and the `N of M days` count still stop at today — they can only be
+  counted where the days exist.
+- **The number beside it is today's gap** (`view.go: todayDelta`), not the month's:
+  `today −5:30`, red under and green over, from today's `actual` against its `expected`.
+  A month's shortfall spread over three weeks is not something you act on before the day is
+  out; today's is. A day nothing was expected of reads `today off`, and a month the ERP has
+  not reported today in reads `today —` rather than implying a full day owed.
+- Weekends, holidays and leave say so instead of drawing an empty bar (`dayNote`); a
+  working day with nothing on it draws an empty track, which is the point. The band
+  spans the full track deliberately — width itself says "nothing was expected".
+- **The bar** (`view.go: dashBar`) is exactly `barCells` wide whatever it holds: a band of
+  the threshold colour, the hours **printed inside the band** at its right end in dark ink,
+  then the dotted remainder. Details that are each there for a reason:
+  - **A solid band.** The bar is the band colour as a *background*, no glyph pattern in
+    it; the rule below carries the separation instead.
+  - **A rule between days**, so each bar sits against its own row rather than in a column
+    of colour — and the **first thing given up** when the month does not fit: ruled, a
+    month costs `2n-1` rows, and a whole month on screen beats a separated half of one
+    (`dashLines(budget)`). Kept when neither fits, since a windowed chart still wants its
+    days told apart.
+  - **It moves in screenfuls, not days.** There is no cursor — the chart is a picture, not
+    a list — so `j`/`k` are unbound here and `Model.dashHold` only says which day the
+    window is built around: `-1` follows **today**, where it opens and where a re-read puts
+    it back; `g`/`G` pin it to the month's ends; `ctrl+f`/`ctrl+b` move half a screen of
+    days (`halfPage(dashRowLines)`), clamped. `window` holds that row in view and counts
+    what is off screen.
+  - **Only the days move.** The month, its totals and the tick legend are laid out with
+    the header (`dashHead`) and the axis with the footer (`dashFoot`), so the figures the
+    bars are read against cannot leave the screen with them. A terminal too short for both
+    gives the rows back — the axis first, then the head (`minDayRows`), since a chart with
+    two visible days is not a chart.
+  - Today's bar says **`today`** after its hours, inside the band.
+  - **The label lives inside the band** — same background, no divider through it — so it
+    costs the bar no width and the bar keeps
+    meaning what the axis says. A bar too short to hold its own number puts it in the
+    track instead, in the band's colour, eating the dots it covers so the row stays the
+    same width.
+  - **`┆` ticks at 4h and 8h, only past the fill.** A bar sitting exactly on 8h has
+    reached that threshold, so a tick at its edge would read as part of the bar.
+- **Colours by threshold** (`hourBand`/`hourFill`): under 4h `#E0574F`, under 8h
+  `#E0A030`, 8h or more `#5FBF7F`, from the spec's dashboard palette. The spec draws
+  one-colour bars and tints only the number, warning that red-amber-green is the
+  colourblind trap — the colour is on the bars here by choice, so the signals it relies
+  on stay: bar length, the visible ticks, the labelled axis, the printed number.
+- Hours read as **`h:mm`** everywhere (`hoursLabel` → `parse.FormatHM`): the ERP sends
+  decimal hours, and 8.25 means nothing to anyone logging time — 8:15 does.
+- The `logged` figure is a **bar** too (`monthBar`), against the month's target. A 14h
+  shortfall stated as a number alone read like a rounding error.
+- The month is read **once** per session (`dashMonth`), and `r` re-reads it.
+- Opening it needs the key owner's **email**, which only arrives with the REST day-total
+  answer (`DayHoursMsg.UserEmail`). Pressing `d` before the first sync lands sets
+  `dashWanted`, fetches the day total, and continues into the chart when the email
+  arrives — otherwise the first `d` of a session failed with `unknown Odoo login`.
+- Totals are derived on render (`dashTotals`), never stored.
 
 ## Modes
 
@@ -84,6 +188,7 @@ List (`ModeList`) — the mode the app starts in
 - `l` — expand task, focus its first row (→ `ModeTable`); a task with no
   entries still opens, so `a` has somewhere to add the first one
 - `h` — collapse task
+- `d` — the dashboard tab; `t` comes back here
 - `/` — date jump (→ `ModeJump`); from here it lists the whole day in a modal
   (→ `ModeDay`), so it needs neither this task open nor any rows in it
 - `r` — fetch tasks from the API
@@ -97,7 +202,9 @@ Table (`ModeTable`)
 - `g` / `G` — first / last row; `ctrl+f` / `ctrl+b` — half a screen
 - `enter` — edit the focused row in place (→ `ModeInsert`, kind=edit)
 - `a` — new entry at the top, prefilled with today's date (→ `ModeInsert`, kind=new)
-- `d` — delete the focused row (→ `ModeConfirm`). The modal names it —
+- `x` — delete the focused row (→ `ModeConfirm`). `d` is the dashboard tab, and a key
+  that unlinks an hour log must not sit one keystroke from a tab switch. The modal
+  names it —
   `Delete this entry "Retry backoff" of 11/08/26?` — since an unlink cannot be undone;
   a row Odoo returned with no name reads `Delete the entry of 11/08/26?`
 - `/` — date jump prompt (→ `ModeJump`); inside a task it moves the cursor rather than
@@ -283,7 +390,7 @@ matches `user_id` (res.users), not `employee_id`.
 - `enter` on a pulled row commits an `execute_kw` **`write`** with
   `{name, date, unit_amount}` (`api.UpdateEntry`). The row stays `Local` until the
   server agrees; a refusal keeps the edit and says the ERP is unchanged.
-- `d` on a pulled row commits an `execute_kw` **`unlink`** (`api.DeleteEntry`). The
+- `x` on a pulled row commits an `execute_kw` **`unlink`** (`api.DeleteEntry`). The
   row stays on screen until the server confirms — a refused delete must not hide
   hours that still exist. A local row (negative id) is dropped immediately.
 - Odoo answers `write`/`unlink` with a bare `true`/`false`, so `false` is treated as
@@ -401,6 +508,14 @@ Layout follows `Pictures/screenshots/tsk.png`:
   `TestFocusIsAccentColored` covers both.
 - Mode indicator top-right (`-- SEARCH --`), contextual key hints in the footer,
   rendered from the mode's `key.Binding` set so help can never drift from behavior.
+- **A spinner marks every wait** (`bubbles/spinner`, `Model.spin`): in front of the status
+  line, and in place of the body's empty state while the first answer is outstanding
+  (`reading your tasks…`, `reading this month's hour log…`) — an empty list mid-sync is not
+  the answer "no tasks". It runs while `Model.busy()` — a task sync or write, the month's
+  hour log, or a task's lines — and is started in **one place**: `Update` wraps the mode
+  handlers and batches `spin.Tick` whenever work went in flight and no tick is scheduled
+  (`Model.spinning`), so a new kind of request cannot forget to animate, and two overlapping
+  ones cannot double the frame rate. The tick stops itself once nothing is outstanding.
 
 ## Theme (`internal/theme`)
 

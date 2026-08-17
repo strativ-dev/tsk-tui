@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -27,6 +29,15 @@ const (
 	ModeDay
 	ModeConfirm
 	ModeAuth
+)
+
+// Tab is the top-level screen, above modes: the task list and everything reached from
+// it is one tab, the month's hour chart is another. Modes belong to a tab.
+type Tab int
+
+const (
+	TabTasks Tab = iota // where the app opens
+	TabDash
 )
 
 // DailyGoal is the 8h bar the header measures today against.
@@ -70,6 +81,12 @@ type Model struct {
 	syncing bool
 	status  string
 
+	// spin animates while anything is in flight — a fetch, a pull, a write. spinning
+	// says a tick is already scheduled, so work starting while other work runs does not
+	// stack a second one and double the frame rate.
+	spin     spinner.Model
+	spinning bool
+
 	// erpToday is what the ERP says was logged today, which beats the local
 	// guess for the progress bar. -1 until a sync answers.
 	erpToday int
@@ -80,6 +97,23 @@ type Model struct {
 	// failed pull stays out of both, so re-expanding tries again.
 	pulled  map[int]bool
 	pulling map[int]bool
+
+	// tab is the screen; mode is the focus inside it.
+	tab Tab
+	// The dashboard's month, as the ERP reported it. dashMonth is the first of the
+	// month it describes (YYYY-MM-01), so a late answer for another month is dropped.
+	dashMonth   string
+	dashDays    []api.DayLog
+	dashLoading bool
+	// dashWanted remembers that the chart is waiting on the login. JSON-RPC trades the
+	// key for a uid using the owner's email, and that email only arrives with the REST
+	// day-total answer — pressing d before the first sync lands would otherwise fail
+	// with "sync first".
+	dashWanted bool
+	// dashHold is the day the chart's window is built around when the month is taller
+	// than the terminal: -1 follows today, g and G pin it to the ends. There is no
+	// cursor — the chart is a picture, not a list — so this only says what stays in view.
+	dashHold int
 
 	tasks    []store.Task
 	cursor   int          // index into filtered()
@@ -132,8 +166,12 @@ func New() Model {
 	auth.EchoMode = textinput.EchoPassword // never render the key
 	auth.EchoCharacter = '•'
 
+	spin := spinner.New(spinner.WithSpinner(spinner.Dot))
+	spin.Style = theme.Bar // the accent, like the progress bar it sits under
+
 	m := Model{
 		mode:     ModeList, // the task list has focus at launch, not the query field
+		spin:     spin,
 		search:   search,
 		jump:     jump,
 		auth:     auth,
@@ -141,6 +179,7 @@ func New() Model {
 		erpToday: -1,
 		pulled:   map[int]bool{},
 		pulling:  map[int]bool{},
+		dashHold: -1, // the chart opens on today, not on the 1st
 	}
 	// Sized for the fallback width until the first WindowSizeMsg lands, so the field
 	// cannot wrap its own box on the very first frame either.
@@ -160,8 +199,42 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, store.Load, store.LoadKey())
 }
 
+// Update runs the mode handlers and then keeps the spinner in step with them: every
+// command that puts work in flight starts the animation from here, so a new kind of
+// fetch cannot forget to. It is one place rather than seven because the model already
+// knows what is outstanding.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	m, ok := next.(Model)
+	if !ok {
+		return next, cmd
+	}
+	if m.busy() && !m.spinning {
+		m.spinning = true
+		cmd = tea.Batch(cmd, m.spin.Tick)
+	}
+	return m, cmd
+}
+
+// busy is whether anything is waiting on the network: a task sync or write (syncing),
+// the month's hour log (dashLoading), or a task's lines (pulling).
+func (m Model) busy() bool {
+	return m.syncing || m.dashLoading || len(m.pulling) > 0
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		// Stops of its own accord when the last request answers; Update starts it again
+		// with the next one.
+		if !m.busy() {
+			m.spinning = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.search.Width = m.searchFieldWidth()
@@ -223,7 +296,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.UserEmail != "" {
 			m.login = msg.UserEmail
+			if m.dashWanted {
+				// The chart was waiting for exactly this.
+				return m.loadDash()
+			}
 		}
+		if msg.Err != nil && m.dashWanted {
+			m.dashWanted, m.dashLoading, m.syncing = false, false, false
+			m.err = msg.Err
+		}
+		return m, nil
+
+	case api.HourLogsMsg:
+		m.syncing, m.dashLoading = false, false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.err = msg.Err
+			m.status = "no hour log for this month"
+			return m, nil
+		}
+		m.dashMonth, m.dashDays, m.dashHold = msg.Month, msg.Days, -1
+		m.err = nil
 		return m, nil
 
 	case api.LoggedMsg:
@@ -330,6 +426,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+		// A modal owns the keyboard while it is up, whichever tab is behind it.
+		if m.mode == ModeConfirm {
+			return m.updateConfirm(msg)
+		}
+		// Tabs come before modes, but never while a field is taking letters — t and d
+		// have to stay typeable in the search box and in an entry's description.
+		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump && m.mode != ModeAuth {
+			switch {
+			case key.Matches(msg, keys.DashTab):
+				return m.showDash()
+			case key.Matches(msg, keys.TasksTab):
+				m.tab = TabTasks
+				return m, nil
+			}
+		}
+		if m.tab == TabDash {
+			return m.updateDash(msg)
+		}
+
 		switch m.mode {
 		case ModeSearch:
 			return m.updateSearch(msg)
@@ -1097,6 +1212,122 @@ func (m Model) jumpHits() int {
 		}
 	}
 	return n
+}
+
+// --- dashboard ---------------------------------------------------------------
+
+// showDash opens the chart tab and reads the month if it has not been read yet. The
+// ERP owns these numbers — nothing here is derived from the local task list, which only
+// knows the tasks that have been opened.
+func (m Model) showDash() (tea.Model, tea.Cmd) {
+	m.tab = TabDash
+	if m.dashMonth == thisMonth() || m.dashLoading {
+		return m, nil // already have it, or it is on its way
+	}
+	return m.loadDash()
+}
+
+func (m Model) loadDash() (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.dashLoading = true
+	m.syncing = true
+	if strings.TrimSpace(m.login) == "" {
+		// Ask for the day total first: its answer carries the email the RPC login needs.
+		m.dashWanted = true
+		return m, api.FetchDayHours(m.key, parse.Today())
+	}
+	m.dashWanted = false
+	return m, api.FetchHourLogs(m.key, m.login, m.db, time.Now())
+}
+
+// updateDash is the chart tab: the month's ends, half a screen either way, a refresh, and
+// the keys that leave for the task list. There is no cursor to walk a day at a time — the
+// chart is one picture, not a list — so it moves in screenfuls: g and G to the ends,
+// ctrl+f / ctrl+b by half of what is showing, and today in between, where it opens.
+func (m Model) updateDash(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Top):
+		return m.holdDash(0), nil
+	case key.Matches(msg, keys.Bottom):
+		return m.holdDash(len(m.dashDays) - 1), nil
+	case key.Matches(msg, keys.HalfDown):
+		return m.holdDash(m.dashDayIndex() + m.halfPage(dashRowLines)), nil
+	case key.Matches(msg, keys.HalfUp):
+		return m.holdDash(m.dashDayIndex() - m.halfPage(dashRowLines)), nil
+
+	case key.Matches(msg, keys.Refresh):
+		m.dashMonth = "" // force a re-read of the month
+		return m.loadDash()
+
+	case key.Matches(msg, keys.Quit):
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+		return m, nil
+
+	case key.Matches(msg, keys.Search), key.Matches(msg, keys.ClearSearch):
+		// Searching is a task-list act, so it takes you back there.
+		m.tab, m.mode = TabTasks, ModeSearch
+		if key.Matches(msg, keys.ClearSearch) {
+			m.search.SetValue("")
+			m.clampCursor()
+		}
+		m.search.Focus()
+		return m, textinput.Blink
+	}
+	return m, nil
+}
+
+// holdDash pins the window to day i, clamped, so the ends of the month stop rather than
+// wrap.
+func (m Model) holdDash(i int) Model {
+	m.dashHold = min(max(i, 0), max(len(m.dashDays)-1, 0))
+	return m
+}
+
+// dashDayIndex is the row the window is built around: today, or the last day the month
+// has if today is not among them. It is the day being logged into, so it is the one worth
+// landing on — and the chart takes no motions, so it is the only row that ever holds the
+// window.
+func (m Model) dashDayIndex() int {
+	if m.dashHold >= 0 {
+		return min(m.dashHold, max(len(m.dashDays)-1, 0))
+	}
+	today := time.Now().Format("2006-01-02")
+	for i, d := range m.dashDays {
+		if d.Date == today {
+			return i
+		}
+	}
+	return max(len(m.dashDays)-1, 0)
+}
+
+// thisMonth is the first of the current month, the key the dashboard caches under.
+func thisMonth() string { return time.Now().Format("2006-01") + "-01" }
+
+// dashTotals sums what the month's rows say. The target and the working-day count are the
+// **whole month** — 152:00 over 22 days, not the 88:00 owed so far — because that is the
+// figure the month is billed against and the one worth watching a bar fill up towards.
+// What has been logged, and the days it landed on, can only be counted up to today.
+// Derived on render, never stored.
+func (m Model) dashTotals() (logged, target float64, worked, workdays int) {
+	today := time.Now().Format("2006-01-02")
+	for _, d := range m.dashDays {
+		if d.Expected > 0 {
+			target += d.Expected
+			workdays++
+		}
+		if d.Date > today { // ISO dates sort as strings
+			continue
+		}
+		logged += d.Actual
+		if d.Expected > 0 && d.Actual > 0 {
+			worked++
+		}
+	}
+	return logged, target, worked, workdays
 }
 
 // --- confirm -----------------------------------------------------------------

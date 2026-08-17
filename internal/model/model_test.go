@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -95,7 +96,7 @@ func TestAddEntryFlow(t *testing.T) {
 	}
 
 	// Delete it again: d, then y.
-	m = send(t, m, runes("d"))
+	m = send(t, m, runes("x"))
 	if m.mode != ModeConfirm {
 		t.Fatalf("mode = %v, want ModeConfirm", m.mode)
 	}
@@ -367,7 +368,7 @@ func TestDeletePromptNamesTheRow(t *testing.T) {
 	base := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
 		store.LoadedMsg{Tasks: tasks}, runes("l"))
 
-	m := send(t, base, runes("d"))
+	m := send(t, base, runes("x"))
 	if want := `Delete this entry "Retry backoff" of 11/08/26?`; m.cPrompt != want {
 		t.Errorf("prompt = %q, want %q", m.cPrompt, want)
 	}
@@ -376,7 +377,7 @@ func TestDeletePromptNamesTheRow(t *testing.T) {
 	}
 
 	// A row with no description still reads as a sentence.
-	m = send(t, base, runes("j"), runes("d"))
+	m = send(t, base, runes("j"), runes("x"))
 	if want := "Delete the entry of 10/08/26?"; m.cPrompt != want {
 		t.Errorf("prompt = %q, want %q", m.cPrompt, want)
 	}
@@ -434,7 +435,7 @@ func TestDeletePushesToERP(t *testing.T) {
 		store.LoadedMsg{Tasks: tasks}, store.KeyMsg{Key: "k", DB: "db"},
 		runes("l"))
 
-	m, cmd := sendCmd(t, m, runes("d"))
+	m, cmd := sendCmd(t, m, runes("x"))
 	m, cmd = sendCmd(t, m, runes("y"))
 	if cmd == nil {
 		t.Fatal("delete produced no command — the ERP was never told")
@@ -456,7 +457,7 @@ func TestDeletePushesToERP(t *testing.T) {
 	}
 
 	// A local row needs no round trip: it goes at once.
-	m2 := send(t, ok, runes("j"), runes("d"))
+	m2 := send(t, ok, runes("j"), runes("x"))
 	m2, cmd = sendCmd(t, m2, runes("y"))
 	if len(m2.tasks[0].Rows) != 0 {
 		t.Errorf("rows = %+v, want the local row dropped immediately", m2.tasks[0].Rows)
@@ -842,5 +843,45 @@ func TestJumpCleared(t *testing.T) {
 	cleared := send(t, m, special(tea.KeyCtrlU))
 	if cleared.jumpDate != "" {
 		t.Errorf("jumpDate = %q after ctrl+u", cleared.jumpDate)
+	}
+}
+
+// Every wait animates: the spinner starts with the request, keeps ticking while it is
+// out, and stops on its own when the answer lands. A frozen "syncing…" line cannot be
+// told from a hung one.
+func TestLoaderSpinsWhileWaiting(t *testing.T) {
+	const frames = "⣾⣽⣻⢿⡿⣟⣯⣷" // spinner.Dot
+
+	m := send(t, New(), tea.WindowSizeMsg{Width: 80, Height: 24},
+		store.KeyMsg{Key: "k", DB: "db"})
+	if !m.busy() {
+		t.Fatal("the model is not waiting on anything after a key landed")
+	}
+	if !m.spinning {
+		t.Error("no tick was scheduled for a request in flight")
+	}
+	if !strings.ContainsAny(m.View(), frames) {
+		t.Errorf("nothing on screen says it is loading:\n%s", m.View())
+	}
+
+	// A tick advances the frame and asks for the next one.
+	next, cmd := sendCmd(t, m, spinner.TickMsg{})
+	if cmd == nil {
+		t.Error("the spinner stopped while the request was still out")
+	}
+	if next.spin.View() == m.spin.View() {
+		t.Errorf("the frame did not advance: %q", next.spin.View())
+	}
+
+	// The answer stops it, and a tick that arrives late does not restart it.
+	done := send(t, next, api.TasksMsg{Tasks: []store.Task{{ID: 1, Key: "AI-1", Title: "t"}}})
+	if done.busy() {
+		t.Fatal("still busy after the tasks landed")
+	}
+	if late, cmd := sendCmd(t, done, spinner.TickMsg{}); cmd != nil || late.spinning {
+		t.Error("the spinner kept ticking with nothing to wait for")
+	}
+	if strings.ContainsAny(done.View(), frames) {
+		t.Errorf("the loader is still on screen:\n%s", done.View())
 	}
 }
