@@ -38,8 +38,15 @@ binary, no CGO.
 - **Only your own hours.** A colleague's time on the same task never counts as yours.
 - **"Where did Tuesday go?"** One key lists a whole day across every task, with its total.
 - **A progress bar for today.** How far through your 8 hours, updated as you type.
-- **A month at a glance.** `d` opens a dashboard: hours logged per day, against what was expected.
-- **Check in and out.** `c` on the dashboard, with the clock running beside it.
+- **A month at a glance.** `d` opens a dashboard: hours logged per day, against what was
+  expected, red/amber/green by how close to 8 hours, weekends and holidays labelled
+  instead of drawn.
+- **The whole month's target, not just today's.** `logged 80:00 / 152:00`, so a shortfall
+  reads against what the month is billed for.
+- **Check in and out.** `c` on the dashboard: a boxed button, green to check in, amber to
+  check out, `WFH`/`OFFICE` and the running time beside it.
+- **Never left wondering if it's working.** A spinner marks every request in flight —
+  reading tasks, logging hours, reading the month.
 - **Find a task by typing.** The list narrows as you go.
 - **No mouse, ever.** `?` lists the keys the current screen takes.
 - **Change any key.** Rebind anything you like in a small text file.
