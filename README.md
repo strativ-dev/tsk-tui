@@ -13,6 +13,8 @@ binary, no CGO.
 
 - [Features](#features)
 - [Installation](#installation)
+  - [Download a binary (no Go required)](#download-a-binary-no-go-required)
+  - [Build from source](#build-from-source)
 - [First run](#first-run)
   - [Option A — a `pass` entry (recommended)](#option-a--a-pass-entry-recommended)
   - [Option B — environment variables (no `pass`)](#option-b--environment-variables-no-pass)
@@ -55,6 +57,25 @@ binary, no CGO.
 
 ## Installation
 
+### Download a binary (no Go required)
+
+Grab the executable for your platform from the
+[releases page](https://github.com/strativ-dev/tsk-tui/releases/latest), then:
+
+```fish
+chmod +x tsk-linux-amd64      # or tsk-darwin-arm64
+mv tsk-linux-amd64 ~/go/bin/tsk    # anywhere on your PATH works
+```
+
+Each one is a single static binary — no CGO, no shared libraries, nothing else to
+install. Only two platforms are built: Linux amd64 and macOS Apple Silicon (arm64). On
+anything else, build from source below.
+
+On macOS, Gatekeeper will refuse to run it the first time since it is not notarized:
+`xattr -d com.apple.quarantine tsk-darwin-arm64` clears that.
+
+### Build from source
+
 Go 1.22 or newer is the only hard requirement. Linux and macOS are the same commands;
 there is no CGO and nothing platform-specific in the build.
 
@@ -72,6 +93,13 @@ go build -o tsk ./cmd/tsk
 ```
 
 Make sure `~/go/bin` is on your `PATH` if you used `go install`.
+
+Cross-compiling for another platform — say, a Linux machine building the Mac binary —
+is one environment variable, no C toolchain required:
+
+```fish
+env GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o tsk-darwin-arm64 ./cmd/tsk
+```
 
 [`pass`](https://www.passwordstore.org/) is what keeps your API key encrypted, and it is
 the recommended way to run this — see [Option A](#option-a--a-pass-entry-recommended).
