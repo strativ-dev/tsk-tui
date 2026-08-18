@@ -39,6 +39,7 @@ binary, no CGO.
 - **"Where did Tuesday go?"** One key lists a whole day across every task, with its total.
 - **A progress bar for today.** How far through your 8 hours, updated as you type.
 - **A month at a glance.** `d` opens a dashboard: hours logged per day, against what was expected.
+- **Check in and out.** `c` on the dashboard, with the clock running beside it.
 - **Find a task by typing.** The list narrows as you go.
 - **No mouse, ever.** `?` lists the keys the current screen takes.
 - **Change any key.** Rebind anything you like in a small text file.
@@ -224,12 +225,14 @@ tabs and the key list from inside a task too.
 **Dashboard** (`d` or `2`)
 
 One chart: hours logged per day for the whole month, weekends and holidays labelled
-instead of drawn. It opens on today.
+instead of drawn. It opens on today. Top right is the ERP's own clock — where you are
+working, when you checked in, how long ago that was, and the button `c` presses.
 
 | Key | Does |
 |---|---|
 | `g` / `G` | start / end of the month |
 | `ctrl+f` / `ctrl+b` | half a screen of days, down / up |
+| `c` | check in, or check out (asks first, `y` only) — the boxed button says which |
 | `r` | re-read the month from the ERP |
 | `t` | back to the tasks (`1` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
@@ -353,6 +356,7 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `account.analytic.line` `search_read` | reading a task's lines |
 | JSON-RPC `write` / `unlink` | editing and deleting a line |
 | JSON-RPC `get_employee_hour_logs` | the dashboard's month of daily hours |
+| JSON-RPC `hr.employee` / `hr.attendance` | checking in and out, and the session you are in |
 
 Worth knowing:
 

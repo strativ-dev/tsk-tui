@@ -56,6 +56,7 @@ const (
 	confirmDeleteRow confirmKind = iota
 	confirmDiscard
 	confirmQuit
+	confirmCheckOut
 )
 
 // Insert-mode focus positions.
@@ -114,6 +115,18 @@ type Model struct {
 	// day-total answer — pressing d before the first sync lands would otherwise fail
 	// with "sync first".
 	dashWanted bool
+	// The ERP's own clock. attEmp is the hr.employee behind the login, read once and kept
+	// because it never changes; attKnown says an answer has landed, which is what makes
+	// the c key safe — attendance_manual is a toggle, so firing it against a state we have
+	// not read could check you out when you meant in. clocking is a toggle in flight.
+	attEmp   int
+	att      api.Attendance
+	attKnown bool
+	clocking bool
+	// ticking says a 30s repaint is already scheduled for the elapsed figure, the same
+	// guard spinning is for the spinner.
+	ticking bool
+
 	// dashHold is the day the chart's window is built around when the month is taller
 	// than the terminal: -1 follows today, g and G pin it to the ends. There is no
 	// cursor — the chart is a picture, not a list — so this only says what stays in view.
@@ -203,10 +216,10 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(textinput.Blink, store.Load, store.LoadKey())
 }
 
-// Update runs the mode handlers and then keeps the spinner in step with them: every
-// command that puts work in flight starts the animation from here, so a new kind of
-// fetch cannot forget to. It is one place rather than seven because the model already
-// knows what is outstanding.
+// Update runs the mode handlers and then keeps the two animations in step with the state:
+// every command that puts work in flight starts the spinner from here, and being checked in
+// starts the clock, so a new kind of fetch cannot forget either. One place rather than
+// seven, because the model already knows what is outstanding.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	m, ok := next.(Model)
@@ -217,13 +230,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinning = true
 		cmd = tea.Batch(cmd, m.spin.Tick)
 	}
+	if m.att.CheckedIn && !m.ticking {
+		m.ticking = true
+		cmd = tea.Batch(cmd, clockTick())
+	}
 	return m, cmd
 }
 
+// clockTickMsg repaints the elapsed figure beside the check-out button. The figure itself
+// is derived from the check-in time on every render, so a late or dropped tick costs
+// freshness and nothing else.
+type clockTickMsg time.Time
+
+func clockTick() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return clockTickMsg(t) })
+}
+
 // busy is whether anything is waiting on the network: a task sync or write (syncing),
-// the month's hour log (dashLoading), or a task's lines (pulling).
+// the month's hour log (dashLoading), a check in or out (clocking), or a task's lines.
 func (m Model) busy() bool {
-	return m.syncing || m.dashLoading || len(m.pulling) > 0
+	return m.syncing || m.dashLoading || m.clocking || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -238,6 +264,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
+
+	case clockTickMsg:
+		// Stops itself once the clock is not running; Update starts it again on the next
+		// check in. It keeps ticking on the task list: conditioning it on the tab would
+		// mean a second place that schedules ticks, which is what the flag avoids, and a
+		// repaint every 30 seconds is free.
+		if !m.att.CheckedIn {
+			m.ticking = false
+			return m, nil
+		}
+		return m, clockTick()
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -306,7 +343,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.Err != nil && m.dashWanted {
-			m.dashWanted, m.dashLoading, m.syncing = false, false, false
+			m.dashWanted, m.dashLoading, m.syncing, m.clocking = false, false, false, false
 			m.err = msg.Err
 		}
 		return m, nil
@@ -324,6 +361,46 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dashMonth, m.dashDays, m.dashHold = msg.Month, msg.Days, -1
 		m.err = nil
+		return m, nil
+
+	case api.AttendanceMsg:
+		// A read that was already in flight when a toggle started is thrown away: the
+		// toggle's own read is newer, and the two answer the same question.
+		if !msg.Toggled && m.clocking {
+			return m, nil
+		}
+		if msg.Toggled {
+			m.clocking = false
+		}
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			// The clock is the ERP's, so a failed call changes nothing here.
+			m.err = msg.Err
+			m.status = "attendance unchanged: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+
+		m.att, m.attKnown = msg.At, true
+		if msg.At.EmployeeID != 0 {
+			m.attEmp = msg.At.EmployeeID
+		}
+		m.err = nil
+		switch {
+		case msg.Warning != "":
+			// The ERP declined the toggle and said why; the state it reported alongside is
+			// the truth, and it is already applied above.
+			m.status = oneLine(msg.Warning)
+		case msg.Toggled && msg.At.CheckedIn != msg.Want:
+			// Never retry a toggle — a retry ping-pongs. Say what the server says.
+			m.status = "the ERP says you are " + checkedLabel(msg.At.CheckedIn) + " — screen refreshed"
+		case msg.Toggled && msg.At.CheckedIn:
+			m.status = "checked in at " + clockTime(msg.At.Since)
+		case msg.Toggled:
+			m.status = "checked out at " + clockTime(time.Now())
+		}
 		return m, nil
 
 	case api.LoggedMsg:
@@ -449,7 +526,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if m.tab == TabDash {
+		// ModeAuth is excluded above so the key can be typed, which means the dash tab must
+		// let it through too: a 401 on the hour log opens the prompt while this tab is up,
+		// and routing here regardless left it unusable — every keystroke went to the chart.
+		if m.tab == TabDash && m.mode != ModeAuth {
 			return m.updateDash(msg)
 		}
 
@@ -1248,7 +1328,39 @@ func (m Model) loadDash() (tea.Model, tea.Cmd) {
 		return m, api.FetchDayHours(m.key, parse.Today())
 	}
 	m.dashWanted = false
-	return m, api.FetchHourLogs(m.key, m.login, m.db, time.Now())
+	cmds := []tea.Cmd{api.FetchHourLogs(m.key, m.login, m.db, time.Now())}
+	// Not while a toggle is out: its own re-read is newer, and two answers to the same
+	// question could land in the wrong order.
+	if !m.clocking {
+		cmds = append(cmds, api.FetchAttendance(m.key, m.login, m.db, m.attEmp))
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// toggleClock presses the ERP's check in / check out button, or explains why it cannot.
+// Both callers — the c key and the check-out modal — go through here, so neither can skip
+// the guard: attendance_manual is a toggle, and firing it against a state we have not read
+// could check you out when you meant in.
+func (m Model) toggleClock() (tea.Model, tea.Cmd) {
+	switch {
+	case m.clocking:
+		m.status = "still waiting on the ERP…"
+		return m, nil
+	case !m.attKnown || m.attEmp == 0:
+		// Never a silent no-op: a key that looks dead gets pressed harder.
+		m.status = "reading attendance…"
+		return m, nil
+	}
+
+	want := !m.att.CheckedIn
+	m.clocking = true
+	m.err = nil
+	if want {
+		m.status = "checking in…"
+	} else {
+		m.status = "checking out…"
+	}
+	return m, api.ToggleAttendance(m.key, m.login, m.db, m.attEmp, want)
 }
 
 // updateDash is the chart tab: the month's ends, half a screen either way, a refresh, and
@@ -1265,6 +1377,20 @@ func (m Model) updateDash(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.holdDash(m.dashDayIndex() + m.halfPage(dashRowLines)), nil
 	case key.Matches(msg, keys.HalfUp):
 		return m.holdDash(m.dashDayIndex() - m.halfPage(dashRowLines)), nil
+
+	case key.Matches(msg, keys.Clock):
+		// Checking in is one keystroke; checking out asks first, since it closes a session
+		// the ERP then bills, and y alone answers it.
+		if m.attKnown && m.att.CheckedIn && m.attEmp != 0 && !m.clocking {
+			m.prev, m.mode = m.mode, ModeConfirm
+			m.cKind = confirmCheckOut
+			// The prompt states facts, not a prediction: it is frozen the moment it is
+			// built, and the ERP stamps the check-out with its own clock.
+			m.cPrompt = fmt.Sprintf("Check out now? (in since %s, %s)",
+				clockTime(m.att.Since), parse.FormatHM(int(time.Since(m.att.Since).Minutes())))
+			return m, nil
+		}
+		return m.toggleClock()
 
 	case key.Matches(msg, keys.Refresh):
 		m.dashMonth = "" // force a re-read of the month
@@ -1345,7 +1471,7 @@ func (m Model) dashTotals() (logged, target float64, worked, workdays int) {
 // Discarding an entry you are still typing keeps y or enter.
 func (m Model) confirmKeys() key.Binding {
 	switch m.cKind {
-	case confirmQuit, confirmDeleteRow:
+	case confirmQuit, confirmDeleteRow, confirmCheckOut:
 		return keys.YesOnly
 	}
 	return keys.Yes
@@ -1382,6 +1508,12 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.mode = ModeTable
 			return m, nil
+
+		case confirmCheckOut:
+			// Back to whatever had the keyboard — the chart, not a task's rows, which is
+			// what the other arms hard-code.
+			m.mode = m.prev
+			return m.toggleClock()
 
 		case confirmQuit:
 			return m, tea.Quit

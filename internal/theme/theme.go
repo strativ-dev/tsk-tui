@@ -84,6 +84,18 @@ var (
 	HintKey = lipgloss.NewStyle().Foreground(Accent).Bold(true)
 	PillKey = lipgloss.NewStyle().Foreground(Chrome).Background(Accent).Bold(true).Underline(true)
 
+	// The clock's button, boxed so it reads as the one thing on this screen you can press.
+	// Border and label share one colour, the chart's own thresholds: green invites an action
+	// not yet taken, amber says a clock is running and wants closing. A plain rule is the
+	// state we have not read yet.
+	ClockIn  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(HourHigh).Padding(0, 1)
+	ClockOut = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(HourMid).Padding(0, 1)
+	ClockOff = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Rule).Padding(0, 1)
+	// The label inside the box is white: the border already carries the state, so the words
+	// are just the words, and the accent is left to mean one thing — the key. White on black
+	// is the strongest ink there is, which is what makes the button read as pressable.
+	ClockText = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+
 	// Off is a day the ERP expected nothing of — weekend, holiday, leave. The band
 	// spans the whole track on purpose: width itself says "nothing was expected".
 	Off = lipgloss.NewStyle().Foreground(Muted).Background(OffBand)
@@ -98,6 +110,10 @@ var (
 	LowFill  = lipgloss.NewStyle().Foreground(Chrome).Background(HourLow).Bold(true)
 	MidFill  = lipgloss.NewStyle().Foreground(Chrome).Background(HourMid).Bold(true)
 	HighFill = lipgloss.NewStyle().Foreground(Chrome).Background(HourHigh).Bold(true)
+	// The key picked out inside a button's own label, as on the tab bar's pill: underlined
+	// dark ink, since accent on a light band would fail contrast.
+	MidFillKey  = MidFill.Underline(true)
+	HighFillKey = HighFill.Underline(true)
 	// Total is a task's summed hours, the one number that should catch the eye.
 	Total = lipgloss.NewStyle().Bold(true)
 	// Match and MatchText are a row a date jump found. The date is reversed out so it

@@ -23,6 +23,12 @@ type DayLog struct {
 	HalfDay  bool    `json:"is_half_day_leave"`
 	Absent   bool    `json:"is_absent"`
 	LoggedTo float64 `json:"logged_this_day"`
+
+	// WorkLocation is "office", "home" or "" — the ERP's own verdict, which is one value
+	// even on a day whose office_hours and home_hours are both set. odooText, not string:
+	// Odoo sends false for an empty char field, and false into a string fails the whole
+	// month rather than the one day.
+	WorkLocation odooText `json:"work_location"`
 }
 
 // HourLogsMsg carries a month of day summaries. Month is the first of the month it

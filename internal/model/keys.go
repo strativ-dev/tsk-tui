@@ -23,7 +23,7 @@ type keyMap struct {
 	Refresh, SetKey, ClearSearch   key.Binding
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab              key.Binding
-	Help                           key.Binding
+	Help, Clock                    key.Binding
 }
 
 // keys is what the handlers and the footer read. ApplyKeys is its only writer, called
@@ -83,6 +83,12 @@ func defaultKeys() keyMap {
 		// typing. ? is the one key the closed footer still advertises, so the rest are
 		// always one keystroke away without costing a line of every screen.
 		Help: key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "keys")),
+
+		// The ERP's own clock, on the dashboard. One key for both directions, because
+		// attendance_manual is one toggle; checking out asks first, so a stray c cannot
+		// close the day. The help label stays short — the open footer is already two
+		// lines at 80 columns, and a third costs the chart a day.
+		Clock: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clock")),
 	}
 }
 

@@ -259,34 +259,148 @@ func superscript(n int) string {
 	return string([]rune(raised)[n])
 }
 
-// dashHead is the chart's frame above the days: the month, its totals against the
-// target, and what a tick inside a bar means. It is laid out with the header rather than
-// with the body, so the days scroll under numbers that stay put.
+// dashHead is the chart's frame above the days: the ERP's clock in the top-right corner,
+// then the month, its totals against the target, and what a tick inside a bar means. It is
+// laid out with the header rather than with the body, so the days scroll under numbers that
+// stay put.
+//
+// The clock does not wait for a month. Its two lines are built first and unconditionally —
+// line two is the spacer that was already there, so a loaded month still costs six lines —
+// and the totals join only once there are days to total.
 func (m Model) dashHead() []string {
-	if len(m.dashDays) == 0 {
-		return nil
-	}
-
-	logged, target, worked, workdays := m.dashTotals()
 	month := time.Now()
 	if t, err := time.Parse("2006-01-02", m.dashMonth); err == nil {
 		month = t
 	}
-
-	return []string{
+	title := ""
+	if len(m.dashDays) > 0 || m.dashMonth != "" {
 		// No "month to date" note: the target beside `logged` is the whole month, and the
 		// last row is today, marked as today, which says where the days stop.
-		theme.Blur.Render(theme.Title.Render(strings.ToUpper(month.Format("January 2006")))),
-		"",
-		theme.Blur.Render(theme.Dim.Render("logged  ") + monthBar(logged, target) +
-			"  " + theme.Total.Render(hoursLabel(logged)) +
-			theme.Dim.Render(" / "+hoursLabel(target)) + "   " + m.todayDelta() +
+		title = theme.Title.Render(strings.ToUpper(month.Format("January 2006")))
+	}
+
+	// The button is a box, three lines of it, so the one thing on this screen you can press
+	// looks like it. Each line goes in on its own: View budgets rows by counting elements.
+	out := []string{m.clockLine(title, m.clockStatus())}
+	for _, l := range strings.Split(m.clockButton(), "\n") {
+		out = append(out, m.clockLine("", l))
+	}
+	if len(m.dashDays) == 0 {
+		return out
+	}
+
+	logged, target, worked, workdays := m.dashTotals()
+	return append(out,
+		theme.Blur.Render(theme.Dim.Render("logged  ")+monthBar(logged, target)+
+			"  "+theme.Total.Render(hoursLabel(logged))+
+			theme.Dim.Render(" / "+hoursLabel(target))+"   "+m.todayDelta()+
 			theme.Dim.Render(fmt.Sprintf("   %d of %d days", worked, workdays))),
 		"",
-		theme.Blur.Render(theme.Header.Render("HOURS PER DAY") +
-			theme.Dim.Render("   ") + theme.Track.Render("┆") + theme.Dim.Render(" 4h · 8h")),
+		theme.Blur.Render(theme.Header.Render("HOURS PER DAY")+
+			theme.Dim.Render("   ")+theme.Track.Render("┆")+theme.Dim.Render(" 4h · 8h")),
 		"",
+	)
+}
+
+// clockHelp is the footer's entry for the clock key, named after what pressing it will do
+// rather than after the thing it belongs to: "c clock" left you to guess which way it would
+// go. It takes its key off the binding, so a rebind still follows.
+func (m Model) clockHelp() key.Binding {
+	what := "check in"
+	switch {
+	case m.clocking && m.att.CheckedIn:
+		what = "checking out…"
+	case m.clocking:
+		what = "checking in…"
+	case m.attKnown && m.att.CheckedIn:
+		what = "check out"
 	}
+	return key.NewBinding(key.WithKeys(keys.Clock.Keys()...),
+		key.WithHelp(keys.Clock.Help().Key, what))
+}
+
+// clockLine puts the clock cluster at the right edge. spread does not truncate — it clamps
+// the gap and lets the line overflow — so the cluster is cut to what the left side leaves,
+// the way a task line measures its own right cluster first.
+func (m Model) clockLine(left, right string) string {
+	room := m.cols() - gutter - lipgloss.Width(left) - 2
+	return theme.Blur.Render(spread(left, trunc(right, room), m.cols()-gutter))
+}
+
+// clockStatus is the line above the button: where you are working, when the session
+// started, and how long it has run. Nothing before the first answer lands — an invented
+// clock is worse than no clock.
+func (m Model) clockStatus() string {
+	if !m.attKnown {
+		return ""
+	}
+	if !m.att.CheckedIn {
+		return theme.Dim.Render("checked out")
+	}
+
+	where := ""
+	switch m.todayLocation() {
+	case "home":
+		where = "WFH  "
+	case "office":
+		where = "OFFICE  "
+	}
+	// Elapsed is derived here, never stored: Odoo leaves worked_hours at 0 until the
+	// session closes, so the running figure can only be now minus the check in.
+	elapsed := parse.FormatHM(int(time.Since(m.att.Since).Minutes()))
+	return theme.Dim.Render(where) + theme.Total.Render(clockTime(m.att.Since)) +
+		theme.Dim.Render(" ("+elapsed+")")
+}
+
+// clockButton is the ERP's own check in / check out control, boxed: three lines, and the
+// only thing on the chart you can press. The border carries the state — green invites an
+// action not yet taken, amber says a clock is running and wants closing, and a plain rule says
+// we have not read the state yet, since a green button that swallowed the key would be a lie.
+// The words themselves are white and the c is the accent, so the one colour that means "this
+// is the key" is not competing with the state's colour for the same cells.
+func (m Model) clockButton() string {
+	box, label := theme.ClockIn, hinted("check in", keys.Clock, theme.ClockText, theme.HintKey)
+	switch {
+	case m.clocking:
+		// The loader takes the label's place, so the box does not move while the ERP thinks
+		// about it, and the border still says which way it is going.
+		what := "checking in…"
+		if m.att.CheckedIn {
+			box, what = theme.ClockOut, "checking out…"
+		}
+		label = m.spin.View() + " " + theme.ClockText.Render(what)
+	case !m.attKnown:
+		box, label = theme.ClockOff, theme.Dim.Render("check in")
+	case m.att.CheckedIn:
+		box = theme.ClockOut
+		label = hinted("check out", keys.Clock, theme.ClockText, theme.HintKey)
+	}
+	return box.Render(label)
+}
+
+// todayLocation is what the ERP said about today in the month it already sent: "home",
+// "office" or "". hr.employee's own work_location_id is a place ("Bangladesh"), which
+// answers a different question.
+func (m Model) todayLocation() string {
+	today := time.Now().Format("2006-01-02")
+	for _, d := range m.dashDays {
+		if d.Date == today {
+			return string(d.WorkLocation)
+		}
+	}
+	return ""
+}
+
+// clockTime renders a wall-clock time the way a person reads one. Odoo keeps UTC; this is
+// the only place that turns it into the terminal's own zone.
+func clockTime(t time.Time) string { return t.Local().Format("3:04 PM") }
+
+// checkedLabel names a state for a sentence.
+func checkedLabel(in bool) string {
+	if in {
+		return "checked in"
+	}
+	return "checked out"
 }
 
 // todayDelta is where today stands against the hours expected of it — the one figure on
@@ -957,8 +1071,8 @@ func (m Model) footer() string {
 	case m.tab == TabDash:
 		// It moves in screenfuls, not days, and there is no i: the query field filters
 		// tasks and this is not that tab.
-		help = []key.Binding{keys.Top, keys.HalfDown, keys.TasksTab, keys.Refresh,
-			keys.Quit, keys.Help}
+		help = []key.Binding{keys.Top, keys.HalfDown, m.clockHelp(), keys.TasksTab,
+			keys.Refresh, keys.Quit, keys.Help}
 	default:
 		help = append(keys.help(m.mode), keys.Help)
 	}

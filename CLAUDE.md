@@ -59,7 +59,7 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | Tab | Keys | What |
 |---|---|---|
 | `TabTasks` | `t` · `1` | the task list and everything reached from it (**default at launch**) |
-| `TabDash` | `d` · `2` | this month's hours per day, from the ERP |
+| `TabDash` | `d` · `2` | this month's hours per day, and the ERP's clock (`c`) |
 
 - The tab bar is the **first line of every screen** (`view.go: tabBar`), the active tab
   reversed out in the **accent** (`theme.Pill`) — on this line the primary colour marks
@@ -154,6 +154,63 @@ One chart: hours logged per day this month, `d` to open, `t` to go back.
   `dashWanted`, fetches the day total, and continues into the chart when the email
   arrives — otherwise the first `d` of a session failed with `unknown Odoo login`.
 - Totals are derived on render (`dashTotals`), never stored.
+
+### The clock (`c`)
+
+Check in and out without leaving the terminal — top-right of the chart, `WFH  11:05 AM
+(5:12)` over a button (`view.go: clockStatus`, `clockButton`).
+
+- **The button is a box** (`theme.ClockIn`/`ClockOut`), three lines of the head, because it
+  is the one thing on this screen you can press and it should look like it. The **border**
+  carries the state, in the chart's own threshold colours: green invites an action not yet
+  taken, amber says a clock is running and wants closing, a plain rule is the state we have
+  not read yet. The **words are white** (`theme.ClockText`) and only the **`c` is the accent**,
+  so the colour that means "this is the key" everywhere else is not competing with the
+  state's colour for the same cells.
+- **The footer names the action, not the thing**: `c check in` / `c check out`
+  (`view.go: clockHelp`), and `c checking out…` while a request is out. `c clock` left you to
+  guess which way the key would go. The key comes off the binding, so a rebind follows.
+- **One key, both directions.** `c` toggles, because `hr.employee.attendance_manual` is one
+  toggle — the same button the web client shows. Checking out opens the modal
+  (`confirmCheckOut`) and takes **`y` only** (`keys.YesOnly`): it closes a session the ERP
+  then bills. The spec asks for two keys, `c` and `C`, so a stray `c` cannot close the day;
+  the modal buys that with the guard the app already has, and leaves `C` free.
+- **The prompt states facts, not a prediction**: `Check out now? (in since 11:05 AM, 5:12)`.
+  `cPrompt` is frozen when it is built and the server stamps its own time, so a promised
+  "check out at 4:17 PM" would be a lie two minutes later.
+- **`c` needs a state it has read.** A toggle fired against an unknown state could check you
+  out when you meant in, so `Model.toggleClock` — the one path both the key and the modal go
+  through — refuses until `attKnown` and `attEmp` are set, and says `reading attendance…`
+  rather than doing nothing. Until then the button is **dim**: a green one that swallowed
+  the key would be a lie.
+- **The button only flips on confirmed state.** `api.ToggleAttendance` presses the button and
+  **re-reads in the same Cmd**, so the screen never shows a guess. A `{"warning": …}` answer
+  is not an error — "already checked in from another device" means the truth moved without
+  us, and the snapshot beside it is what fixes the screen. An answer that disagrees with the
+  intent (`Want`) is applied as-is and says so; nothing retries, since a retry ping-pongs.
+- **The open session is read by `check_out = false`**, never `last_attendance_id`: after a
+  check-out that field still points at the closed record, whose `check_in` is populated, so
+  the screen would draw a running clock beside a `check in` button. One `hr.attendance`
+  `search_read` answers both questions — a row exists, and it says since when.
+- **`hr.employee` is read with exactly `["id", "attendance_state"]`.** This user cannot read
+  `hours_last_month` (Attendances officer group) and one refused field fails the whole call,
+  so a widened list breaks the feature. `TestAttendanceFieldsStayMinimal` holds it.
+- **Elapsed is derived on render**, `now - check_in`: Odoo leaves `worked_hours` at 0 until
+  the session closes. A `clockTickMsg` every 30s only repaints (`clockTick`), scheduled from
+  the same one place in `Update` as the spinner and guarded by `Model.ticking`, so a late or
+  dropped tick costs freshness and nothing else. It keeps ticking on the task list: gating it
+  per tab would mean a second scheduling site, which is what the flag exists to avoid.
+- A **read that was already in flight when a toggle started is dropped** (`!msg.Toggled &&
+  m.clocking`), and `loadDash` will not start one while `clocking` — two answers to the same
+  question must not land in the wrong order.
+- `m.clocking` is in `busy()`, or the loader in the button's place would never animate.
+- **`WFH` comes from the month, not the employee.** `hr.employee.work_location_id` is a place
+  ("Bangladesh"); `get_employee_hour_logs` reports `work_location: "office" | "home" | null`
+  per day, so `DayLog.WorkLocation` reads today's. It is `odooText`: Odoo sends `false` for an
+  empty char field, and `false` into a `string` fails the **whole month**, not the one day.
+- Times print as `3:04 PM` (`view.go: clockTime`). The API layer keeps Odoo's UTC and this is
+  the only place that localises it. Wall-clock formatting lives in `view.go`, not
+  `internal/parse`, which is about the input grammar.
 
 ## Modes
 
@@ -397,6 +454,9 @@ matches `user_id` (res.users), not `employee_id`.
   failure rather than success. A record rule can still refuse someone else's line.
 - The MCP at `/mcp` blocks `unlink` on this model; RPC does not. That is the reason
   this path talks RPC rather than MCP.
+- Attendance is RPC too (`internal/api/attendance.go`): `hr.employee` `search_read` for the
+  employee behind the uid, `hr.attendance` `search_read` for the open session, and
+  `hr.employee` `attendance_manual` to toggle. See **The clock** above.
 - Every RPC call logs in first, so each write costs two round trips. Fine at this
   volume; cache the uid if it ever matters.
 - One entry per request, and a timed-out retry can double-log (`log-hours.md`), so

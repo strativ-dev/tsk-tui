@@ -28,7 +28,7 @@ const hourLogsJSON = `[
   "work_location":"home","office_hours":0,"home_hours":9,"is_absent":false},
  {"date":"2026-08-18","actual":0,"expected":8,"is_holiday":false,"is_on_leave":false,
   "leave_state":null,"is_half_day_leave":false,"is_weekend":false,"logged_this_day":0,
-  "work_location":null,"office_hours":0,"home_hours":0,"is_absent":false}
+  "work_location":false,"office_hours":0,"home_hours":0,"is_absent":false}
 ]`
 
 func TestFetchHourLogs(t *testing.T) {
@@ -109,5 +109,30 @@ func TestFetchHourLogsNeedsCredentials(t *testing.T) {
 	}
 	if msg := FetchHourLogs("k", "user@example.com", "", time.Now())().(HourLogsMsg); msg.Err == nil {
 		t.Error("no database produced no error")
+	}
+}
+
+// work_location is what the dashboard's WFH label reads. It arrives as a string, as null,
+// and — for an empty char field, the way Odoo does it — as false, which is why the field is
+// odooText: false into a plain string fails the whole month, not the one day.
+func TestHourLogsCarriesWorkLocation(t *testing.T) {
+	fakeOdoo(t, hourLogsJSON, nil)
+
+	msg := FetchHourLogs("k", "user@example.com", "db",
+		time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC))().(HourLogsMsg)
+	if msg.Err != nil {
+		t.Fatalf("Err = %v — a false work_location took the month down", msg.Err)
+	}
+
+	want := map[string]string{
+		"2026-08-01": "", // null
+		"2026-08-03": "office",
+		"2026-08-17": "home",
+		"2026-08-18": "", // false
+	}
+	for _, d := range msg.Days {
+		if w, ok := want[d.Date]; ok && string(d.WorkLocation) != w {
+			t.Errorf("%s: work location %q, want %q", d.Date, d.WorkLocation, w)
+		}
 	}
 }
