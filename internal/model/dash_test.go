@@ -596,6 +596,95 @@ func TestDashReadsTheMonthOnce(t *testing.T) {
 	}
 }
 
+// < re-reads the previous month, and the chart shows it once the ERP answers.
+func TestDashMonthGoesBack(t *testing.T) {
+	base := dashModel(t, 100, 30)
+	if !strings.Contains(base.View(), "AUGUST 2026") {
+		t.Fatalf("did not open on this month:\n%s", base.View())
+	}
+
+	m, cmd := sendCmd(t, base, runes("<"))
+	if cmd == nil {
+		t.Fatal("< did not ask the ERP for the previous month")
+	}
+	if m.dashOffset != -1 {
+		t.Errorf("dashOffset = %d, want -1", m.dashOffset)
+	}
+	if !m.dashLoading {
+		t.Error("dashLoading is false while the read is in flight")
+	}
+	// August is still the month on screen — coherent header and rows, from the same
+	// answer — with a loader beside its title, not blanked out mid-fetch.
+	if !strings.Contains(m.View(), "AUGUST 2026") {
+		t.Errorf("the old month vanished before the new one answered:\n%s", m.View())
+	}
+	if !strings.Contains(m.View(), m.spin.View()) {
+		t.Errorf("no loader beside the month while it re-reads:\n%s", m.View())
+	}
+
+	m = send(t, m, api.HourLogsMsg{Month: "2026-07-01", Days: []api.DayLog{
+		{Date: "2026-07-01", Actual: 3, Expected: 8},
+	}})
+	if !strings.Contains(m.View(), "JULY 2026") {
+		t.Errorf("< did not bring July on screen:\n%s", m.View())
+	}
+	if strings.Contains(m.View(), m.spin.View()) {
+		t.Errorf("the loader is still up once the answer landed:\n%s", m.View())
+	}
+
+	// > from there asks for August again — going back and forth does not cache.
+	m, cmd = sendCmd(t, m, runes(">"))
+	if cmd == nil {
+		t.Fatal("> did not ask the ERP for the month back")
+	}
+	if m.dashOffset != 0 {
+		t.Errorf("dashOffset = %d, want 0", m.dashOffset)
+	}
+}
+
+// > never asks for a month that has not happened.
+func TestDashMonthStopsAtToday(t *testing.T) {
+	base := dashModel(t, 100, 30)
+	m, cmd := sendCmd(t, base, runes(">"))
+	if cmd != nil {
+		t.Error("> asked the ERP for a future month")
+	}
+	if m.dashOffset != 0 {
+		t.Errorf("dashOffset = %d, want 0", m.dashOffset)
+	}
+	if m.dashMonth != "2026-08-01" {
+		t.Errorf("dashMonth = %q, changed by a no-op >", m.dashMonth)
+	}
+}
+
+// The arrows beside the month sit in the accent color, and > is not there to press when
+// there is nowhere for it to go.
+func TestDashMonthArrowsAreAccented(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	m := dashModel(t, 100, 30)
+	head := m.View()
+	if !strings.Contains(plain(head), "< AUGUST 2026") {
+		t.Errorf("no < before the current month:\n%s", head)
+	}
+	if strings.Contains(plain(head), "AUGUST 2026 >") {
+		t.Errorf("> shown on the current month, which has nowhere to go:\n%s", head)
+	}
+	if !strings.Contains(head, "38;2;255;192;0") { // theme.Accent, #FFC000
+		t.Errorf("the < is not accent-colored:\n%s", head)
+	}
+
+	m, _ = sendCmd(t, m, runes("<"))
+	m = send(t, m, api.HourLogsMsg{Month: "2026-07-01", Days: []api.DayLog{
+		{Date: "2026-07-01", Actual: 3, Expected: 8},
+	}})
+	if !strings.Contains(plain(m.View()), "< JULY 2026 >") {
+		t.Errorf("> did not appear once a later month exists to go back to:\n%s", m.View())
+	}
+}
+
 // An answer for another month is not the month on screen.
 func TestDashIgnoresNothingUseful(t *testing.T) {
 	m := send(t, dashModel(t, 100, 30),

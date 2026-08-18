@@ -24,6 +24,7 @@ type keyMap struct {
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab              key.Binding
 	Help, Clock                    key.Binding
+	PrevMonth, NextMonth           key.Binding
 }
 
 // keys is what the handlers and the footer read. ApplyKeys is its only writer, called
@@ -89,6 +90,11 @@ func defaultKeys() keyMap {
 		// close the day. The help label stays short — the open footer is already two
 		// lines at 80 columns, and a third costs the chart a day.
 		Clock: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clock")),
+
+		// Month navigation, dashboard only. Paired like g/G and ctrl+f/b: the first key
+		// carries the help label, the second rides along unlabelled.
+		PrevMonth: key.NewBinding(key.WithKeys("<"), key.WithHelp("</>", "month")),
+		NextMonth: key.NewBinding(key.WithKeys(">")),
 	}
 }
 

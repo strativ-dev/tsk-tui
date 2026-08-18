@@ -131,6 +131,10 @@ type Model struct {
 	// than the terminal: -1 follows today, g and G pin it to the ends. There is no
 	// cursor — the chart is a picture, not a list — so this only says what stays in view.
 	dashHold int
+	// dashOffset is the viewed month, in months from the current one: 0 is this month,
+	// -1 last month, and so on. < and > move it; it never goes past 0 — the ERP has
+	// nothing to report on a month that has not happened.
+	dashOffset int
 
 	tasks    []store.Task
 	cursor   int          // index into filtered()
@@ -1309,11 +1313,18 @@ func (m Model) jumpHits() int {
 // knows the tasks that have been opened.
 func (m Model) showDash() (tea.Model, tea.Cmd) {
 	m.tab = TabDash
-	if m.dashMonth == thisMonth() || m.dashLoading {
+	if m.dashMonth == m.targetMonthKey() || m.dashLoading {
 		return m, nil // already have it, or it is on its way
 	}
 	return m.loadDash()
 }
+
+// targetMonth is the month dashOffset points at, any timestamp inside it — what
+// FetchHourLogs wants. targetMonthKey is the same month as the cache key HourLogsMsg
+// carries, so showDash and loadDash can tell an already-loaded month from one still to
+// fetch without repeating the time arithmetic.
+func (m Model) targetMonth() time.Time { return time.Now().AddDate(0, m.dashOffset, 0) }
+func (m Model) targetMonthKey() string { return m.targetMonth().Format("2006-01") + "-01" }
 
 func (m Model) loadDash() (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(m.key) == "" {
@@ -1328,7 +1339,7 @@ func (m Model) loadDash() (tea.Model, tea.Cmd) {
 		return m, api.FetchDayHours(m.key, parse.Today())
 	}
 	m.dashWanted = false
-	cmds := []tea.Cmd{api.FetchHourLogs(m.key, m.login, m.db, time.Now())}
+	cmds := []tea.Cmd{api.FetchHourLogs(m.key, m.login, m.db, m.targetMonth())}
 	// Not while a toggle is out: its own re-read is newer, and two answers to the same
 	// question could land in the wrong order.
 	if !m.clocking {
@@ -1377,6 +1388,20 @@ func (m Model) updateDash(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.holdDash(m.dashDayIndex() + m.halfPage(dashRowLines)), nil
 	case key.Matches(msg, keys.HalfUp):
 		return m.holdDash(m.dashDayIndex() - m.halfPage(dashRowLines)), nil
+
+	case key.Matches(msg, keys.PrevMonth):
+		// dashMonth is left alone: the month on screen stays coherent — its own header
+		// and rows, both from the same answer — with a loader beside the title, until
+		// the new one lands and replaces both at once.
+		m.dashOffset--
+		return m.loadDash()
+
+	case key.Matches(msg, keys.NextMonth):
+		if m.dashOffset >= 0 {
+			return m, nil // nothing to report on a month that has not happened
+		}
+		m.dashOffset++
+		return m.loadDash()
 
 	case key.Matches(msg, keys.Clock):
 		// Checking in is one keystroke; checking out asks first, since it closes a session

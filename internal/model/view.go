@@ -303,7 +303,19 @@ func (m Model) dashHead() []string {
 	if len(m.dashDays) > 0 || m.dashMonth != "" {
 		// No "month to date" note: the target beside `logged` is the whole month, and the
 		// last row is today, marked as today, which says where the days stop.
-		title = theme.Title.Render(strings.ToUpper(month.Format("January 2006")))
+		title = theme.HintKey.Render("< ") + theme.Title.Render(strings.ToUpper(month.Format("January 2006")))
+		if m.dashOffset < 0 {
+			// > only past the current month: the ERP has nothing to report on one that
+			// has not happened, so a key that does nothing does not appear.
+			title += theme.HintKey.Render(" >")
+		}
+		if m.dashLoading {
+			// The month on screen is still the last one answered — r or a month step
+			// left it up rather than blanking it — so the loader sits beside its title
+			// instead of replacing it. The empty-chart case has its own spinner, in
+			// dashLines, since there is no title yet to sit beside.
+			title += " " + m.spin.View()
+		}
 	}
 
 	// The button is a box, three lines of it, so the one thing on this screen you can press
@@ -1157,8 +1169,8 @@ func (m Model) footer() string {
 	case m.tab == TabDash:
 		// It moves in screenfuls, not days, and there is no i: the query field filters
 		// tasks and this is not that tab.
-		help = []key.Binding{keys.Top, keys.HalfDown, m.clockHelp(), keys.TasksTab,
-			keys.Refresh, keys.Quit, keys.Help}
+		help = []key.Binding{keys.Top, keys.HalfDown, keys.PrevMonth, m.clockHelp(),
+			keys.TasksTab, keys.Refresh, keys.Quit, keys.Help}
 	default:
 		help = append(keys.help(m.mode), keys.Help)
 	}

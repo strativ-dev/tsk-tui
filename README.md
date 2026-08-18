@@ -40,7 +40,7 @@ binary, no CGO.
 - **A progress bar for today.** How far through your 8 hours, updated as you type.
 - **A month at a glance.** `d` opens a dashboard: hours logged per day, against what was
   expected, red/amber/green by how close to 8 hours, weekends and holidays labelled
-  instead of drawn.
+  instead of drawn. `<` / `>` step to the previous or next month.
 - **The whole month's target, not just today's.** `logged 80:00 / 152:00`, so a shortfall
   reads against what the month is billed for.
 - **Check in and out.** `c` on the dashboard: a boxed button, green to check in, amber to
@@ -241,6 +241,7 @@ working, when you checked in, how long ago that was, and the button `c` presses.
 |---|---|
 | `g` / `G` | start / end of the month |
 | `ctrl+f` / `ctrl+b` | half a screen of days, down / up |
+| `<` / `>` | previous / next month — `>` stops at the current one |
 | `c` | check in, or check out (asks first, `y` only) — the boxed button says which |
 | `r` | re-read the month from the ERP |
 | `t` | back to the tasks (`1` too) |

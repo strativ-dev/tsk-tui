@@ -154,6 +154,14 @@ One chart: hours logged per day this month, `d` to open, `t` to go back.
     it back; `g`/`G` pin it to the month's ends; `ctrl+f`/`ctrl+b` move half a screen of
     days (`halfPage(dashRowLines)`), clamped. `window` holds that row in view and counts
     what is off screen.
+  - **`<`/`>` move between months**, not days: `Model.dashOffset` is the viewed month in
+    months from the current one — `0` is this month, `-1` last month — and `<`/`>` step it,
+    clearing `dashMonth` so the new month is re-read (`updateDash`). `>` refuses past `0`:
+    the ERP has nothing to report on a month that has not happened. Both reset `dashHold` to
+    `-1`, so a navigated-to past month opens on its last day (`dashDayIndex`'s fallback, since
+    "today" is never among a past month's days) rather than wherever the previous month left
+    the window. Going back and forward again re-reads rather than caching — one month in
+    hand at a time, the same as the single-month cache `dashMonth` already was.
   - **Only the days move.** The month, its totals and the tick legend are laid out with
     the header (`dashHead`) and the axis with the footer (`dashFoot`), so the figures the
     bars are read against cannot leave the screen with them. A terminal too short for both
@@ -605,7 +613,10 @@ Layout follows `Pictures/screenshots/tsk.png`:
 - **A spinner marks every wait** (`bubbles/spinner`, `Model.spin`): in front of the status
   line, and in place of the body's empty state while the first answer is outstanding
   (`reading your tasks…`, `reading this month's hour log…`) — an empty list mid-sync is not
-  the answer "no tasks". It runs while `Model.busy()` — a task sync or write, the month's
+  the answer "no tasks". A re-read that already has a month on screen (`r`, `<`/`>`) leaves
+  that month's header and rows up rather than blanking them, so the same spinner sits beside
+  the month title instead (`dashHead`) — the chart stays coherent (one answer's header with
+  its own rows) while it waits for the next one to replace both at once. It runs while `Model.busy()` — a task sync or write, the month's
   hour log, or a task's lines — and is started in **one place**: `Update` wraps the mode
   handlers and batches `spin.Tick` whenever work went in flight and no tick is scheduled
   (`Model.spinning`), so a new kind of request cannot forget to animate, and two overlapping
