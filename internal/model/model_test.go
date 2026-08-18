@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -633,6 +634,11 @@ func jumpModel(t *testing.T) Model {
 }
 
 // lineWith is the rendered line carrying needle.
+// plain strips the escapes, for assertions about text that a per-cell style has broken up.
+func plain(s string) string { return ansi.ReplaceAllLiteralString(s, "") }
+
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
 func lineWith(t *testing.T, view, needle string) string {
 	t.Helper()
 	for _, l := range strings.Split(view, "\n") {

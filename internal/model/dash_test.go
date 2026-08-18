@@ -196,20 +196,33 @@ func TestBarColorsByThreshold(t *testing.T) {
 	if !strings.Contains(view, "┈") || !strings.Contains(view, "┆") {
 		t.Errorf("no dotted track with ticks:\n%s", view)
 	}
-	// The band is a solid background — a green fill on the 8h row, no glyph pattern in
-	// it, with the label in dark ink on the same colour.
+	// The bar is a dark wash of its threshold colour, edged and lettered in the light one:
+	// the edges are what separate it from the day stacked on top, so the band itself carries
+	// no glyph pattern.
 	l := lineWith(t, view, "thu  6")
-	if !strings.Contains(l, "48;2;95;191;127") || !strings.Contains(l, "38;2;21;21;32") {
-		t.Errorf("the bar is not a solid band with dark ink:\n%s", l)
-	}
-	for _, glyph := range []string{"█", "▄", "▏"} {
-		if strings.Contains(l, glyph) {
-			t.Errorf("the band still draws %q inside it:\n%s", glyph, l)
+	for _, want := range []string{
+		"48;2;16;",        // the dark green band behind it, #10352A
+		"38;2;95;191;127", // #5FBF7F, its light ink and edges
+		"▏", "▕",          // its two ends
+		";4m", // and the underline along the bottom, which is what separates it from the day below
+	} {
+		if !strings.Contains(l, want) {
+			t.Errorf("the 8h bar is missing %q:\n%s", want, l)
 		}
 	}
-	// The hours print inside the band, so they cost the bar no width.
-	if !strings.Contains(l, " 8:00 ") {
+	for _, gone := range []string{"48;2;95;191;127", "█", "▄", "━", "▔"} {
+		if strings.Contains(l, gone) {
+			t.Errorf("the bar still draws %q:\n%s", gone, l)
+		}
+	}
+	// The hours print inside the band, so they cost the bar no width. Read off the plain text:
+	// an underlined band is rendered a cell at a time, so the escapes sit between the digits.
+	if !strings.Contains(plain(l), " 8:00 ") {
 		t.Errorf("the label is not inside the band:\n%s", l)
+	}
+	// A working day's date is white; a weekend's stays dim.
+	if day := lineWith(t, view, "thu  6"); !strings.Contains(day, "255;255;255") {
+		t.Errorf("a working day's date is not white:\n%s", day)
 	}
 	// A bar that has reached 8h needs no 8h tick at its edge.
 	if strings.Contains(l, " ┆") && !strings.Contains(l, "┈┆") {
@@ -281,37 +294,76 @@ func TestDashFitsTheTerminal(t *testing.T) {
 	}
 }
 
-// A rule between days, and the window is built around today rather than the 1st — today's
-// row is the one being logged into, and a month is taller than most terminals.
-func TestDashSeparatesDaysAndFollowsToday(t *testing.T) {
-	// A full month, every day a working day, so it cannot fit a short terminal.
-	today := time.Now()
+// The whole month fits one screen: the days run down as many columns as the rows on offer
+// need, every one of them keeping its own label and its own printed hours.
+func TestDashFitsTheMonthInColumns(t *testing.T) {
+	now := time.Now()
 	var days []api.DayLog
-	for d := 1; d <= 28; d++ {
+	for d := 1; d <= 31; d++ {
 		days = append(days, api.DayLog{
-			Date:     today.Format("2006-01") + fmt.Sprintf("-%02d", d),
+			Date:     now.Format("2006-01") + fmt.Sprintf("-%02d", d),
 			Actual:   8,
 			Expected: 8,
 		})
 	}
 	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 24},
 		store.KeyMsg{Key: "k", DB: "db"}, runes("d"),
-		api.HourLogsMsg{Month: today.Format("2006-01") + "-01", Days: days})
+		api.HourLogsMsg{Month: now.Format("2006-01") + "-01", Days: days})
 
-	lines, focus := m.dashLines(14)
+	view := m.View()
+	// Nothing is off screen, and nothing had to be windowed away.
+	if strings.Contains(view, "more") {
+		t.Errorf("the month did not fit a 24-row terminal:\n%s", view)
+	}
+	// Every day is labelled, and every one carries its hours. The label is matched whole —
+	// a bare "26" would also find AUGUST 2026, and "2" the axis.
+	for d := 1; d <= 31; d++ {
+		date := now.AddDate(0, 0, d-now.Day())
+		label := strings.ToLower(date.Format("Mon")) + " " + date.Format("_2")
+		if day := lineWith(t, view, label); !strings.Contains(day, "8:00") {
+			t.Errorf("%s has no hours on it:\n%s", label, day)
+		}
+	}
+	if cols, rows := m.dashGrid(); cols < 2 || cols*rows < 31 {
+		t.Errorf("grid is %dx%d, too small for 31 days at 24 rows", cols, rows)
+	}
+}
+
+// One column is the roomy case, and it keeps the rule between days — with the window built
+// around today, since that is the row being logged into.
+func TestDashSeparatesDaysAndFollowsToday(t *testing.T) {
+	now := time.Now()
+	var days []api.DayLog
+	for d := 1; d <= 28; d++ {
+		days = append(days, api.DayLog{
+			Date:     now.Format("2006-01") + fmt.Sprintf("-%02d", d),
+			Actual:   8,
+			Expected: 8,
+		})
+	}
+	// Tall enough for one day per row and a rule between them.
+	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 70},
+		store.KeyMsg{Key: "k", DB: "db"}, runes("d"),
+		api.HourLogsMsg{Month: now.Format("2006-01") + "-01", Days: days})
+
+	if cols, _ := m.dashGrid(); cols != 1 {
+		t.Fatalf("%d columns at 70 rows, want one day per row", cols)
+	}
+	lines, focus := m.dashLines(58)
 	if focus < 0 {
 		t.Fatal("no focus line — the window has nothing to hold")
 	}
 	if !strings.Contains(lines[focus], "today") {
 		t.Errorf("the focused line is not today's:\n%s", lines[focus])
 	}
-	// Every pair of day rows has a rule between them.
 	if !strings.Contains(strings.Join(lines, "\n"), "──") {
 		t.Errorf("no rule between days:\n%s", strings.Join(lines, "\n"))
 	}
-	// And today survives the windowing into a 24-row terminal.
-	if v := m.View(); !strings.Contains(v, "today") {
-		t.Errorf("today scrolled out of a 24-row view:\n%s", v)
+
+	// Narrow the terminal and the columns take the rules' place.
+	tight := send(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	if l, _ := tight.dashLines(8); strings.Contains(strings.Join(l, "\n"), "──") {
+		t.Errorf("rules survived into a multi-column month:\n%s", strings.Join(l, "\n"))
 	}
 }
 
@@ -348,116 +400,6 @@ func TestDashShowsTheWholeMonth(t *testing.T) {
 	}
 }
 
-// The rule between days is what the chart gives up first: a whole month on screen beats a
-// windowed one, now that there are no keys to scroll it with.
-func TestDashDropsRulesToFitTheMonth(t *testing.T) {
-	now := time.Now()
-	var days []api.DayLog
-	for d := 1; d <= 28; d++ {
-		days = append(days, api.DayLog{
-			Date:     now.Format("2006-01") + fmt.Sprintf("-%02d", d),
-			Actual:   8,
-			Expected: 8,
-		})
-	}
-	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 40},
-		store.KeyMsg{Key: "k", DB: "db"}, runes("d"),
-		api.HourLogsMsg{Month: now.Format("2006-01") + "-01", Days: days})
-
-	// Exactly enough rows for the days alone: the rules go, and the month fits whole.
-	lines, _ := m.dashLines(28)
-	if len(lines) != 28 {
-		t.Errorf("%d lines for 28 days with 28 rows to spend", len(lines))
-	}
-	if strings.Contains(strings.Join(lines, "\n"), "──────") {
-		t.Errorf("the rules were kept instead of the days:\n%s", strings.Join(lines, "\n"))
-	}
-	// Ruled again as soon as there is room for both, and while there is room for neither —
-	// a windowed chart still wants its days told apart.
-	for _, budget := range []int{80, 14} {
-		if lines, _ := m.dashLines(budget); !strings.Contains(strings.Join(lines, "\n"), "──────") {
-			t.Errorf("no rules with a budget of %d", budget)
-		}
-	}
-}
-
-// g and G are the whole of the chart's motion: the start of the month and the end of it.
-// Only the days move — the totals and the axis are pinned either side of them.
-func TestDashJumpsToTheEnds(t *testing.T) {
-	now := time.Now()
-	var days []api.DayLog
-	for d := 1; d <= 28; d++ {
-		days = append(days, api.DayLog{
-			Date:     now.Format("2006-01") + fmt.Sprintf("-%02d", d),
-			Actual:   8,
-			Expected: 8,
-		})
-	}
-	// 24 rows cannot hold 28 days, so the window has to move for g and G to show.
-	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 24},
-		store.KeyMsg{Key: "k", DB: "db"}, runes("d"),
-		api.HourLogsMsg{Month: now.Format("2006-01") + "-01", Days: days})
-
-	first := strings.ToLower(now.AddDate(0, 0, 1-now.Day()).Format("Mon")) + "  1"
-	top := send(t, m, runes("g"))
-	if !strings.Contains(top.View(), first) {
-		t.Errorf("g did not reach the 1st:\n%s", top.View())
-	}
-	if strings.Contains(top.View(), "↑") {
-		t.Errorf("g left days above the window:\n%s", top.View())
-	}
-
-	bottom := send(t, top, runes("G"))
-	if !strings.Contains(bottom.View(), " 28") {
-		t.Errorf("G did not reach the 28th:\n%s", bottom.View())
-	}
-	if strings.Contains(bottom.View(), "↓") {
-		t.Errorf("G left days below the window:\n%s", bottom.View())
-	}
-
-	// The frame is pinned, so both ends keep the numbers the bars are read against.
-	for _, v := range []Model{top, bottom} {
-		for _, want := range []string{"logged", "HOURS PER DAY", "└"} {
-			if !strings.Contains(v.View(), want) {
-				t.Errorf("%q left the screen with the days:\n%s", want, v.View())
-			}
-		}
-	}
-	// A re-read puts it back on today, the day being logged into.
-	if fresh := send(t, top, api.HourLogsMsg{
-		Month: now.Format("2006-01") + "-01", Days: days,
-	}); fresh.dashHold != -1 {
-		t.Errorf("dashHold = %d after a re-read, want today", fresh.dashHold)
-	}
-	// ctrl+f and ctrl+b move by half a screen, and stop at the ends.
-	down := send(t, top, special(tea.KeyCtrlF))
-	if down.dashHold <= top.dashHold {
-		t.Errorf("ctrl+f did not move forward: %d then %d", top.dashHold, down.dashHold)
-	}
-	if up := send(t, down, special(tea.KeyCtrlB)); up.dashHold >= down.dashHold {
-		t.Errorf("ctrl+b did not move back: %d then %d", down.dashHold, up.dashHold)
-	}
-	if far := send(t, top, special(tea.KeyCtrlB), special(tea.KeyCtrlB)); far.dashHold != 0 {
-		t.Errorf("ctrl+b ran off the top: %d", far.dashHold)
-	}
-	if far := send(t, bottom, special(tea.KeyCtrlF)); far.dashHold != len(days)-1 {
-		t.Errorf("ctrl+f ran off the end: %d", far.dashHold)
-	}
-
-	// The footer offers the two screenful motions, and no j / k — there is no cursor.
-	foot := send(t, m, runes("?")).footer()
-	for _, want := range []string{"g/G", "ctrl+f/b"} {
-		if !strings.Contains(foot, want) {
-			t.Errorf("the footer does not offer %s:\n%s", want, foot)
-		}
-	}
-	for _, gone := range []string{"j next", "k prev"} {
-		if strings.Contains(foot, gone) {
-			t.Errorf("the footer still offers %q:\n%s", gone, foot)
-		}
-	}
-}
-
 // The month's totals and the axis are the frame the bars are read against, so they stay on
 // screen whatever the days do.
 func TestDashFrameStaysPut(t *testing.T) {
@@ -481,8 +423,8 @@ func TestDashFrameStaysPut(t *testing.T) {
 	}
 }
 
-// The number beside the month's totals is today's gap, not the month's: the hours you can
-// still do something about before the day is out.
+// The number beside the month's totals is today's own hours — what is logged, not the gap
+// against the eight due, since a day that has barely started owes nothing yet.
 func TestSummaryReportsToday(t *testing.T) {
 	today := time.Now().Format("2006-01-02")
 	load := func(d api.DayLog) string {
@@ -491,22 +433,43 @@ func TestSummaryReportsToday(t *testing.T) {
 			api.HourLogsMsg{Month: today[:8] + "01", Days: []api.DayLog{d}}).View()
 	}
 
+	// The colour carries the shortfall the number no longer states, so the profile is on and
+	// "today" and the figure are asserted apart: styled separately, escape codes sit between
+	// them.
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
 	for _, tc := range []struct {
 		name string
 		day  api.DayLog
-		want string
+		want []string
 	}{
-		{"short", api.DayLog{Date: today, Actual: 2.5, Expected: 8}, "today −5:30"},
-		{"over", api.DayLog{Date: today, Actual: 9, Expected: 8}, "today +1:00"},
-		{"on target", api.DayLog{Date: today, Actual: 8, Expected: 8}, "today +0:00"},
-		// Nothing was expected, so there is no gap to report.
-		{"weekend", api.DayLog{Date: today, Weekend: true}, "today off"},
+		// Nothing logged yet is 0:00, not the eight hours it will owe by tonight, and the
+		// red says the day is short without the number implying hours already missed.
+		{"nothing logged yet", api.DayLog{Date: today, Expected: 8}, []string{"0:00", "224;87;79"}},
+		{"part of a day", api.DayLog{Date: today, Actual: 2.5, Expected: 8}, []string{"2:30", "224;87;79"}},
+		{"most of a day", api.DayLog{Date: today, Actual: 7, Expected: 8}, []string{"7:00", "224;160;48"}},
+		{"on target", api.DayLog{Date: today, Actual: 8, Expected: 8}, []string{"8:00", "95;191;127"}},
+		{"over", api.DayLog{Date: today, Actual: 9, Expected: 8}, []string{"9:00", "95;191;127"}},
+		// Nothing was expected, so nothing is owed.
+		{"weekend", api.DayLog{Date: today, Weekend: true}, []string{"today off"}},
 		// And a month the ERP has not reported today in does not imply a full day owed.
-		{"unreported", api.DayLog{Date: today[:8] + "01", Expected: 8}, "today —"},
+		{"unreported", api.DayLog{Date: today[:8] + "01", Expected: 8}, []string{"today —"}},
 	} {
-		if view := load(tc.day); !strings.Contains(view, tc.want) {
-			t.Errorf("%s: summary is missing %q:\n%s", tc.name, tc.want, view)
+		view := load(tc.day)
+		if !strings.Contains(view, "today") {
+			t.Errorf("%s: the summary does not name today:\n%s", tc.name, view)
 		}
+		for _, want := range tc.want {
+			if !strings.Contains(view, want) {
+				t.Errorf("%s: summary is missing %q:\n%s", tc.name, want, view)
+			}
+		}
+	}
+	// The gap it used to print is gone: a red −8:00 on an untouched day read as hours missed.
+	if view := load(api.DayLog{Date: today, Expected: 8}); strings.Contains(view, "−8:00") {
+		t.Errorf("the summary still states today's gap:\n%s", view)
 	}
 }
 

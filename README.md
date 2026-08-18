@@ -225,7 +225,9 @@ tabs and the key list from inside a task too.
 **Dashboard** (`d` or `2`)
 
 One chart: hours logged per day for the whole month, weekends and holidays labelled
-instead of drawn. It opens on today. Top right is the ERP's own clock — where you are
+instead of drawn. The days are laid out in columns so the whole month fits one screen —
+four columns on an 80×24 terminal, one on a tall one — and every day keeps its hours
+printed beside its bar. Top right is the ERP's own clock — where you are
 working, when you checked in, how long ago that was, and the button `c` presses.
 
 | Key | Does |

@@ -21,6 +21,12 @@ const (
 	HourLow  = lipgloss.Color("#E0574F") // < 4h
 	HourMid  = lipgloss.Color("#E0A030") // 4h to < 8h
 	HourHigh = lipgloss.Color("#5FBF7F") // >= 8h
+	// Bar bodies: a dark wash of each threshold colour, so a bar reads as a filled band with
+	// its number and its edges in the light colour on top of it — the design's own look, and
+	// the reason the bar needs no glyph pattern inside it.
+	BandLow  = lipgloss.Color("#3A1512")
+	BandMid  = lipgloss.Color("#3A2C0C")
+	BandHigh = lipgloss.Color("#10352A")
 	// TrackColor is the unfilled remainder and its threshold ticks.
 	TrackColor = lipgloss.Color("#2A2A33")
 	// OffBand is a day nothing was expected of.
@@ -107,9 +113,16 @@ var (
 	Mid  = lipgloss.NewStyle().Foreground(HourMid)
 	High = lipgloss.NewStyle().Foreground(HourHigh)
 
-	LowFill  = lipgloss.NewStyle().Foreground(Chrome).Background(HourLow).Bold(true)
-	MidFill  = lipgloss.NewStyle().Foreground(Chrome).Background(HourMid).Bold(true)
-	HighFill = lipgloss.NewStyle().Foreground(Chrome).Background(HourHigh).Bold(true)
+	// Underlined on purpose: the underline runs along the bottom of the band in the light
+	// threshold colour, which is what keeps a bar separate from the day stacked directly under
+	// it. With the two edges it draws the bar as an outlined box, and it costs no row — a rule
+	// between days would cost one each, and the month is laid out in columns to save rows.
+	LowFill  = lipgloss.NewStyle().Foreground(HourLow).Background(BandLow).Bold(true).Underline(true)
+	MidFill  = lipgloss.NewStyle().Foreground(HourMid).Background(BandMid).Bold(true).Underline(true)
+	HighFill = lipgloss.NewStyle().Foreground(HourHigh).Background(BandHigh).Bold(true).Underline(true)
+	// DayLabel is a working day's date: white, so the weekends and holidays beside it read as
+	// the quiet ones without the working days having to be coloured.
+	DayLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	// The key picked out inside a button's own label, as on the tab bar's pill: underlined
 	// dark ink, since accent on a light band would fail contrast.
 	MidFillKey  = MidFill.Underline(true)

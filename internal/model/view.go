@@ -62,6 +62,23 @@ const (
 	// minDayRows is how few rows of days the chart will squeeze into before it gives up
 	// its pinned head and axis: two days and the rule between them.
 	minDayRows = 3
+	// The band's ends. With the underline the *Fill styles carry along the bottom, they are
+	// what separate a bar from the day stacked directly under it: a bare wash of colour, row
+	// after row, merged into one rectangle, and the month is laid out in columns precisely so
+	// no row can be spent on a rule between days. Nothing is drawn along the top — a rule there
+	// crowded the band and read as a second bar.
+	barEdgeL = "▏"
+	barEdgeR = "▕"
+	// minBar is the narrowest a bar may get before the chart stops adding columns: below
+	// this the hours no longer fit beside it and the bar stops being readable.
+	minBar = 14
+	// maxDashCols caps the columns even on a very wide terminal: four columns of eight days
+	// is the whole month, and more would only shrink the bars.
+	maxDashCols = 4
+	// dashChrome is the rows the chart's own furniture costs — tab bar, rule, the clock box
+	// and the month's totals above, the axis, status and footer below. The grid sizes itself
+	// against what is left.
+	dashChrome = 16
 	descCap    = 48
 )
 
@@ -118,8 +135,10 @@ func (m Model) View() string {
 	// them off the screen loses the scale the colours lean on. A terminal too short for
 	// both gives the days back their rows — the axis first, then the totals, since a
 	// chart with two visible days is not a chart.
+	var dFoot []string
 	if m.tab == TabDash {
-		dHead, dFoot := m.dashHead(), m.dashFoot()
+		dHead := m.dashHead()
+		dFoot = m.dashFoot()
 		for _, frame := range []*[]string{&dFoot, &dHead} {
 			if m.rows()-len(head)-len(tail)-len(dHead)-len(dFoot) >= minDayRows {
 				break
@@ -136,6 +155,14 @@ func (m Model) View() string {
 	body, focus := m.listLines()
 	if m.tab == TabDash {
 		body, focus = m.dashLines(budget)
+		// A month that fits needs no pinned axis: the ruler goes back under the last day,
+		// where it is read, rather than at the bottom of the screen with the padding
+		// between. Pinning is only worth it once the days scroll under it.
+		if len(dFoot) > 0 && len(body) <= budget {
+			tail = tail[len(dFoot):]
+			budget += len(dFoot)
+			body = append(body, dFoot...)
+		}
 	}
 	body = window(body, focus, budget)
 	for len(body) < budget {
@@ -293,7 +320,7 @@ func (m Model) dashHead() []string {
 	return append(out,
 		theme.Blur.Render(theme.Dim.Render("logged  ")+monthBar(logged, target)+
 			"  "+theme.Total.Render(hoursLabel(logged))+
-			theme.Dim.Render(" / "+hoursLabel(target))+"   "+m.todayDelta()+
+			theme.Dim.Render(" / "+hoursLabel(target))+"   "+m.todayLogged()+
 			theme.Dim.Render(fmt.Sprintf("   %d of %d days", worked, workdays))),
 		"",
 		theme.Blur.Render(theme.Header.Render("HOURS PER DAY")+
@@ -403,25 +430,24 @@ func checkedLabel(in bool) string {
 	return "checked out"
 }
 
-// todayDelta is where today stands against the hours expected of it — the one figure on
-// that line you can still do something about. The month's own gap is left to the bar and
-// the two numbers beside it: a shortfall spread over three weeks is not a number anybody
-// acts on before the end of the day.
-func (m Model) todayDelta() string {
+// todayLogged is the hours on today, beside the month's own totals — the one figure on that
+// line you can still do something about.
+//
+// It is what has been logged, not the gap against the eight hours due: a day that has barely
+// started owes nothing yet, and opening the chart to a red "−8:00" read as hours already
+// missed rather than a day not yet worked. The colour carries the shortfall instead, on the
+// chart's own thresholds, and today's bar shows the same fact against the 8h tick.
+func (m Model) todayLogged() string {
 	today := time.Now().Format("2006-01-02")
 	for _, d := range m.dashDays {
 		if d.Date != today {
 			continue
 		}
-		switch {
-		case d.Expected == 0:
-			// Weekend, holiday, leave: nothing was expected, so there is no gap.
+		if d.Expected == 0 {
+			// Weekend, holiday, leave: nothing was expected, so nothing is owed.
 			return theme.Dim.Render("today off")
-		case d.Actual >= d.Expected:
-			return theme.Dim.Render("today ") + theme.High.Render("+"+hoursLabel(d.Actual-d.Expected))
-		default:
-			return theme.Dim.Render("today ") + theme.Low.Render("−"+hoursLabel(d.Expected-d.Actual))
 		}
+		return theme.Dim.Render("today ") + hourBand(d.Actual).Render(hoursLabel(d.Actual))
 	}
 	// The ERP did not report today at all — say so rather than implying a full day owed.
 	return theme.Dim.Render("today —")
@@ -437,9 +463,18 @@ func (m Model) dashFoot() []string {
 	if len(m.dashDays) == 0 {
 		return nil
 	}
-	out := []string{""}
+	// One ruler under every column: the columns share a scale, and a bar with no ruler
+	// beneath it is measured against nothing.
+	cols, _ := m.dashGrid()
+	// No blank line above it: the ruler and its numbers belong to the bars, and a gap read
+	// as the chart ending before the axis did.
+	var out []string
 	for _, l := range strings.Split(dashAxis(m.barCells()), "\n") {
-		out = append(out, theme.Blur.Render(l))
+		row := make([]string, cols)
+		for i := range row {
+			row[i] = l
+		}
+		out = append(out, theme.Blur.Render(strings.Join(row, colGap)))
 	}
 	return out
 }
@@ -461,38 +496,75 @@ func (m Model) dashLines(budget int) ([]string, int) {
 			theme.Dim.Render("no hour log yet — r to read this month"))}, -1
 	}
 
-	// One rule between days, none after the last: a bar sits against its own row rather
-	// than in a column of colour, which is the only way a stack of full days reads as
-	// separate days. Ruled, a month costs 2n-1 rows — dropped, it may fit whole, and a
-	// whole month on screen beats a windowed one now that the chart takes no motions.
+	// The month is laid out in as many columns as it takes to fit the rows on offer, days
+	// running down each column and on into the next, so every day keeps its own label and
+	// its own printed hours. One column is the roomy case and keeps the rule between days.
+	today, hold, focus := time.Now().Format("2006-01-02"), m.dashDayIndex(), -1
+	cols, rows := m.dashGrid()
 	barCells := m.barCells()
-	ruled := 2*len(m.dashDays)-1 <= budget || len(m.dashDays) > budget
+	ruled := cols == 1 && (2*len(m.dashDays)-1 <= budget || len(m.dashDays) > budget)
 	rule := theme.Blur.Render(theme.Track.Render(
 		strings.Repeat("─", dashLabel+2+barCells)))
-	today, hold, focus := time.Now().Format("2006-01-02"), m.dashDayIndex(), -1
-	var lines []string
-	for i, d := range m.dashDays {
-		if i > 0 && ruled {
+
+	lines := make([]string, 0, rows*2)
+	for r := range rows {
+		if r > 0 && ruled {
 			lines = append(lines, rule)
 		}
-		lines = append(lines, theme.Blur.Render(m.dashRow(d, barCells, today)))
-		if i == hold {
-			focus = len(lines) - 1 // the row the window is built around
+		cells := make([]string, 0, cols)
+		for c := range cols {
+			i := c*rows + r
+			if i >= len(m.dashDays) {
+				// A short last column is padded, or the columns beside it would shift left
+				// on the rows it does not reach.
+				cells = append(cells, strings.Repeat(" ", dashLabel+2+barCells))
+				continue
+			}
+			cells = append(cells, m.dashRow(m.dashDays[i], barCells, today))
+			if i == hold {
+				focus = len(lines) // the row the window is built around
+			}
 		}
+		lines = append(lines, theme.Blur.Render(strings.Join(cells, colGap)))
 	}
 	return lines, focus
 }
 
-// barCells is the width of the bar area: what the day label and the hours leave over,
-// capped so a wide terminal does not stretch one day across the screen. The bars and the
-// axis under them read it, so they cannot disagree.
+// dashGrid is how the month is arranged: how many columns of days, and how many rows in
+// each. Enough columns to fit the rows on offer, capped by what the width can hold, so all
+// 31 days are one screen on a terminal that could never show them stacked.
+//
+// It reads its own estimate of the rows rather than the budget View measured, because the
+// bars and the axis are sized from this too: one estimate everywhere keeps them agreeing,
+// and being a row out only changes how early a column is added.
+func (m Model) dashGrid() (cols, rows int) {
+	days := len(m.dashDays)
+	if days == 0 {
+		return 1, 0
+	}
+
+	// The widest the terminal can hold, and the fewest columns the rows need.
+	wide := max((m.cols()-gutter+len(colGap))/(dashLabel+2+minBar+len(colGap)), 1)
+	budget := max(m.rows()-dashChrome, 1)
+	cols = min(max((days+budget-1)/budget, 1), min(wide, maxDashCols))
+	return cols, (days + cols - 1) / cols
+}
+
+// barCells is the width of one day's bar: what the label, the hours and the other columns
+// leave over, capped so a wide terminal does not stretch one day across the screen. The
+// bars and the axis under them read it, so they cannot disagree.
 func (m Model) barCells() int {
-	n := m.cols() - gutter - dashLabel - 8
+	cols, _ := m.dashGrid()
+	room := m.cols() - gutter - cols*(dashLabel+2) - (cols-1)*len(colGap)
+	n := room / cols
+	if cols == 1 {
+		n -= 6 // one column leaves the right edge alone rather than filling it
+	}
 	if n > dashBars {
 		n = dashBars
 	}
-	if n < 8 {
-		n = 8
+	if n < minBar {
+		n = minBar
 	}
 	return n
 }
@@ -506,7 +578,8 @@ func (m Model) dashRow(d api.DayLog, barCells int, today string) string {
 		label = pad(strings.ToLower(day.Format("Mon"))+" "+day.Format("_2"), dashLabel)
 	}
 
-	// Days the ERP expected nothing of say so instead of drawing an empty bar.
+	// Days the ERP expected nothing of say so instead of drawing an empty bar, and their
+	// dates stay dim: a weekend is not a day you can act on.
 	if note := dayNote(d); note != "" {
 		return theme.Dim.Render(label) + "  " +
 			theme.Off.Render(center(note, barCells))
@@ -516,26 +589,31 @@ func (m Model) dashRow(d api.DayLog, barCells int, today string) string {
 	// reports 8 expected hours for it, and an empty red 0:00 bar would read as a day the
 	// hours were missed on rather than one nobody could have worked.
 	if d.Date > today && d.Actual == 0 { // ISO dates sort as strings
-		return theme.Dim.Render(label) + "  " +
+		return theme.DayLabel.Render(label) + "  " +
 			theme.Track.Render(strings.Repeat("┈", barCells))
 	}
 
-	style := theme.Dim
+	// White for a working day, so the weekends beside it read as the quiet ones; the accent
+	// for today, which is the day being logged into right now.
+	style := theme.DayLabel
 	if d.Date == today {
-		style = theme.TitleFocus // the day being logged into right now
+		style = theme.TitleFocus
 	}
 	return style.Render(label) + "  " + dashBar(d.Actual, barCells, d.Date == today)
 }
 
-// dashBar is one day's bar, exactly barCells wide however long the bar is: a solid band
-// of colour, the hours printed inside it at its right end in dark ink, then the dotted
-// track and the 4h / 8h ticks in whatever it did not fill.
+// dashBar is one day's bar, exactly barCells wide however long the bar is: a dark wash of
+// the day's threshold colour, outlined and lettered in the light one, then the dotted track
+// and the 4h / 8h ticks in whatever it did not fill.
 //
-// The label sits inside the band rather than after it so it costs no width and the bar
-// keeps meaning what the axis says. The band carries no pattern — the rule between days
-// is what tells one bar from the next.
+// The ends and the style's own underline are what tell one bar from the day stacked on top of
+// it, which matters now that the month is laid out in columns and the rows sit directly against
+// each other. Nothing is drawn along the top: a rule there crowded the band.
+//
+// The hours print inside the band at its right end, so they cost the bar no width and the bar
+// keeps meaning what the axis says.
 func dashBar(hours float64, cells int, today bool) string {
-	fill, band, fillStyle := cellsFor(hours, cells), hourBand(hours), hourFill(hours)
+	fill, band, bar := cellsFor(hours, cells), hourBand(hours), hourFill(hours)
 
 	label := hoursLabel(hours)
 	if today {
@@ -553,17 +631,23 @@ func dashBar(hours float64, cells int, today bool) string {
 			rest[at] = '┆'
 		}
 	}
+	track := theme.Track.Render(string(rest))
 
-	// Room for the label inside the band, a space either side of it?
-	if inside := len(label) + 2; fill >= inside {
-		return fillStyle.Render(strings.Repeat(" ", fill-inside)+" "+label+" ") +
-			theme.Track.Render(string(rest))
+	// Room inside the band for both edges, the number, and a space either side of it?
+	if inside := len(label) + 4; fill >= inside {
+		return bar.Render(barEdgeL+strings.Repeat(" ", fill-inside)+" "+label+" "+barEdgeR) + track
 	}
-	// Too short to hold its own number: the number moves into the track, in the band's
-	// colour, and eats the dots it covers so the row stays the same width.
+	// Too short to hold its own number: the band keeps its outline and the number moves into
+	// the track, in the bar's colour, eating the dots it covers so the row stays the same
+	// width.
+	body := ""
+	if fill >= 2 {
+		body = bar.Render(barEdgeL + strings.Repeat(" ", fill-2) + barEdgeR)
+	} else if fill == 1 {
+		body = bar.Render(barEdgeL)
+	}
 	n := min(len(label)+2, len(rest))
-	return fillStyle.Render(strings.Repeat(" ", fill)) +
-		band.Render(" "+label+" ") + theme.Track.Render(string(rest[n:]))
+	return body + band.Render(" "+label+" ") + theme.Track.Render(string(rest[n:]))
 }
 
 // hourFill is the band a bar is drawn on: same thresholds as hourBand, as a background.
@@ -643,7 +727,9 @@ func dayNote(d api.DayLog) string {
 // dashAxis is the ruler under the bars, labelled every second hour. A label that would
 // run past the end of the bar is left out rather than pushing the line wider.
 func dashAxis(barCells int) string {
-	marks := []byte(strings.Repeat(" ", barCells+1))
+	// Exactly as wide as a day's row: the corner sits on the bar's first cell and the rule
+	// ends on its last. A cell over ran the columns past the right edge.
+	marks := []byte(strings.Repeat(" ", barCells))
 	for h := 0; h <= int(dashScale); h += 2 {
 		at := int(math.Round(float64(h) / dashScale * float64(barCells)))
 		label := fmt.Sprint(h)
@@ -653,7 +739,7 @@ func dashAxis(barCells int) string {
 		copy(marks[at:], label)
 	}
 	indent := strings.Repeat(" ", dashLabel+2)
-	return indent + theme.Track.Render("└"+strings.Repeat("─", barCells)) + "\n" +
+	return indent + theme.Track.Render("└"+strings.Repeat("─", barCells-1)) + "\n" +
 		indent + " " + theme.Dim.Render(strings.TrimRight(string(marks), " "))
 }
 

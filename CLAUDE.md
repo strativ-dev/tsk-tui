@@ -102,24 +102,52 @@ One chart: hours logged per day this month, `d` to open, `t` to go back.
   152:00 over 22 days is what the month is billed against and what a bar is worth filling
   towards. Hours logged and the `N of M days` count still stop at today — they can only be
   counted where the days exist.
-- **The number beside it is today's gap** (`view.go: todayDelta`), not the month's:
-  `today −5:30`, red under and green over, from today's `actual` against its `expected`.
-  A month's shortfall spread over three weeks is not something you act on before the day is
-  out; today's is. A day nothing was expected of reads `today off`, and a month the ERP has
-  not reported today in reads `today —` rather than implying a full day owed.
+- **The number beside it is today's own hours** (`view.go: todayLogged`), not the month's and
+  not a gap: `today 0:00` on a day nothing has been logged to yet, coloured on the chart's
+  thresholds. It printed the shortfall first — `today −8:00` — and opening the chart in the
+  morning to a red minus eight read as hours already missed rather than a day not yet worked.
+  The colour carries the shortfall instead, and today's own bar says the same thing against
+  the 8h tick. A day nothing was expected of reads `today off`, and a month the ERP has not
+  reported today in reads `today —` rather than implying a full day owed.
 - Weekends, holidays and leave say so instead of drawing an empty bar (`dayNote`); a
   working day with nothing on it draws an empty track, which is the point. The band
   spans the full track deliberately — width itself says "nothing was expected".
-- **The bar** (`view.go: dashBar`) is exactly `barCells` wide whatever it holds: a band of
-  the threshold colour, the hours **printed inside the band** at its right end in dark ink,
-  then the dotted remainder. Details that are each there for a reason:
-  - **A solid band.** The bar is the band colour as a *background*, no glyph pattern in
-    it; the rule below carries the separation instead.
-  - **A rule between days**, so each bar sits against its own row rather than in a column
-    of colour — and the **first thing given up** when the month does not fit: ruled, a
-    month costs `2n-1` rows, and a whole month on screen beats a separated half of one
-    (`dashLines(budget)`). Kept when neither fits, since a windowed chart still wants its
-    days told apart.
+- **The bar** (`view.go: dashBar`) is exactly `barCells` wide whatever it holds: a **dark wash**
+  of the threshold colour (`theme.BandLow`/`BandMid`/`BandHigh`), **edged and lettered in the
+  light one**, then the dotted remainder. Details that are each there for a reason:
+  - **Ends and an underline separate the bands**: `▏` and `▕` at each end
+    (`barEdgeL`/`barEdgeR`) plus the light **underline** the `*Fill` styles carry along the
+    bottom. Nothing along the top — a rule there crowded the band and read as a second bar.
+    Once the month is in columns the rows sit directly against each other, and a bare wash of
+    colour merged a run of eight-hour days into one rectangle; a *block* inside the band read as
+    a pattern rather than a bar, and a half block hung at the bottom of the cell, under its own
+    row. This costs no row, where a rule between days would cost one per day — which is what the
+    columns exist to save.
+  - **Working days are white, quiet ones dim** (`theme.DayLabel`): a weekend or a holiday is
+    not a day you can act on, so the dates carry that without the working days needing a
+    colour of their own. Today's date keeps the accent.
+  - **The month is laid out in columns** (`dashGrid`), days running down one and on into the
+    next, so all 31 of them are one screen on a terminal that could never stack them: at
+    100×24 that is four columns of eight rows, at 120×30 three, at 100×70 one. Every day
+    keeps its own label and its own printed hours — that is the point of the columns rather
+    than a per-day glyph. The count comes from the rows left over (`dashChrome`) capped by
+    what the width holds at `minBar` cells a bar, and by `maxDashCols`, since more columns
+    only make the bars shorter. Below roughly 80 cells the month no longer fits a 24-row
+    terminal and the window takes over again.
+  - `barCells` and `dashGrid` both size themselves from **one estimate** of the body's rows,
+    not from the budget `View` measured, so the bars, the columns and the axis cannot
+    disagree with each other; being a row out only changes how early a column is added.
+  - **A rule between days** in the one-column case, so each bar sits against its own row
+    rather than in a column of colour. Ruled, a month costs `2n-1` rows, so it is the first
+    thing given up as the terminal shortens — then the columns take over from it entirely.
+  - **A ruler under every column** (`dashFoot`): the columns share one scale, and a bar with
+    no axis beneath it is measured against nothing. `dashAxis` is exactly as wide as a day's
+    row — the corner on the bar's first cell, the rule ending on its last — since one cell
+    over ran four columns past the right edge.
+  - **The axis is only pinned when the days scroll.** A month that fits gets its ruler back
+    in the body, directly under the last day where it is read; pinned, it sat at the bottom of
+    the screen with the body's padding between it and the bars (`View`, where `dFoot` moves
+    from the tail into the body).
   - **It moves in screenfuls, not days.** There is no cursor — the chart is a picture, not
     a list — so `j`/`k` are unbound here and `Model.dashHold` only says which day the
     window is built around: `-1` follows **today**, where it opens and where a re-read puts
@@ -132,11 +160,10 @@ One chart: hours logged per day this month, `d` to open, `t` to go back.
     gives the rows back — the axis first, then the head (`minDayRows`), since a chart with
     two visible days is not a chart.
   - Today's bar says **`today`** after its hours, inside the band.
-  - **The label lives inside the band** — same background, no divider through it — so it
-    costs the bar no width and the bar keeps
-    meaning what the axis says. A bar too short to hold its own number puts it in the
-    track instead, in the band's colour, eating the dots it covers so the row stays the
-    same width.
+  - **The label sits at the end of the run**, not beyond it, so it costs the bar no width and
+    the bar keeps meaning what the axis says. A bar too short to hold its own number spills it
+    into the track, in the bar's colour, eating the dots it covers so the row stays the same
+    width.
   - **`┆` ticks at 4h and 8h, only past the fill.** A bar sitting exactly on 8h has
     reached that threshold, so a tick at its edge would read as part of the bar.
 - **Colours by threshold** (`hourBand`/`hourFill`): under 4h `#E0574F`, under 8h
