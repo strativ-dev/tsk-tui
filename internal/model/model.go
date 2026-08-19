@@ -29,6 +29,7 @@ const (
 	ModeDay
 	ModeConfirm
 	ModeAuth
+	ModeForm // the new-timeoff line on TabTime
 )
 
 // Tab is the top-level screen, above modes: the task list and everything reached from
@@ -38,6 +39,7 @@ type Tab int
 const (
 	TabTasks Tab = iota // where the app opens
 	TabDash
+	TabTime
 )
 
 // DailyGoal is the 8h bar the header measures today against.
@@ -57,7 +59,37 @@ const (
 	confirmDiscard
 	confirmQuit
 	confirmCheckOut
+	confirmApplyLeave
+	confirmDropLeave
 )
+
+// The new-timeoff line's fields, in tab order. leaveTo is the range's end on a full day and
+// the morning/afternoon dropdown on a half one — the same slot, since a half day is one day
+// and has no end to give.
+const (
+	leaveKindField = iota
+	leaveDurField
+	leaveFromField
+	leaveToField
+	leaveDescField
+	leaveOKField
+	leaveXField
+	leaveFieldCount
+)
+
+// leaveForm is the new-timeoff line. It is one struct so that discarding it is one
+// assignment, and so nothing half-typed can outlive the line it was typed on.
+type leaveForm struct {
+	open  bool
+	field int
+	kind  int  // index into Model.timeKinds
+	half  bool // full day / half day
+	pm    bool // which half, when half
+	// from and to are dd/mm/yy text fields; fresh marks one whose value is selected, so the
+	// first keystroke replaces it rather than appending to it.
+	from, to, desc textinput.Model
+	fresh          [2]bool
+}
 
 // Insert-mode focus positions.
 const (
@@ -136,6 +168,32 @@ type Model struct {
 	// nothing to report on a month that has not happened.
 	dashOffset int
 
+	// The time off year: the balances, the requests and the public holidays, all four
+	// reads from one answer. timeYear is the year on screen — 0 until one lands — so it
+	// doubles as the cache key, the way dashMonth does for the chart.
+	timeYear     int
+	timeKinds    []api.LeaveKind
+	timeLeaves   []api.Leave
+	timeHolidays []api.Holiday
+	timeLoading  bool
+	// timeWanted is the calendar waiting on the login, exactly as dashWanted is: RPC
+	// needs the key owner's email, and that only arrives with the REST day total.
+	timeWanted bool
+	// timeFilter limits the calendar to one leave type, by hr.leave.type id; 0 is all of
+	// them. The keys that set it are the types' own initials, so they come from the
+	// answer rather than from the keymap.
+	timeFilter int
+	// timeHold is the month the window is built around, 0 for January, or -1 to follow
+	// today. As on the chart there is no cursor — a calendar is a picture.
+	timeHold int
+	// timeEmp is the hr.employee a new request is filed for, from the same read that found
+	// the working calendar.
+	timeEmp int
+	// form is the new-timeoff line. Closed, it is a label and nothing else.
+	form leaveForm
+	// applying is a request for time off in flight.
+	applying bool
+
 	tasks    []store.Task
 	cursor   int          // index into filtered()
 	row      int          // row index inside the focused task
@@ -201,6 +259,7 @@ func New() Model {
 		pulled:   map[int]bool{},
 		pulling:  map[int]bool{},
 		dashHold: -1, // the chart opens on today, not on the 1st
+		timeHold: -1, // and the calendar on this month, not on January
 	}
 	// Sized for the fallback width until the first WindowSizeMsg lands, so the field
 	// cannot wrap its own box on the very first frame either.
@@ -251,9 +310,11 @@ func clockTick() tea.Cmd {
 }
 
 // busy is whether anything is waiting on the network: a task sync or write (syncing),
-// the month's hour log (dashLoading), a check in or out (clocking), or a task's lines.
+// the month's hour log (dashLoading), the year's time off (timeLoading), a request for
+// time off (applying), a check in or out (clocking), or a task's lines.
 func (m Model) busy() bool {
-	return m.syncing || m.dashLoading || m.clocking || len(m.pulling) > 0
+	return m.syncing || m.dashLoading || m.timeLoading || m.applying ||
+		m.clocking || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -284,6 +345,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.search.Width = m.searchFieldWidth()
 		m.fields[fieldDesc].Width = fieldWidth(m.descWidth())
+		if m.form.open {
+			m.form.desc.Width = m.leaveDescWidth()
+		}
 		return m, nil
 
 	case store.LoadedMsg:
@@ -341,13 +405,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.UserEmail != "" {
 			m.login = msg.UserEmail
+			// The chart or the calendar may have been waiting for exactly this. Both can
+			// be, if d and o were pressed before the first sync answered.
+			var cmds []tea.Cmd
+			var cmd tea.Cmd
 			if m.dashWanted {
-				// The chart was waiting for exactly this.
-				return m.loadDash()
+				m, cmd = m.loadDash()
+				cmds = append(cmds, cmd)
+			}
+			if m.timeWanted {
+				m, cmd = m.loadTime()
+				cmds = append(cmds, cmd)
+			}
+			if len(cmds) > 0 {
+				return m, tea.Batch(cmds...)
 			}
 		}
-		if msg.Err != nil && m.dashWanted {
-			m.dashWanted, m.dashLoading, m.syncing, m.clocking = false, false, false, false
+		if msg.Err != nil && (m.dashWanted || m.timeWanted) {
+			m.dashWanted, m.timeWanted = false, false
+			m.dashLoading, m.timeLoading, m.syncing, m.clocking = false, false, false, false
 			m.err = msg.Err
 		}
 		return m, nil
@@ -366,6 +442,65 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashMonth, m.dashDays, m.dashHold = msg.Month, msg.Days, -1
 		m.err = nil
 		return m, nil
+
+	case api.TimeOffMsg:
+		m.timeLoading = false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.err = msg.Err
+			m.status = "no time off for this year"
+			return m, nil
+		}
+		// One answer, one screen: the balances, the requests and the holidays replace each
+		// other together, so the calendar's days can never disagree with its own totals.
+		m.timeYear, m.timeKinds = msg.Year, msg.Kinds
+		m.timeLeaves, m.timeHolidays = msg.Leaves, msg.Holidays
+		if msg.Employee != 0 {
+			m.timeEmp = msg.Employee
+		}
+		// The window is left where it is when the line is open: a re-read after filing a
+		// request must not scroll the month you were looking at off the screen.
+		if !m.form.open {
+			m.timeHold = -1
+		}
+		m.err = nil
+		return m, nil
+
+	case api.LeaveRequestedMsg:
+		m.applying = false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			// The line is still on screen with everything in it, so the request can be fixed
+			// and filed again rather than typed again — and the year is re-read, because what
+			// refused it is usually a leave this screen has not seen. Someone can file one
+			// for you in the web client, so the calendar can never be fresh by itself.
+			//
+			// The reason goes in the **status**, not only in err: the re-read clears err when
+			// it lands, which left a refusal on screen as the word "refused" and nothing else.
+			// Whatever the ERP said is the one thing worth keeping.
+			why := oneLine(msg.Err.Error())
+			m.err = msg.Err
+			m.status = "the ERP refused it: " + why
+			if strings.Contains(strings.ToLower(why), "overlap") {
+				m.status = "those days already have time off — " + why
+			}
+			return m.loadTime()
+		}
+		// Filed: the line closes, and the year is re-read so the days show up where the
+		// calendar says they are rather than where this screen guessed.
+		m.form = leaveForm{}
+		m.mode = ModeList
+		m.err = nil
+		// state defaults to confirm on create, so the request is submitted, not a draft: it
+		// is waiting on the leave type's approvers, two of them for most types here.
+		m.status = "time off requested — waiting on approval"
+		return m.loadTime()
 
 	case api.AttendanceMsg:
 		// A read that was already in flight when a toggle started is thrown away: the
@@ -518,13 +653,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Tabs and the key list come before modes, but never while a field is taking
 		// letters — t, d and ? have to stay typeable in the search box and in an entry's
 		// description.
-		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump && m.mode != ModeAuth {
+		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
+			m.mode != ModeAuth && m.mode != ModeForm {
 			switch {
 			case key.Matches(msg, keys.Help):
 				m.showHelp = !m.showHelp
 				return m, nil
 			case key.Matches(msg, keys.DashTab):
 				return m.showDash()
+			case key.Matches(msg, keys.TimeTab):
+				return m.showTime()
 			case key.Matches(msg, keys.TasksTab):
 				m.tab = TabTasks
 				return m, nil
@@ -533,8 +671,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ModeAuth is excluded above so the key can be typed, which means the dash tab must
 		// let it through too: a 401 on the hour log opens the prompt while this tab is up,
 		// and routing here regardless left it unusable — every keystroke went to the chart.
-		if m.tab == TabDash && m.mode != ModeAuth {
-			return m.updateDash(msg)
+		// The new-timeoff line owns the keyboard while it is open: its description has to be
+		// able to hold a t, a d and an o, so it is excluded above and routed here first.
+		if m.mode == ModeForm {
+			return m.updateForm(msg)
+		}
+		if m.mode != ModeAuth {
+			switch m.tab {
+			case TabDash:
+				return m.updateDash(msg)
+			case TabTime:
+				return m.updateTime(msg)
+			}
 		}
 
 		switch m.mode {
@@ -1326,7 +1474,7 @@ func (m Model) showDash() (tea.Model, tea.Cmd) {
 func (m Model) targetMonth() time.Time { return time.Now().AddDate(0, m.dashOffset, 0) }
 func (m Model) targetMonthKey() string { return m.targetMonth().Format("2006-01") + "-01" }
 
-func (m Model) loadDash() (tea.Model, tea.Cmd) {
+func (m Model) loadDash() (Model, tea.Cmd) {
 	if strings.TrimSpace(m.key) == "" {
 		m.err = api.ErrNoKey
 		return m, nil
@@ -1489,6 +1637,650 @@ func (m Model) dashTotals() (logged, target float64, worked, workdays int) {
 	return logged, target, worked, workdays
 }
 
+// --- time off ----------------------------------------------------------------
+
+// showTime opens the year calendar and reads the year if it is not already on screen.
+// One year at a time, like the chart's one month: r re-reads it.
+func (m Model) showTime() (tea.Model, tea.Cmd) {
+	m.tab = TabTime
+	if m.timeYear == time.Now().Year() || m.timeLoading {
+		return m, nil // already have it, or it is on its way
+	}
+	return m.loadTime()
+}
+
+// loadTime asks for the whole year in one call. The year on screen is left alone while it
+// is in flight, so a re-read keeps a coherent calendar — its own days, its own balances —
+// with a loader beside the title, exactly as the chart does with its month.
+func (m Model) loadTime() (Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.timeLoading = true
+	if strings.TrimSpace(m.login) == "" {
+		// The day total's answer carries the email the RPC login needs.
+		m.timeWanted = true
+		return m, api.FetchDayHours(m.key, parse.Today())
+	}
+	m.timeWanted = false
+	return m, api.FetchTimeOff(m.key, m.login, m.db, time.Now().Year())
+}
+
+// updateTime is the calendar tab. There is no cursor — a year is a picture, not a list —
+// so it moves in months: g and G to the ends, ctrl+f / ctrl+b by a row of them.
+//
+// The filters come last, after every bound key, because they are letters the ERP chose:
+// they are the leave types' own initials, so a type named after a key that already means
+// something must not shadow it.
+func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	// h j k l walk the grid the months are laid out in: one month either way, one row of them
+	// up or down. They are the same four bindings the task list moves by, so a rebind moves
+	// both, and the row is however many months the width is showing.
+	case key.Matches(msg, keys.Collapse):
+		return m.holdTime(m.timeMonth() - 1), nil
+	case key.Matches(msg, keys.Expand):
+		return m.holdTime(m.timeMonth() + 1), nil
+	case key.Matches(msg, keys.Down):
+		return m.holdTime(m.timeMonth() + m.timeCols()), nil
+	case key.Matches(msg, keys.Up):
+		return m.holdTime(m.timeMonth() - m.timeCols()), nil
+
+	case key.Matches(msg, keys.Top):
+		return m.holdTime(0), nil
+	case key.Matches(msg, keys.Bottom):
+		return m.holdTime(11), nil
+	case key.Matches(msg, keys.HalfDown):
+		return m.holdTime(m.timeMonth() + m.timeCols()), nil
+	case key.Matches(msg, keys.HalfUp):
+		return m.holdTime(m.timeMonth() - m.timeCols()), nil
+
+	case key.Matches(msg, keys.NewLeave):
+		return m.openLeaveForm()
+
+	case key.Matches(msg, keys.Refresh):
+		// timeYear is left alone: loadTime is called outright here, so nothing needs the
+		// cache key cleared, and clearing it would blank the calendar and its totals for
+		// as long as the read takes. The loader beside the title says it is re-reading.
+		return m.loadTime()
+
+	case key.Matches(msg, keys.Quit):
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+		return m, nil
+
+	case key.Matches(msg, keys.Back):
+		m.timeFilter = 0 // esc clears the filter, whatever set it
+		return m, nil
+
+	case key.Matches(msg, keys.Search), key.Matches(msg, keys.ClearSearch):
+		// Searching is a task-list act, so it takes you back there.
+		m.tab, m.mode = TabTasks, ModeSearch
+		if key.Matches(msg, keys.ClearSearch) {
+			m.search.SetValue("")
+			m.clampCursor()
+		}
+		m.search.Focus()
+		return m, textinput.Blink
+	}
+
+	if id, ok := m.filterKind(msg.String()); ok {
+		// The same letter twice clears it, so a filter can be undone with the key that set
+		// it as well as with esc.
+		if m.timeFilter == id {
+			id = 0
+		}
+		m.timeFilter = id
+		return m, nil
+	}
+	return m, nil
+}
+
+// --- the new-timeoff line ----------------------------------------------------
+
+// openLeaveForm reveals the line's fields and focuses the leave type, which is the first
+// thing a request has to say. The label was on screen all along and the row it sits on does
+// not move, so nothing below it shifts when this happens.
+func (m Model) openLeaveForm() (tea.Model, tea.Cmd) {
+	if len(m.timeKinds) == 0 {
+		// Without the types there is no request to make, and inventing one locally would be
+		// a form that cannot be filed.
+		m.status = "no leave types yet — r to read this year"
+		return m, nil
+	}
+	f := leaveForm{open: true, field: leaveKindField}
+	for _, in := range []struct {
+		p  *textinput.Model
+		ph string
+		w  int
+	}{{&f.from, "dd/mm/yy", fieldWidth(dateWidth)}, {&f.to, "dd/mm/yy", fieldWidth(dateWidth)},
+		{&f.desc, "description…", 20}} {
+		*in.p = textinput.New()
+		in.p.Prompt = ""
+		in.p.Placeholder = in.ph
+		in.p.Width = in.w
+		in.p.CharLimit = 120
+	}
+	// Today in both date fields: the day you are most likely asking about, and it makes the
+	// calendar's highlight say something the moment the line opens.
+	f.from.SetValue(parse.Today())
+	f.to.SetValue(parse.Today())
+	f.fresh = [2]bool{true, true}
+	m.form = f // the width is measured against the line as it will be rendered
+	f.desc.Width = m.leaveDescWidth()
+
+	m.form, m.mode = f, ModeForm
+	m.err = nil
+	return m, textinput.Blink
+}
+
+// updateForm is the new-timeoff line: tab through the fields, j/k inside a dropdown, enter
+// on ✓ to confirm and on ✕ to start over. It owns every key while it is open — the
+// description has to be able to hold a t, a d and an o.
+func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Next):
+		return m.moveLeaveField(1), nil
+	case key.Matches(msg, keys.Prev):
+		return m.moveLeaveField(-1), nil
+
+	case key.Matches(msg, keys.Accept):
+		switch m.form.field {
+		case leaveOKField:
+			return m.askApplyLeave()
+		case leaveXField:
+			// A reset is not a discard: nothing has been filed, and the line stays open on
+			// its first field, which is where starting over starts.
+			return m.openLeaveForm()
+		default:
+			return m.moveLeaveField(1), nil
+		}
+
+	case key.Matches(msg, keys.Cancel):
+		// esc asks, because everything typed goes with it.
+		m.prev, m.mode = ModeForm, ModeConfirm
+		m.cKind, m.cPrompt = confirmDropLeave, "Discard this time off request?"
+		return m, nil
+
+	case key.Matches(msg, keys.ClearField):
+		switch m.form.field {
+		case leaveFromField:
+			m.form.from.SetValue("")
+			m.form.fresh[0] = false
+		case leaveToField:
+			if !m.form.half {
+				m.form.to.SetValue("")
+				m.form.fresh[1] = false
+			}
+		case leaveDescField:
+			m.form.desc.SetValue("")
+		}
+		return m, nil
+	}
+
+	// The dropdowns take j/k and space; the text fields must keep those letters.
+	if m.leaveFieldIsDropdown() && key.Matches(msg, keys.Cycle) {
+		return m.cycleLeaveField(msg.String()), nil
+	}
+
+	in := m.leaveInput()
+	if in == nil {
+		return m, nil
+	}
+	// A date field opens with its value selected: the first thing typed replaces it whole,
+	// so 21 on a focused field is the 21st and not 21 appended to today.
+	if i := m.leaveDateIndex(); i >= 0 && m.form.fresh[i] && msg.Type == tea.KeyRunes {
+		in.SetValue("")
+		m.form.fresh[i] = false
+	}
+	if m.form.field == leaveDescField {
+		m.form.fresh = [2]bool{false, false}
+	}
+
+	var cmd tea.Cmd
+	*in, cmd = in.Update(msg)
+	// The calendar follows what is being typed, so the month holding the date comes into
+	// view as the digits land.
+	return m.followLeaveDates(), cmd
+}
+
+// moveLeaveField normalizes the field being left — dates are rewritten on exit, never per
+// keystroke — and focuses the next one, wrapping.
+func (m Model) moveLeaveField(by int) Model {
+	m.normalizeLeaveDates(m.form.field)
+	m.form.field = (m.form.field + by + leaveFieldCount) % leaveFieldCount
+	// A half day has no range end, so that slot is the period dropdown and the fields
+	// either side of it still tab in one line.
+	for _, in := range []*textinput.Model{&m.form.from, &m.form.to, &m.form.desc} {
+		in.Blur()
+	}
+	if in := m.leaveInput(); in != nil {
+		in.Focus()
+	}
+	if i := m.leaveDateIndex(); i >= 0 {
+		m.form.fresh[i] = true // freshly focused: the value is selected
+	}
+	return m.followLeaveDates()
+}
+
+// leaveInput is the text field the cursor is in, or nil on a dropdown or a button.
+func (m *Model) leaveInput() *textinput.Model {
+	switch {
+	case m.form.field == leaveFromField:
+		return &m.form.from
+	case m.form.field == leaveToField && !m.form.half:
+		return &m.form.to
+	case m.form.field == leaveDescField:
+		return &m.form.desc
+	}
+	return nil
+}
+
+// leaveDateIndex is which of the two date fields has the cursor, or -1.
+func (m Model) leaveDateIndex() int {
+	switch {
+	case m.form.field == leaveFromField:
+		return 0
+	case m.form.field == leaveToField && !m.form.half:
+		return 1
+	}
+	return -1
+}
+
+func (m Model) leaveFieldIsDropdown() bool {
+	return m.form.field == leaveKindField || m.form.field == leaveDurField ||
+		(m.form.field == leaveToField && m.form.half)
+}
+
+// cycleLeaveField changes the focused dropdown. k and up go back, everything else forward,
+// so one binding drives both directions.
+func (m Model) cycleLeaveField(k string) Model {
+	back := k == "k" || k == "up"
+	switch m.form.field {
+	case leaveKindField:
+		n := len(m.timeKinds)
+		if n == 0 {
+			return m
+		}
+		if back {
+			m.form.kind = (m.form.kind - 1 + n) % n
+		} else {
+			m.form.kind = (m.form.kind + 1) % n
+		}
+	case leaveDurField:
+		m.form.half = !m.form.half
+	case leaveToField:
+		m.form.pm = !m.form.pm
+	}
+	return m.followLeaveDates()
+}
+
+// normalizeLeaveDates rewrites a date field as it is left: 21 becomes the 21st of this
+// month, and the range's end is read against its start so a range across a month works.
+func (m *Model) normalizeLeaveDates(field int) {
+	switch field {
+	case leaveFromField:
+		if d, err := parse.Date(m.form.from.Value(), parse.Today()); err == nil {
+			m.form.from.SetValue(d)
+			// The end comes along when the start passes it, the way a date range behaves
+			// everywhere. Left behind, the range quietly reads backwards and covers the days
+			// between — asking for the 20th with the 19th still in the end field booked both,
+			// and the ERP refused the pair over a leave already on the 19th.
+			if before(d, m.form.to.Value()) {
+				m.form.to.SetValue(d)
+			}
+			m.err = nil
+		} else {
+			m.err = err
+		}
+	case leaveToField:
+		if m.form.half {
+			return
+		}
+		if d, err := parse.Date(m.form.to.Value(), m.form.from.Value()); err == nil {
+			m.form.to.SetValue(d)
+			m.err = nil
+		} else {
+			m.err = err
+		}
+	}
+}
+
+// before reports whether the second date is earlier than the first, both dd/mm/yy. An
+// unreadable date is not earlier than anything — there is nothing to drag it to.
+func before(a, b string) bool {
+	x, errA := time.Parse(parse.DateLayout, strings.TrimSpace(a))
+	y, errB := time.Parse(parse.DateLayout, strings.TrimSpace(b))
+	return errA == nil && errB == nil && y.Before(x)
+}
+
+// followLeaveDates brings the month the request starts in into view, so the days the
+// highlight is on are the days on screen. Partial input counts — 21 is already a date.
+func (m Model) followLeaveDates() Model {
+	from, _, ok := m.leaveRange()
+	if !ok {
+		return m
+	}
+	if t, err := time.Parse(parse.DateLayout, from); err == nil && t.Year() == m.timeYearOf() {
+		m.timeHold = int(t.Month()) - 1
+	}
+	return m
+}
+
+// leaveRange is the days the open line covers, dd/mm/yy and in order, resolved the way the
+// fields themselves resolve so that half-typed input highlights too. A half day is one day.
+func (m Model) leaveRange() (from, to string, ok bool) {
+	if !m.form.open {
+		return "", "", false
+	}
+	from, err := parse.Date(m.form.from.Value(), parse.Today())
+	if err != nil {
+		return "", "", false
+	}
+	if m.form.half {
+		return from, from, true
+	}
+	to, err = parse.Date(m.form.to.Value(), from)
+	if err != nil {
+		return from, from, true // the end is not readable yet; the start still is
+	}
+	a, errA := time.Parse(parse.DateLayout, from)
+	b, errB := time.Parse(parse.DateLayout, to)
+	if errA == nil && errB == nil && b.Before(a) {
+		from, to = to, from // typed backwards is still a range
+	}
+	return from, to, true
+}
+
+// leaveClash is the first day of the request that already has time off on it, "" if none.
+//
+// Odoo refuses two leaves that overlap on one day — a hard constraint, not a warning — so
+// this is checked before the round trip rather than after it, the way the hour log's own
+// refusals are.
+func (m Model) leaveClash() string {
+	from, to, ok := m.leaveRange()
+	if !ok {
+		return ""
+	}
+	taken := map[string]bool{}
+	for _, l := range m.timeLeaves {
+		for _, d := range daysOf(l.From, l.To) {
+			taken[d] = true
+		}
+	}
+	for _, d := range daysOf(storedToISO(from), storedToISO(to)) {
+		if taken[d] {
+			return d
+		}
+	}
+	return ""
+}
+
+// askApplyLeave states what is about to be filed and asks. The prompt is built from the
+// fields as they stand, so it cannot promise something the request will not say.
+func (m Model) askApplyLeave() (tea.Model, tea.Cmd) {
+	m.normalizeLeaveDates(leaveFromField)
+	m.normalizeLeaveDates(leaveToField)
+	from, to, ok := m.leaveRange()
+	if !ok {
+		m.err = parse.ErrDate
+		return m, nil
+	}
+	kind, hasKind := m.leaveKind()
+	if !hasKind {
+		m.status = "pick a leave type first"
+		return m, nil
+	}
+	if clash := m.leaveClash(); clash != "" {
+		// Never a modal that would only be refused: the ERP allows one leave per day, and
+		// this one already has one.
+		m.status = "you already have time off on " + isoDate(clash) +
+			" — the ERP takes one leave per day"
+		return m, nil
+	}
+
+	span := from + "  →  " + to
+	how := plural(m.leaveDays(), "1 day", fmt.Sprintf("%d days", m.leaveDays()))
+	if m.form.half {
+		span, how = from, "half day · "+m.leavePeriodName()
+	}
+	desc := strings.TrimSpace(m.form.desc.Value())
+	if desc == "" {
+		desc = "—"
+	}
+	// What it costs against the allocation, said rather than enforced: some types are allowed
+	// to run negative, and refusing a request the ERP would have taken is worse than warning
+	// about one it will not.
+	takes := float64(m.leaveDays())
+	if m.form.half {
+		takes = 0.5
+	}
+	balance := fmt.Sprintf("%s left, this takes %s", days(kind.Available), days(takes))
+	if takes > kind.Available {
+		balance += "  — more than you have"
+	}
+
+	m.prev, m.mode = ModeForm, ModeConfirm
+	m.cKind = confirmApplyLeave
+	m.cPrompt = strings.Join([]string{
+		"CONFIRM TIME OFF",
+		"TYPE         " + strings.ToUpper(oneLine(kind.Name)),
+		"DATES        " + span,
+		"DURATION     " + how,
+		"BALANCE      " + balance,
+		"DESCRIPTION  " + trunc(oneLine(desc), 48),
+	}, "\n")
+	return m, nil
+}
+
+// applyLeave files the request. The line stays exactly as typed until the ERP answers: a
+// refusal must leave the request on screen to fix, not lose it.
+func (m Model) applyLeave() (tea.Model, tea.Cmd) {
+	kind, ok := m.leaveKind()
+	from, to, dates := m.leaveRange()
+	switch {
+	case !ok || !dates:
+		m.status = "the request is not complete"
+		return m, nil
+	case strings.TrimSpace(m.key) == "":
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.applying = true
+	// The days are in the status because they are what a refusal is usually about: an overlap
+	// the ERP names without naming the day is unreadable unless the screen says which days
+	// were asked for.
+	span := from
+	if to != from {
+		span = from + " → " + to
+	}
+	m.err = nil // whatever the last attempt was refused for is not this attempt's news
+	m.status = "asking the ERP for " + strings.ToLower(firstWord(kind.Name)) +
+		" time off, " + span + "…"
+	return m, api.RequestLeave(m.key, m.login, m.db, m.timeEmp, kind.ID,
+		from, to, m.form.desc.Value(), m.form.half, m.leavePeriod())
+}
+
+// leaveKind is the type the line has selected.
+func (m Model) leaveKind() (api.LeaveKind, bool) {
+	if m.form.kind < 0 || m.form.kind >= len(m.timeKinds) {
+		return api.LeaveKind{}, false
+	}
+	return m.timeKinds[m.form.kind], true
+}
+
+// leaveDays is how many days the range covers, both ends counted.
+func (m Model) leaveDays() int {
+	from, to, ok := m.leaveRange()
+	if !ok {
+		return 0
+	}
+	return len(daysOf(storedToISO(from), storedToISO(to)))
+}
+
+func (m Model) leavePeriod() string {
+	if m.form.pm {
+		return "pm"
+	}
+	return "am"
+}
+
+func (m Model) leavePeriodName() string {
+	if m.form.pm {
+		return "afternoon"
+	}
+	return "morning"
+}
+
+// isoDate is the reverse: the ERP's yyyy-mm-dd said the way this app writes a date.
+func isoDate(iso string) string {
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(iso))
+	if err != nil {
+		return iso
+	}
+	return t.Format(parse.DateLayout)
+}
+
+// storedToISO turns the app's dd/mm/yy into the yyyy-mm-dd the calendar's own maps are
+// keyed by, so a typed date can be looked up beside the ERP's own.
+func storedToISO(date string) string {
+	t, err := time.Parse(parse.DateLayout, strings.TrimSpace(date))
+	if err != nil {
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
+// filterKind is the leave type a letter selects: the first type whose name starts with it.
+// Nothing is hardcoded — the types come from the ERP, and so do their keys, which is what
+// keeps the balance chips' highlighted initials honest.
+func (m Model) filterKind(s string) (int, bool) {
+	if len([]rune(s)) != 1 {
+		return 0, false
+	}
+	for _, k := range m.timeKinds {
+		if strings.HasPrefix(strings.ToLower(k.Name), strings.ToLower(s)) {
+			return k.ID, true
+		}
+	}
+	return 0, false
+}
+
+// holdTime pins the window to a month, clamped, so the ends of the year stop rather than
+// wrap.
+func (m Model) holdTime(i int) Model {
+	m.timeHold = min(max(i, 0), 11)
+	return m
+}
+
+// timeMonth is the month the window is built around, 0 for January: whichever g, G or a
+// half page pinned, else today's — or January, in a year that is not this one.
+func (m Model) timeMonth() int {
+	if m.timeHold >= 0 {
+		return min(m.timeHold, 11)
+	}
+	now := time.Now()
+	if m.timeYear == now.Year() {
+		return int(now.Month()) - 1
+	}
+	return 0
+}
+
+// timeKind is a leave type by id.
+func (m Model) timeKind(id int) (api.LeaveKind, bool) {
+	for _, k := range m.timeKinds {
+		if k.ID == id {
+			return k, true
+		}
+	}
+	return api.LeaveKind{}, false
+}
+
+// dayMark is what one square of the calendar says: the leave on it, whether that leave is
+// half a day and which half, whether it is still waiting on approval, and whether the day
+// was a public holiday anyway.
+type dayMark struct {
+	kind    string // leave type name, "" when nothing was taken
+	half    bool
+	period  string // "am" | "pm", only when half
+	pending bool   // not approved yet
+	holiday string // holiday name, "" on a working day
+	// selected is a day the open new-timeoff line covers. Derived from what is typed, so a
+	// half-finished date already marks the day it names.
+	selected bool
+}
+
+// timeMarks is the calendar's lookup, built once per render rather than per square: every
+// day of the year the filter lets through, and every public holiday. Derived, never
+// stored, so a late answer joins the picture on its own.
+func (m Model) timeMarks() map[string]dayMark {
+	marks := map[string]dayMark{}
+	for _, h := range m.timeHolidays {
+		for _, d := range daysOf(h.From, h.To) {
+			mark := marks[d]
+			mark.holiday = h.Name
+			marks[d] = mark
+		}
+	}
+	for _, l := range m.timeLeaves {
+		if m.timeFilter != 0 && l.KindID != m.timeFilter {
+			continue
+		}
+		for _, d := range daysOf(l.From, l.To) {
+			mark := marks[d]
+			mark.kind, mark.half, mark.period = l.Kind, l.Half, l.Period
+			mark.pending = l.State != "validate"
+			marks[d] = mark
+		}
+	}
+	// Last, so the request being typed is on top of whatever the year already holds — it is
+	// the thing the keys are about.
+	if from, to, ok := m.leaveRange(); ok {
+		for _, d := range daysOf(storedToISO(from), storedToISO(to)) {
+			mark := marks[d]
+			mark.selected = true
+			marks[d] = mark
+		}
+	}
+	return marks
+}
+
+// daysOf expands an inclusive yyyy-mm-dd range. A range that will not parse is no days
+// rather than an error: one unreadable row must not cost the whole year.
+func daysOf(from, to string) []string {
+	start, err := time.Parse("2006-01-02", from)
+	if err != nil {
+		return nil
+	}
+	end, err := time.Parse("2006-01-02", to)
+	if err != nil || end.Before(start) {
+		end = start
+	}
+	var out []string
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		out = append(out, d.Format("2006-01-02"))
+	}
+	return out
+}
+
+// timeTaken is the days off the year holds, counting a half day as half. It follows the
+// filter, so the figure beside the calendar always answers for what is drawn on it.
+func (m Model) timeTaken() float64 {
+	days := 0.0
+	for _, l := range m.timeLeaves {
+		if m.timeFilter != 0 && l.KindID != m.timeFilter {
+			continue
+		}
+		n := float64(len(daysOf(l.From, l.To)))
+		if l.Half {
+			n *= 0.5
+		}
+		days += n
+	}
+	return days
+}
+
 // --- confirm -----------------------------------------------------------------
 
 // confirmKeys is what accepts the open modal. Anything that destroys something —
@@ -1496,7 +2288,7 @@ func (m Model) dashTotals() (logged, target float64, worked, workdays int) {
 // Discarding an entry you are still typing keeps y or enter.
 func (m Model) confirmKeys() key.Binding {
 	switch m.cKind {
-	case confirmQuit, confirmDeleteRow, confirmCheckOut:
+	case confirmQuit, confirmDeleteRow, confirmCheckOut, confirmApplyLeave:
 		return keys.YesOnly
 	}
 	return keys.Yes
@@ -1540,6 +2332,18 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = m.prev
 			return m.toggleClock()
 
+		case confirmApplyLeave:
+			// Back to the line, and it stays as typed until the ERP answers: a refusal has
+			// to have something to come back to.
+			m.mode = ModeForm
+			return m.applyLeave()
+
+		case confirmDropLeave:
+			// Everything typed goes with the line, which is what the prompt asked about.
+			m.form = leaveForm{}
+			m.mode, m.err = ModeList, nil
+			return m, nil
+
 		case confirmQuit:
 			return m, tea.Quit
 		}
@@ -1566,6 +2370,8 @@ func modeLabel(m Mode) string {
 		return "-- CONFIRM --"
 	case ModeAuth:
 		return "-- API KEY --"
+	case ModeForm:
+		return "-- NEW TIMEOFF --"
 	}
 	return ""
 }

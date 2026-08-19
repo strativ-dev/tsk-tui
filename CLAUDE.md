@@ -27,7 +27,8 @@ internal/config/       ~/.config/tsk/config.toml — [keys] overrides, validated
 internal/parse/        pure parsing: hours, dates  (unit-tested, no tea imports)
 internal/store/        persistence (JSON on disk), API key via pass, load/save commands
 internal/api/          ERP tasks API client (GET /api/v1/tasks/my), Odoo JSON-RPC,
-                       and the dashboard's monthly hour log (api/hours.go)
+                       the dashboard's monthly hour log (api/hours.go), and the year's
+                       leave, balances and public holidays (api/timeoff.go)
 internal/theme/        lipgloss styles, all colors in one place
 ```
 
@@ -54,31 +55,36 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 
 ## Tabs
 
-`Model.tab` is the screen; `Model.mode` is the focus inside it. Two so far:
+`Model.tab` is the screen; `Model.mode` is the focus inside it. Three so far:
 
 | Tab | Keys | What |
 |---|---|---|
 | `TabTasks` | `t` · `1` | the task list and everything reached from it (**default at launch**) |
 | `TabDash` | `d` · `2` | this month's hours per day, and the ERP's clock (`c`) |
+| `TabTime` | `o` · `3` | this year's time off: the calendar, the balances, the holidays |
 
 - The tab bar is the **first line of every screen** (`view.go: tabBar`), the active tab
   reversed out in the **accent** (`theme.Pill`) — on this line the primary colour marks
-  one thing, which screen you are on: `¹tasks  ²dashboard`. Each tab carries **its position as a
+  one thing, which screen you are on: `¹tasks  ²dashboard  ³timeoff`. Each tab carries **its position as a
   raised digit** at the top-left of the label, btop style, and the **letter picked out
   inside the word itself** (`hinted`) — accent on an inactive tab, dark ink underlined on
   the pill, where accent on light would fail contrast. Both come off the binding, so a
   rebind shows in the bar with nothing else to edit.
-- **Digits are aliases in bar order** (`1`, `2`). They are matched in the same place as
+- **Digits are aliases in bar order** (`1`, `2`, `3`). They are matched in the same place as
   the letters, so the excluded typing modes protect them: a query of `2` and a `/12` date
   prompt both keep their digits.
 - Tab keys are matched **before** the mode handlers, but **not** while a field is taking
-  letters (`ModeSearch`, `ModeInsert`, `ModeJump`, `ModeAuth`) — `t` and `d` have to stay
+  letters (`ModeSearch`, `ModeInsert`, `ModeJump`, `ModeAuth`) — `t`, `d` and `o` have to stay
   typeable in the query box and in a description. A modal (`ModeConfirm`) keeps the
   keyboard whichever tab is behind it.
 - **`x` deletes a row, not `d`.** `d` means one thing everywhere, and a key that unlinks
   an hour log must not be one keystroke from a tab switch.
+- **The time off tab is `o`, not `t`.** The spec's own footer asks for `t today`, and `t`
+  is the tasks tab from every screen: a tab key that means one thing everywhere is worth
+  more than a motion the calendar can do without, since it opens on this month anyway.
 - The query field renders on `TabTasks` only: it filters tasks, so it belongs to that
-  tab. The dashboard's body replaces the list body; the footer and status line are shared.
+  tab. The dashboard's and the calendar's bodies replace the list body; the footer and
+  status line are shared.
 
 ## Dashboard (`TabDash`)
 
@@ -247,6 +253,258 @@ Check in and out without leaving the terminal — top-right of the chart, `WFH  
   the only place that localises it. Wall-clock formatting lives in `view.go`, not
   `internal/parse`, which is about the input grammar.
 
+## Time off (`TabTime`)
+
+A year calendar of the days you took off, the leave balances above it, the public holidays
+beside it. `o` to open, `t` to go back. **Read only** — see the spec (`docs/timeoff.md`)
+for the request form, which is not built.
+
+- Four RPC reads, **one message** (`api.FetchTimeOff` → `TimeOffMsg`), because they are one
+  screen: half of them landing would draw a calendar whose days disagree with its own
+  totals. `internal/api/timeoff.go`:
+  - `hr.leave.type.get_days_all_request` — the balance cards. An `@api.model` method that
+    takes **no arguments at all**, not even an empty ids list: passing one fails the read
+    with `takes 1 positional argument but 2 were given`. It answers with one array per type,
+    `[name, {figures}, "yes", id]` — the **figures are strings** (`"8.5"`), and the **id is
+    the last element**, which is what lets a filter name a type without matching its name.
+  - `hr.leave.search_read` — mine, for the year. The dates are
+    **`request_date_from` / `request_date_to`**, Odoo's own `Date` fields: `date_from` is a
+    UTC datetime for the same request, and reading a day out of that puts a 10am-Dhaka
+    morning on 04:00 UTC of a day that may not be the same one. The domain **overlaps** the
+    year rather than sitting inside it, so a request across New Year is on both calendars,
+    and `refuse`/`cancel` are dropped — a red day nobody is taking off reads as one that was.
+  - `hr.employee.search_read` for `resource_calendar_id`, then
+    `resource.calendar.leaves` with `resource_id = false` — the public holidays. **Per
+    office**: Dhaka keeps 17 in 2026 and Sweden 12, on separate calendars, so whose applies
+    is a property of the employee. Company-wide closures (`calendar_id = false`) count too.
+    This is a **separate read from `employeeOf`**, whose field list is two fields on purpose
+    (see the clock) — widening that one to save a round trip here would break attendance.
+  - Holiday rows are datetimes spanning the working day (04:00–13:00 UTC in Dhaka,
+    07:00–16:00 in Sweden), so both ends fall on their own local date and the date part is
+    the day itself.
+- **The filters are the leave types' own initials** — `s`, `c`, `a`, `p` here, but nothing
+  is hardcoded: `Model.filterKind` takes the first type whose name starts with the letter,
+  and the chips render the same initial in the accent. They are matched **after** every
+  bound key, so a type named `Toil` cannot shadow the tasks tab. The same letter again
+  clears the filter, and so does `esc`.
+- **A day off is its type's colour as a band** with the date reversed out of it
+  (`view.go: dayCellOf`) — the spec's filled circle, in the two cells a terminal gives a
+  date. A **half day bands one of those two cells**: the left for a morning, the right for
+  an afternoon, which is the same half-filled square and says which half as well. A single
+  digit is right-aligned, so its banded half is a space — still half the square.
+- **Pending is an underline**, and the head says `pending underlined` **only on a year that
+  has one**: an underline nobody can see needs no legend.
+- **The visual spec is `docs/timeoff-styles.md`** — surfaces, the text ramp, and the
+  translation notes for the parts a terminal cannot draw. What it says goes; the notes below
+  are only what that meant in cells.
+- **A day is a four-cell badge, `" 21 "`**, filled when the day carries anything and plain on
+  the month's own surface when it does not, with the date reversed out in dark ink — never
+  white on a colour. It sits in a **five-cell column** (`dayCell`, `badgeCell`): the fifth is
+  the gap the design leaves between its days, and without it a run of leave days read as one
+  long bar rather than as days.
+- **The measurements come from the design's own month cell** — 304px at 38 columns. A week is
+  35 cells and a month 39 with the week-number column (`weekCol`) and the cell's left padding
+  (`monthPad`) in front of it, so **three months want 121 cells and three months with the
+  holiday panel about 148**; below that the width buys months one at a time.
+- **Every week row has a line under it.** That air is what makes a month read as a calendar
+  rather than as a table, and it is the design's own proportion — a day there is nearly as tall
+  as it is wide. The padding above the month's name and under its weekday heads comes too on a
+  terminal tall enough to spend it (`roomyRows`).
+- **The days the request line covers are reversed out in the accent** — the same mark a date
+  jump leaves on the rows it found. The type it is for is on the request line itself, in its
+  own colour, so the day does not have to carry both.
+- **Months first, then the holidays** (`timeLayout`): three months outrank the list, and the
+  panel takes what is left when that is enough to read a holiday on (`panelMin` to
+  `panelMax`). A panel that would leave only one month beside it is dropped instead — that is
+  a list with a calendar attached, not a calendar.
+- **The months are cells of one surface, divided by hairlines** — `│` between the columns and
+  a `─` across the grid between the rows, never a gap, which is what the spec asks for
+  everywhere. The month in view is **tinted with the accent at 4.5%**
+  (`theme.PanelHold` against `theme.Surface`), the only thing that colour does there.
+- The surface colour is on **every span**, never wrapped around the line: a background set
+  around a whole line dies at the first span that sets its own — a weekend badge, a leave
+  day — and never comes back, which drew the month as a stripe that stopped at the first
+  coloured day (`theme.OnPanel`, and `monthPanel.filler` for the line a five-week month pads
+  a six-week row with). `TestMonthPanelIsRectangular` holds every line at exactly `monthCols`.
+- **The text ramp is the spec's** (`theme.DayInk` for working days, `QuietInk` for weekend
+  numbers, `WeekInk` for week numbers, `Muted` for the weekday heads, and `theme.Ink` —
+  `#0B0B10`, never white — for anything sitting on the accent or on a leave colour).
+- **Today is accent ink with no pill.** A filled accent cell is what the days being typed on
+  the request line take; today is not a cursor.
+- Weekends and public holidays are a **filled badge** (`theme.WeekendBand`, white at 4.5%
+  over the surface), lighter than the surface so it reads as a day nobody works rather than as a gap in the month, and
+  deliberately identical to each other — neither is a day you can act on. It is also the
+  faint half of a half day. **Weekend is Saturday and Sunday**: both offices' calendars run
+  Monday to Friday (`resource.calendar.attendance`, `dayofweek` 0–4), and reading that per
+  employee would be a fifth call to say the same thing.
+- **Annual is its own violet** (`theme.LeaveAnnual`), not the accent: focus is accent
+  everywhere else, and a calendar full of accent days beside an accent cursor says nothing.
+  `theme.LeaveColor` matches on the type's name — the ids are per database, the palette is
+  per meaning — and an unknown type gets **white**, since a leave day in muted ink on a dim
+  band is exactly what a weekend looks like.
+- **A month is titled `Jan 26`** and its weekday heads are single letters, right-aligned
+  over the dates, per the design. `T`/`T` and `S`/`S` are told apart by their column, which
+  is the only thing a date under them is read by anyway.
+- **The months size themselves to what they span.** A month is its name, the weekday heads
+  and four to six week rows; the months in one row are padded to the tallest of them and no
+  further, since padding all twelve to six costs the year lines it does not have. Three
+  months a row fits 80 cells (`monthCols` = 23); the count comes from the width
+  (`timeCols`), capped at `maxTimeCols`.
+- **The holiday panel is a pinned column flush with the right edge**, as wide as the months
+  leave it
+  (`view.go: withHolidayPanel`), on its own raised surface (`theme.Raised`), with a dim rule
+  between it and the months and the dates in their own column before a `:`, as the design
+  draws it. The rows of the **month in view** are marked down the panel's own edge — a `▎` in
+  the accent, the date in the accent, the name in white — so the list answers the part of the
+  calendar you are looking at. Its header gives up the year and then the count itself rather
+  than pushing the column wider than the one it was handed. It is a column of the screen, not of
+  the calendar, so it does not move when the months do or when one of them is a week shorter. It is composed **after** `window` has cut the body — the months scroll
+  under it and the holidays stay where they are read. Zipped into the body before the
+  window instead, the header and the first holidays scrolled away with January on the first
+  keypress. A list taller than the body ends in `… N more` rather than stopping mid-year;
+  the spec gives the panel its own scroll, which is what that line stands in for.
+- It gets its column whenever **two months still fit beside it** (`timePanel`): with one,
+  the screen is a list with a calendar attached rather than a calendar. So 88 cells and up
+  — three months beside it from about 114 — and below that the dimmed days on the months
+  are the whole answer.
+### The new-timeoff line (`n`)
+
+One row between the balances and the calendar, and the whole request is on it:
+`new timeoff  │Annual ▾│ │full day ▾│ │21/01/26 │ → │23/01/26 │ │description…│ │✓│ │✕│`.
+
+- **The row is there whether or not the line is open.** Closed it is the label alone, with
+  `n` in the accent; `n` reveals the fields and focuses the leave type. Nothing above or
+  below moves, which is the point of keeping the row — `TestNewLeaveOpensWithoutShifting`
+  holds the calendar's first line at the same index either way.
+- **Every field is a rounded box** (`theme.Field`), as the design draws them, which makes
+  the row **three lines tall** — and it is three lines closed as well, the label on the
+  middle one, so revealing the fields moves nothing (`leaveBand`). The parts are joined with
+  `lipgloss.JoinHorizontal(lipgloss.Center, …)`, which is what puts the one-line label beside
+  the three-line boxes rather than on their top rule.
+- **Two marks, two meanings.** The accent **frame** says which field has the keys; the accent
+  **fill** says the value is selected and the next keystroke replaces it, which is only ever a
+  date field just tabbed into (`leaveDate`, `theme.Match`). The selected value is rendered
+  without the input's cursor — the whole value is the selection — and padded to `dateWidth`,
+  so it measures the same as the input it stands in for.
+- **The leave type reads in its own colour**, the one its days are drawn in on the calendar
+  below, and takes the accent while it holds the keys.
+- Tab order is left to right, which is the only order the line reads in: type, duration,
+  the dates, what it is for, then ✓ and ✕ (`leaveFieldCount`). `tab`/`shift+tab` move,
+  `enter` on a field is a tab, `enter` on ✓ asks, `enter` on ✕ starts over.
+- **Duration is a dropdown, not a checkbox** — `full day` / `half day` — and choosing half a
+  day replaces the range's end with the **morning/afternoon** dropdown, since a half day is
+  one day and has no end to give. `j`/`k`/`space` change whichever dropdown has the keys;
+  they are letters everywhere else, so they only do that on a dropdown.
+- **The description sizes itself from the row that is actually drawn** (`leaveSkeleton`
+  renders the line with an empty description and measures it), so it cannot disagree with
+  what surrounds it by a cell. It measures **both durations and takes the wider**, or
+  choosing half day would push the buttons off the row. Narrow terminals give up the label
+  first, then the spaces between the boxes, then the space inside them (`leaveTier`,
+  `compact`) — the boxes stay boxes — so the whole request still fits 60 cells.
+- **The end date follows the start when the start passes it** (`normalizeLeaveDates`, `before`).
+  Left behind, the range reads backwards and quietly covers the days between — a request for
+  the 20th with the 19th still in the end field booked both, and the ERP refused the pair over
+  a leave that was already on the 19th. `leaveRange` still swaps a reversed pair as a backstop.
+- **A refused request re-reads the year**, and **the reason goes in the status line**, not
+  only in `err`: what refused it is usually a leave this screen has not seen — someone can
+  file one for you in the web client, so the calendar can never be fresh by itself — but the
+  answer to that re-read clears `err`, which left a refusal on screen as the word "refused"
+  and nothing else. Whatever the ERP said is the one thing worth keeping, verbatim.
+- **Dates are normalized on exit, never per keystroke**, against today for the start and
+  against the start for the end: `21` `tab` `23` `tab` lands on the description with
+  `21/08/26` and `23/08/26` in the fields. A freshly focused date field is **selected** —
+  the first keystroke replaces the whole value, so `21` is the 21st rather than appended to
+  what was there (`leaveForm.fresh`, the same rule the entry row has).
+- **The days the line covers are marked on the calendar as they are typed** — both ends and
+  everything between — reversed out in the accent (`theme.Match`, the same mark a date jump
+  leaves), and the month they are in **comes into view** (`followLeaveDates` sets
+  `timeHold`, so the caret moves to it). Partial input counts: `21` already marks a day.
+  The mark outranks whatever else the day holds, because it is what the keys are about — the
+  design rings the day instead, keeping the type's colour inside it, which a terminal cell
+  cannot draw; the form line above it is already showing the type in its own colour.
+- **✓ asks first** (`confirmApplyLeave`), with a modal that states the type, the dates, the
+  duration and the description, and takes **`y` only** — it files a request the ERP then
+  routes to a manager. `n` returns to the line with everything in it. A prompt of several
+  lines puts its `y / n` hint on a line of its own, or "Coast trip  y / n" reads as the
+  description.
+- **`esc` asks too** (`confirmDropLeave`): everything typed goes with the line. `✕` does not
+  ask — nothing has been filed, and it leaves the line open on its first field, which is
+  where starting over starts.
+- **The line stays exactly as typed until the ERP answers.** A refusal keeps it on screen to
+  fix; only `LeaveRequestedMsg` with an id closes it, and that re-reads the year so the days
+  appear where the calendar says they are rather than where this screen guessed.
+- **The line owns the keyboard while it is open**: `ModeForm` is excluded from the tab-key
+  and `?` block and routed before the tab handlers, so a description can hold a `t`, a `d`,
+  an `o`, an `n` and a `?`.
+- The write is `hr.leave` `create` (`api.RequestLeave`), with **`request_date_from` /
+  `request_date_to`, never `date_from`**: those are computed from the request dates and the
+  employee's own working calendar, which is the only thing that knows when their day starts —
+  an approved leave reads back `date_from 2026-01-21 04:00:00`, which is 10am in Dhaka.
+  `employee_id` comes from the same read that found the calendar (`TimeOffMsg.Employee`);
+  with no employee record it is left out and Odoo works out who is asking. A half day sends
+  `request_unit_half` and the period and one date. **Nothing retries** — a timed-out create
+  that in fact landed would book the leave twice, and a duplicate request is a conversation
+  with HR.
+- What the ERP itself says about that write, checked against the MCP (`hr.leave` is exposed
+  there with `create: true`, `unlink: false`) and `default_get`/`fields_get` over RPC:
+  - **`state` defaults to `confirm`**, so a created record is *submitted*, not a draft — there
+    is no `action_confirm` to call afterwards, and the status line saying it is waiting on
+    approval is the truth. Most types here are `validation_type: both`, two approvers.
+  - `holiday_type` defaults to `employee`, so it is left out; `notes` is **readonly** (the
+    description is `name`); `number_of_days` and `date_from`/`date_to` are computed.
+  - **One leave per day** is a hard constraint, so `Model.leaveClash` refuses a range that
+    covers a day already taken before the round trip, naming the day — the same way the hour
+    log refuses what the endpoint would.
+  - The **balance is stated, not enforced** (`BALANCE  8.5 left, this takes 3  — more than you
+    have`): some types are allowed to run negative, and refusing a request the ERP would have
+    accepted is worse than warning about one it will not.
+  - The MCP is a Claude-side server, not something this binary can call, so the write stays on
+    RPC; the MCP is only how the model's own rules were read.
+
+- **It moves in months, not days.** No cursor — a year is a picture — so `Model.timeHold`
+  only says which month the window is built around: `-1` follows **this** month, `h`/`l` step
+  one month, `j`/`k` a row of them, `g`/`G` pin it to the ends, and `ctrl+f`/`ctrl+b` move a
+  row like `j`/`k`. The four motions are the **same bindings the task list moves by**, so a
+  rebind moves both, and a row is however many months the width is showing
+  (`view.go: monthMoveHelp` reads their keys back for the footer). This month carries the **caret**
+  (`▸Aug`), which is the only thing that says where today is once a leave has taken the
+  cells.
+- **The balances are four boxes** (`view.go: balanceCards`), as the design draws them: the
+  type's name with its filter key picked out, the days left, and `DAYS AVAILABLE` under it,
+  divided by verticals and ruled above and below — the rule above is the screen's own, under
+  the tab bar, which is why `View` gives `TabTime` no blank line there. The dividers are what
+  makes them boxes; a border per card would cost two more rows to say the same thing.
+  - **The figure is double width** (`wide`), in the fullwidth digits: the one way a terminal
+    has of drawing a bigger number without spending a second row on it. Two rows of quadrant
+    blocks was bigger still and read worse — a balance is a number, and a number drawn out of
+    quadrants stops looking like one.
+  - The year and the days taken ride on the **tab bar's own row** (`timeSummary`), which is
+    half empty, rather than costing the calendar a title line. It gives up its parts from
+    the tail in when the tab bar leaves it less room (`fits`).
+  - The cards **split the width evenly and the remainder goes to the right-hand ones**, or
+    the row would stop short of its own rules.
+  - A name too wide for its card falls back to its **first word** — the word carrying the
+    key is the one that cannot be cut.
+  - **Nothing left is dim**, not the type's own colour, and the card being **filtered by is
+    reversed out** so the calendar and the card that explains it read together.
+- The initial inside a card is **its own span**, not part of a style wrapping the label: a
+  colour nested inside another does not survive the inner reset.
+- **One year in hand at a time** (`Model.timeYear`, the cache key as well as the year on
+  screen), and `r` re-reads it. `r` does **not** clear `timeYear` — `loadTime` is called
+  outright, so nothing needs it cleared, and clearing it blanks the calendar and its totals
+  for as long as the read takes. The loader sits beside the title instead, as on the chart.
+- **No year switching**, per the spec: `<`/`>` are the chart's months and nothing here.
+- Opening it needs the key owner's **email**, exactly as the chart does: `timeWanted` is set,
+  the day total is fetched, and the calendar continues when `DayHoursMsg.UserEmail` lands.
+  Both flags can be set at once — `d` then `o` before the first sync — so the handler starts
+  whichever asked.
+- The rest of the keys are the shared ones: `r` re-reads, `q` asks before quitting, `i` and
+  `ctrl+u` leave for the query field (which filters tasks, so it takes you to that tab), `?`
+  toggles the key list. There is no `j`/`k` and no `x` — nothing here is a list, and nothing
+  here writes.
+- `timeLoading` is in `busy()`, and every figure — the days taken, the per-month counts, the
+  marks map — is **derived on render** (`timeMarks`, `timeTaken`), never stored.
+
 ## Modes
 
 One `Mode` field on the root model. Only the active mode consumes keys.
@@ -261,6 +519,7 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeDay` | modal listing a date's entries across all tasks; `esc` closes |
 | `ModeConfirm` | modal; swallows everything except `y` / `n` / `esc` |
 | `ModeAuth` | API key prompt; opens when no key is stored or a fetch returns 401 |
+| `ModeForm` | the new-timeoff line on `TabTime`; owns every key, so a description can hold `t` |
 
 ## Keymap
 
@@ -280,7 +539,7 @@ List (`ModeList`) — the mode the app starts in
 - `l` — expand task, focus its first row (→ `ModeTable`); a task with no
   entries still opens, so `a` has somewhere to add the first one
 - `h` — collapse task
-- `d` — the dashboard tab; `t` comes back here
+- `d` — the dashboard tab; `o` — the time off tab; `t` comes back here
 - `/` — date jump (→ `ModeJump`); from here it lists the whole day in a modal
   (→ `ModeDay`), so it needs neither this task open nor any rows in it
 - `r` — fetch tasks from the API
@@ -632,6 +891,7 @@ Layout follows `Pictures/screenshots/tsk.png`:
 | confirm / complete | `#12CC63` |
 | link / tag | `#01B9AE` |
 | muted text | `#8A8F99` |
+| sick / casual / annual / paternity | `#E13400` · `#01B9AE` · `#7C6BE8` · `#12CC63` |
 
 ## Conventions
 

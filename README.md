@@ -47,8 +47,17 @@ binary, no CGO.
   reads against what the month is billed for.
 - **Check in and out.** `c` on the dashboard: a boxed button, green to check in, amber to
   check out, `WFH`/`OFFICE` and the running time beside it.
+- **A year of time off on one screen.** `o` opens a calendar of every day you took off,
+  coloured by leave type, with public holidays and weekends dimmed and this month's caret
+  where today is. Half days show as half-filled dates, requests still waiting on approval
+  as underlined ones.
+- **Your leave balances, from the ERP.** Four boxes above the calendar — `sick Time Off`,
+  `9`, `DAYS AVAILABLE` — and each type's own initial filters the year down to it.
+- **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
+  full or half day, the dates, why. The days light up on the calendar as you type them, and
+  ✓ files the request with the ERP after showing you exactly what it is about to send.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
-  reading tasks, logging hours, reading the month.
+  reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
 - **No mouse, ever.** `?` lists the keys the current screen takes.
 - **Change any key.** Rebind anything you like in a small text file.
@@ -231,7 +240,7 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
-| `d` / `t` | dashboard / back to the tasks (`2` / `1` too) |
+| `d` / `o` / `t` | dashboard / time off / back to the tasks (`2` / `3` / `1` too) |
 | `r` | re-fetch tasks from the ERP |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
@@ -239,8 +248,8 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `?` | show or hide the key list |
 | `q` | quit (asks first; `ctrl+c` quits at once) |
 
-`d` / `t` and `?` work from anywhere that is not typing into a field, so they reach the
-tabs and the key list from inside a task too.
+`d` / `o` / `t` and `?` work from anywhere that is not typing into a field, so they reach
+the tabs and the key list from inside a task too.
 
 **Inside a task**
 
@@ -279,6 +288,65 @@ working, when you checked in, how long ago that was, and the button `c` presses.
 
 There is no `j` / `k` here: the chart is one picture of the month, not a list, so it moves
 a screenful at a time. The month, its totals and the axis stay put while the days move.
+
+**Time off** (`o` or `3`)
+
+A calendar of the whole year — three months a row from about 120 columns, divided by
+hairlines with the month you are looking at tinted, ISO week numbers down the left — with
+your leave balances boxed above it and, from about 88 columns, the public holidays pinned in a
+column down the right, which stays put while the months scroll under it. A day off is a filled badge in its leave type's colour, a **half day** fills half of it, and a
+request still waiting on approval is **underlined**. The days you are typing on the request
+line are reversed out in the accent. Weekends and holidays are filled badges, so the
+days nobody works read as days rather than as gaps; the month in view carries the caret.
+
+| Key | Does |
+|---|---|
+| `h` / `l` | previous / next month |
+| `j` / `k` | a row of months down / up |
+| `g` / `G` | January / December |
+| `ctrl+f` / `ctrl+b` | a row of months down / up, as `j` / `k` |
+| `n` | new time off request — the form opens on the line above the calendar |
+| `s` `c` `a` `p` | show only sick / casual / annual / paternity — the initials of your own leave types, as shown on the boxes |
+| `esc` | clear the filter (the same letter again does too) |
+| `r` | re-read the year from the ERP |
+| `t` / `d` | back to the tasks / the dashboard (`1` / `2` too) |
+| `i` / `ctrl+u` | back to the tasks, in the search field |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
+**Asking for time off** — `n` reveals the request line and focuses the leave type:
+
+```
+             ╭──────────╮ ╭────────────╮ ╭──────────╮     ╭──────────╮ ╭──────────────╮ ╭───╮ ╭───╮
+new timeoff  │ Annual ▾ │ │ full day ▾ │ │ 21/01/26 │  →  │ 23/01/26 │ │ Coast trip   │ │ ✓ │ │ ✕ │
+             ╰──────────╯ ╰────────────╯ ╰──────────╯     ╰──────────╯ ╰──────────────╯ ╰───╯ ╰───╯
+```
+
+The field with the keys has an accent frame; a date you have just tabbed onto is shown
+reversed out, because the next keystroke replaces the whole value.
+
+| Key | Does |
+|---|---|
+| `tab` / `shift+tab` | next / previous field |
+| `j` / `k` / `space` | change the focused dropdown (leave type, full or half day, morning or afternoon) |
+| `enter` | next field; on ✓ it asks before filing, on ✕ it starts over |
+| `ctrl+u` | clear the focused field |
+| `esc` | discard the request (asks first) |
+
+Dates are `dd/mm/yy` and fill themselves in: type `21`, press `tab`, and it becomes the 21st
+of this month. The first keystroke on a date replaces it whole, so you never delete what is
+already there, and moving the start date past the end drags the end along so a range never
+quietly covers days you did not ask for. Every day the request covers lights up on the calendar as you type, and the
+month it lands in scrolls into view.
+
+✓ shows what it is about to send — type, dates, duration, what it costs against your balance,
+description — and takes `y` only. The request goes to the ERP exactly as the web UI's own form
+would file it, already submitted, and waits for your manager's approval there.
+
+Two things it checks before sending: a day you already have time off on is refused outright
+(the ERP takes one leave per day), and a request for more days than you have left is flagged in
+the confirmation rather than blocked — some leave types are allowed to run negative, and the
+ERP is the one that decides.
 
 **Editing an entry**
 

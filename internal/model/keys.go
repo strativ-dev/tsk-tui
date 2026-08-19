@@ -22,9 +22,10 @@ type keyMap struct {
 	ClearQuery, Focus              key.Binding
 	Refresh, SetKey, ClearSearch   key.Binding
 	Top, Bottom, HalfDown, HalfUp  key.Binding
-	TasksTab, DashTab              key.Binding
-	Help, Clock                    key.Binding
+	TasksTab, DashTab, TimeTab     key.Binding
+	Help, Clock, NewLeave          key.Binding
 	PrevMonth, NextMonth           key.Binding
+	Cycle                          key.Binding
 }
 
 // keys is what the handlers and the footer read. ApplyKeys is its only writer, called
@@ -79,6 +80,10 @@ func defaultKeys() keyMap {
 		// picked out inside the label.
 		TasksTab: key.NewBinding(key.WithKeys("t", "1"), key.WithHelp("t", "tasks")),
 		DashTab:  key.NewBinding(key.WithKeys("d", "2"), key.WithHelp("d", "dashboard")),
+		// o, not t: the spec's own "t today" cannot have this key — t is the tasks tab from
+		// every screen, and a tab key that means one thing everywhere is worth more than a
+		// motion the calendar can do without, since it opens on today anyway.
+		TimeTab: key.NewBinding(key.WithKeys("o", "3"), key.WithHelp("o", "timeoff")),
 
 		// The footer's key list, off by default and toggled from anywhere that is not
 		// typing. ? is the one key the closed footer still advertises, so the rest are
@@ -90,6 +95,14 @@ func defaultKeys() keyMap {
 		// close the day. The help label stays short — the open footer is already two
 		// lines at 80 columns, and a third costs the chart a day.
 		Clock: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clock")),
+
+		// The time off form. n opens it and focuses the leave type; nothing after the label
+		// is on screen until it does, so the line costs one row either way.
+		NewLeave: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new timeoff")),
+		// What changes a dropdown inside that form. space as well as j/k, since a dropdown
+		// is a button as much as it is a list.
+		Cycle: key.NewBinding(key.WithKeys("j", "k", " ", "down", "up"),
+			key.WithHelp("j/k", "change")),
 
 		// Month navigation, dashboard only. Paired like g/G and ctrl+f/b: the first key
 		// carries the help label, the second rides along unlabelled.
@@ -225,6 +238,8 @@ func (k keyMap) help(m Mode) []key.Binding {
 			k.Jump, k.Collapse, k.ClearSearch, k.Back, k.Quit}
 	case ModeInsert:
 		return []key.Binding{k.Next, k.Prev, k.ClearField, k.Accept, k.Cancel}
+	case ModeForm:
+		return []key.Binding{k.Next, k.Prev, k.Cycle, k.ClearField, k.Accept, k.Cancel}
 	case ModeJump:
 		return []key.Binding{
 			key.NewBinding(key.WithHelp("12 · 12/7 · 12/7/26", "date")),

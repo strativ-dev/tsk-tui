@@ -80,18 +80,59 @@ const (
 	// against what is left.
 	dashChrome = 16
 	descCap    = 48
+
+	// The year calendar, measured off the design's own month cell — 304px at 38 columns. A
+	// day is a four-cell badge, " 21 ", in a five-cell column: the fifth is the gap the design
+	// leaves between its days, and without it a run of leave days reads as one long bar rather
+	// than as days. So a week is 35 cells and a month 39 with the week-number column and the
+	// cell's own left padding in front of it — three months and the holiday panel want about
+	// 148 cells, three months alone 121.
+	dayCell   = 5
+	badgeCell = 4
+	weekCol   = 3
+	monthPad  = 1
+	monthCols = monthPad + weekCol + 7*dayCell
+	// A week row always has a line under it: that air is what makes the month read as a
+	// calendar rather than as a table, and it is the design's own proportion — a day is
+	// nearly as tall as it is wide there. A roomy terminal also gets the padding the design
+	// puts above the month's name and under its weekday heads; a short one spends those two
+	// rows on days.
+	roomyRows = 34
+	// A month is its name and its weekday heads above however many week rows it spans —
+	// four to six — and the months in one row are padded to the tallest of them and no
+	// further: six rows everywhere would cost the year lines it does not have to spend.
+	//
+	// maxTimeCols caps the months per row: more than three and the calendar reads as a
+	// wall rather than as a year, and the holiday panel loses its room.
+	maxTimeCols = 3
+	// The holidays get whatever is left beside the months, between these: below panelMin the
+	// names stop being readable, and above panelMax the list is just wide.
+	panelMin  = 24
+	panelMax  = 34
+	spanCells = 12 // "Mar 30-Apr 2", the longest a span gets
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
 // footer are laid out first and the list gets whatever rows are left, so the
 // search field can never be pushed off the top of the screen.
 func (m Model) View() string {
-	head := []string{m.tabBar()}
+	top := m.tabBar()
+	if m.tab == TabTime {
+		// The year and what has been taken out of it ride here: the tab bar's row is half
+		// empty, and a title line of its own would cost the calendar a row.
+		top = spread(top, m.timeSummary(m.cols()-lipgloss.Width(top)-2)+" ", m.cols())
+	}
+	head := []string{top}
 	if m.tab == TabTasks {
 		// The query field filters tasks, so it belongs to that tab and nowhere else.
 		head = append(head, strings.Split(m.header(), "\n")...)
 	}
-	head = append(head, theme.Sep.Render(strings.Repeat("─", m.cols())), "")
+	head = append(head, theme.Sep.Render(strings.Repeat("─", m.cols())))
+	if m.tab != TabTime {
+		// On the calendar that rule is the top edge of the balance boxes, so nothing sits
+		// between them.
+		head = append(head, "")
+	}
 
 	var tail []string
 	switch m.mode {
@@ -99,8 +140,13 @@ func (m Model) View() string {
 		// Read off the bindings themselves. Spelling the keys out here meant a rebind
 		// could leave a destructive prompt advertising a key that no longer accepts it.
 		hint := m.confirmKeys().Help().Key + " / " + keys.No.Help().Key
-		tail = append(tail, strings.Split(
-			theme.Modal.Render(m.cPrompt+"  "+theme.Dim.Render(hint)), "\n")...)
+		// A prompt of several lines puts its keys on a line of their own: appended to the
+		// last one they read as part of it, and "Coast trip  y / n" is not a description.
+		prompt := m.cPrompt + "  " + theme.Dim.Render(hint)
+		if strings.Contains(m.cPrompt, "\n") {
+			prompt = m.cPrompt + "\n\n" + theme.Dim.Render(hint)
+		}
+		tail = append(tail, strings.Split(theme.Modal.Render(prompt), "\n")...)
 	case ModeAuth:
 		tail = append(tail, strings.Split(m.authModal(), "\n")...)
 	case ModeJump:
@@ -148,11 +194,17 @@ func (m Model) View() string {
 		head = append(head, dHead...)
 		tail = append(dFoot, tail...)
 	}
+	if m.tab == TabTime {
+		head = append(head, m.timeHead()...)
+	}
 
 	// The body takes the rows left between header and footer, and is padded out to
 	// them, which pins the status line and the key hints to the bottom of the screen.
 	budget := m.rows() - len(head) - len(tail)
 	body, focus := m.listLines()
+	if m.tab == TabTime {
+		body, focus = m.timeLines()
+	}
 	if m.tab == TabDash {
 		body, focus = m.dashLines(budget)
 		// A month that fits needs no pinned axis: the ruler goes back under the last day,
@@ -167,6 +219,11 @@ func (m Model) View() string {
 	body = window(body, focus, budget)
 	for len(body) < budget {
 		body = append(body, "")
+	}
+	if m.tab == TabTime {
+		// After the window, not before it: the holiday list is a pinned column, so the
+		// months scroll under it rather than taking it with them.
+		body = m.withHolidayPanel(body)
 	}
 
 	out := make([]string, 0, len(head)+len(body)+len(tail))
@@ -244,6 +301,7 @@ func (m Model) tabBar() string {
 	}{
 		{TabTasks, "tasks", keys.TasksTab},
 		{TabDash, "dashboard", keys.DashTab},
+		{TabTime, "timeoff", keys.TimeTab},
 	}
 
 	var b strings.Builder
@@ -771,6 +829,835 @@ func center(s string, w int) string {
 }
 
 // header is the caret, the boxed query field, and the day's progress cluster.
+// --- time off ----------------------------------------------------------------
+
+// timeYearOf is the year on screen: the one the ERP answered for, or this one before any
+// answer has landed, so the calendar draws itself either way.
+func (m Model) timeYearOf() int {
+	if m.timeYear != 0 {
+		return m.timeYear
+	}
+	return time.Now().Year()
+}
+
+// timeLayout splits the width between the months and the holidays: **months first**, up to
+// three, and the panel takes what is left when that is enough to read a holiday on.
+//
+// The months are what this screen is, so three of them outrank the list — but a panel that
+// leaves only one month beside it is a list with a calendar attached, so it is dropped before
+// the second month is. panel is 0 when there is no column for it.
+func (m Model) timeLayout() (cols, panel int) {
+	room := m.cols() - gutter
+	// One hairline between each pair of months, and no gap: they are cells of one grid.
+	fit := min(max((room+1)/(monthCols+1), 1), maxTimeCols)
+	if len(m.timeHolidays) == 0 {
+		return fit, 0
+	}
+	for c := fit; c >= 2; c-- {
+		if left := room - (c*monthCols + c - 1) - len(colGap); left >= panelMin {
+			return c, min(left, panelMax)
+		}
+	}
+	return fit, 0
+}
+
+// timeCols is how many months go side by side. ctrl+f / ctrl+b move by one row of them, so
+// the handler reads it too.
+func (m Model) timeCols() int {
+	cols, _ := m.timeLayout()
+	return cols
+}
+
+// panelCells is the holiday column's width, 0 when it has none.
+func (m Model) panelCells() int {
+	_, panel := m.timeLayout()
+	return panel
+}
+
+// timeHead is the frame above the calendar: the year, what has been taken out of it, and
+// one chip per leave type with its balance and the key that filters by it. Laid out with
+// the header, so the months scroll under figures that stay put.
+func (m Model) timeHead() []string {
+	title := theme.Title.Render(fmt.Sprintf("TIME OFF %d", m.timeYearOf()))
+	if m.timeLoading {
+		// The year on screen is still the last one answered — loadTime left it up rather
+		// than blanking it — so the loader sits beside its title instead of replacing it.
+		title += " " + m.spin.View()
+	}
+
+	right := ""
+	if m.timeYear != 0 {
+		what := "days taken"
+		if k, ok := m.timeKind(m.timeFilter); ok {
+			what = strings.ToLower(firstWord(k.Name)) + " days taken"
+		}
+		right = theme.Dim.Render(days(m.timeTaken()) + " " + what)
+		if m.timePending() {
+			// The underline needs saying once, and only on a year that has one.
+			right += theme.Dim.Render("  ·  pending underlined")
+		}
+	}
+
+	out := m.balanceCards()
+	// The line the request is typed on, ruled off from the calendar under it. It is here
+	// whether or not it is open — closed it is a label and nothing else — so pressing n
+	// cannot move a single row of what is below.
+	out = append(out, theme.Blur.Render(theme.Sep.Render(strings.Repeat("─", m.cols()-gutter))))
+	out = append(out, m.leaveBand()...)
+	return append(out,
+		theme.Blur.Render(theme.Sep.Render(strings.Repeat("─", m.cols()-gutter))),
+		"")
+}
+
+// timeSummary is the year and what has been taken out of it, which rides on the tab bar's
+// own row rather than costing the calendar one of its own.
+//
+// room is what the tab bar leaves. It gives up its parts from the least useful in: the note
+// about the underline, then the count, then the year itself — the tab bar is what that row
+// is for, and a summary that overflows it wraps the whole screen a line.
+func (m Model) timeSummary(room int) string {
+	year := theme.Title.Render(fmt.Sprintf("TIME OFF %d", m.timeYearOf()))
+	if m.timeLoading {
+		// The year on screen is still the last one answered — loadTime left it up rather
+		// than blanking it — so the loader sits beside its title instead of replacing it.
+		year += " " + m.spin.View()
+	}
+	if m.timeYear == 0 {
+		return fits(room, year, "")
+	}
+
+	what := "days taken"
+	if k, ok := m.timeKind(m.timeFilter); ok {
+		what = strings.ToLower(firstWord(k.Name)) + " days taken"
+	}
+	count := theme.Dim.Render("   " + days(m.timeTaken()) + " " + what)
+	note := ""
+	if m.timePending() {
+		// The underline needs saying once, and only on a year that has one.
+		note = theme.Dim.Render("  ·  pending underlined")
+	}
+	return fits(room, year, count, note)
+}
+
+// fits is the longest prefix of parts that stays inside room, so a cluster gives up its
+// tail rather than overflowing its row.
+func fits(room int, parts ...string) string {
+	out := ""
+	for _, p := range parts {
+		if lipgloss.Width(out+p) > room {
+			return out
+		}
+		out += p
+	}
+	return out
+}
+
+// leaveLine is the new-timeoff row: a label with its key picked out, and — once n has been
+// pressed — the whole request on the same line. Everything is a one-row field, so opening
+// the form adds no row and the calendar under it does not move.
+//
+// Tab order is left to right, which is the only order the line can be read in: type,
+// duration, the dates, what it is for, then ✓ and ✕.
+// leaveBand is the new-timeoff row: three lines, because each field is a box and a box is
+// three lines. Closed it is the label on the middle line and two blanks, so the band is the
+// same height either way and revealing the fields cannot move the calendar.
+func (m Model) leaveBand() []string {
+	if !m.form.open {
+		return []string{"",
+			theme.Blur.Render(hinted("new timeoff", keys.NewLeave, theme.Dim, theme.HintKey)),
+			""}
+	}
+	label, compact := m.leaveTier()
+	lines := strings.Split(m.leaveRow(label, compact, m.form.desc.View()), "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, theme.Blur.Render(l))
+	}
+	return out
+}
+
+// leaveRow draws the line with the description given, so the same code both renders it and
+// measures what is left for that description — the two cannot disagree about a cell.
+//
+// compact is the narrow terminal's version: no spaces between the frames, and the duration
+// and the period said in as few letters as they can be. Everything is still there and still
+// in the same order.
+func (m Model) leaveRow(label, compact bool, desc string) string {
+	kind := "—"
+	if k, ok := m.leaveKind(); ok {
+		kind = firstWord(oneLine(k.Name))
+	}
+	dur, period, sep := "full day", m.leavePeriodName(), " "
+	// The mark between the dates says which two things they are: a range runs from one to
+	// the other, a half day has only the one and the half of it.
+	arrow := " → "
+	if m.form.half {
+		dur, arrow = "half day", " · "
+	}
+	if compact {
+		dur, period, sep = dur[:4], m.leavePeriod(), ""
+		arrow = strings.TrimSpace(arrow)
+	}
+
+	var parts []string
+	if label {
+		parts = append(parts, hinted("new timeoff", keys.NewLeave, theme.DayLabel, theme.HintKey))
+	}
+	// The type reads in its own colour — the same one its days are drawn in on the calendar
+	// below — and keeps it while it holds the keys, only bolder: cycling the dropdown is
+	// exactly when that colour has something to say, and the accent frame already says which
+	// field the keys are going into.
+	kindInk := theme.LeaveInk(theme.LeaveColor(kind))
+	if m.form.field == leaveKindField {
+		kindInk = kindInk.Bold(true)
+	}
+	parts = append(parts,
+		m.leaveField(kindInk.Render(pad(kind, m.leaveKindWidth()))+theme.Dim.Render(" ▾"), leaveKindField, compact),
+		m.leaveField(theme.DayLabel.Render(dur)+theme.Dim.Render(" ▾"), leaveDurField, compact),
+		m.leaveField(m.leaveDate(0), leaveFromField, compact))
+	if m.form.half {
+		// A half day is one day: the range's end has nothing to say, so the slot asks which
+		// half instead.
+		parts = append(parts, theme.Dim.Render(arrow),
+			m.leaveField(theme.DayLabel.Render(pad(period, m.leavePeriodWidth(compact)))+
+				theme.Dim.Render(" ▾"), leaveToField, compact))
+	} else {
+		parts = append(parts, theme.Dim.Render(arrow),
+			m.leaveField(m.leaveDate(1), leaveToField, compact))
+	}
+
+	// The two buttons frame themselves in what they do — green commits, red starts over —
+	// and take the accent only while the keys are on them.
+	ok, drop := theme.FieldOk, theme.FieldDrop
+	if m.form.field == leaveOKField {
+		ok = theme.FieldFocus
+	}
+	if m.form.field == leaveXField {
+		drop = theme.FieldFocus
+	}
+	if compact {
+		ok, drop = ok.Padding(0), drop.Padding(0)
+	}
+	parts = append(parts,
+		m.leaveField(desc, leaveDescField, compact),
+		ok.Render(theme.Ok.Render("✓")),
+		drop.Render(theme.Err.Render("✕")))
+
+	// Joined as a block, with the gaps as parts of their own: the boxes are three lines and
+	// the label is one, so it is centred against them rather than sitting on the top rule.
+	if sep != "" {
+		spaced := make([]string, 0, 2*len(parts))
+		for i, p := range parts {
+			if i > 0 {
+				spaced = append(spaced, sep)
+			}
+			spaced = append(spaced, p)
+		}
+		parts = spaced
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+}
+
+// leaveDate draws one of the two date fields. A field just tabbed into shows its value
+// **selected** — reversed out in the accent — because the next keystroke replaces the whole
+// thing; that is what the accent fill means here, and the accent frame is what says which
+// field has the keys. Once anything is typed the selection is gone and the input draws its
+// own cursor again.
+//
+// Either way it is exactly dateWidth cells: an input renders its Width plus a cursor cell,
+// and a selection that measured differently would move everything to its right.
+func (m Model) leaveDate(i int) string {
+	in := m.form.from
+	field := leaveFromField
+	if i == 1 {
+		in, field = m.form.to, leaveToField
+	}
+	if m.form.field == field && m.form.fresh[i] {
+		return theme.Match.Render(pad(in.Value(), dateWidth))
+	}
+	return in.View()
+}
+
+// leavePeriodWidth keeps the period dropdown one width whichever half is chosen, so cycling
+// it does not move the fields to its right.
+func (m Model) leavePeriodWidth(compact bool) int {
+	if compact {
+		return 2
+	}
+	return len("afternoon")
+}
+
+// leaveField frames one field, accent while it holds the keys. A compact row gives up the
+// space inside the frames as well as the ones between them — the box is still a box.
+func (m Model) leaveField(s string, field int, compact bool) string {
+	box := theme.Field
+	if m.form.field == field {
+		box = theme.FieldFocus
+	}
+	if compact {
+		box = box.Padding(0)
+	}
+	return box.Render(s)
+}
+
+// leaveKindWidth is the widest leave type's first word, so the dropdown does not resize as
+// it is cycled — a field that changes width moves everything to its right.
+func (m Model) leaveKindWidth() int {
+	w := 6
+	for _, k := range m.timeKinds {
+		w = max(w, lipgloss.Width(firstWord(oneLine(k.Name))))
+	}
+	return w
+}
+
+// leaveSkeleton is the line's width with nothing in the description: every frame, both
+// dropdowns, the dates or the period, the arrow and the two buttons, measured off the render
+// itself rather than added up by hand.
+//
+// It measures both durations and takes the wider: the period dropdown is wider than the
+// range's end it replaces, and a description sized for a full day would push the buttons off
+// the row the moment half day was chosen.
+func (m Model) leaveSkeleton(label, compact bool) int {
+	full, half := m, m
+	full.form.half, half.form.half = false, true
+	return max(lipgloss.Width(full.leaveRow(label, compact, "")),
+		lipgloss.Width(half.leaveRow(label, compact, "")))
+}
+
+// leaveMinDesc is the narrowest description worth showing. The line gives up its label to
+// keep it — the mode indicator already says NEW TIMEOFF — and then its spacing, before it
+// gives up the description itself.
+const leaveMinDesc = 8
+
+// leaveTier is how much of the line's furniture the width can hold: the label, and the
+// spaces between the fields.
+func (m Model) leaveTier() (label, compact bool) {
+	switch {
+	case m.leaveDescRoom(true, false) >= leaveMinDesc:
+		return true, false
+	case m.leaveDescRoom(false, false) >= leaveMinDesc:
+		return false, false
+	}
+	return false, true
+}
+
+// leaveDescRoom is what is left for the description's own text: the row, less the skeleton,
+// less the cursor cell an input always draws after it.
+func (m Model) leaveDescRoom(label, compact bool) int {
+	return m.cols() - gutter - m.leaveSkeleton(label, compact) - 1
+}
+
+// leaveDescWidth is what the description gets: the row less everything that is fixed, less
+// its own frame and the cursor cell after its text. The input scrolls what it holds, so a
+// narrow terminal costs visible characters and nothing else.
+func (m Model) leaveDescWidth() int {
+	label, compact := m.leaveTier()
+	return max(m.leaveDescRoom(label, compact), 1)
+}
+
+// balanceCards is the design's row of boxes, one per leave type: the name with its filter
+// key picked out, the days left, and what that figure is. Ruled above and below and divided
+// by verticals, which is the box the design draws without spending a row on a border of its
+// own per card.
+//
+// Three lines and two rules is four rows the calendar does not get, and the figures are
+// worth them: how much leave is left is the question the screen answers second, after which
+// days are gone.
+func (m Model) balanceCards() []string {
+	if len(m.timeKinds) == 0 {
+		// Three blank rows, so the line below them sits where it will sit once the balances
+		// land: an answer must not shove the calendar down.
+		return []string{"", "", ""}
+	}
+	room := m.cols() - gutter
+	div := theme.Sep.Render(" │ ")
+	// An equal share each, less the dividers between them, with the cells that do not
+	// divide evenly handed out from the right — the row has to end exactly where its own
+	// rules do.
+	n := len(m.timeKinds)
+	widths := make([]int, n)
+	share := max((room-(n-1)*3)/n, 8)
+	for i := range widths {
+		widths[i] = share
+	}
+	for i := 0; i < room-(n-1)*3-share*n && i < n; i++ {
+		widths[n-1-i]++
+	}
+
+	names, figures, units := make([]string, 0, 4), make([]string, 0, 4), make([]string, 0, 4)
+	for i, k := range m.timeKinds {
+		w := widths[i]
+		c := theme.LeaveColor(k.Name)
+		// The full name when the card holds it, the first word when it does not: the word
+		// carrying the key is the one that cannot be cut.
+		label := oneLine(k.Name)
+		if lipgloss.Width(label) > w {
+			label = firstWord(label)
+		}
+		lower := strings.ToLower(label)
+		// The initial is a span of its own — accent, because it is the key that filters by
+		// this type — and a colour nested inside another does not survive the inner reset.
+		names = append(names, center(theme.HintKey.Render(lower[:1])+
+			lipgloss.NewStyle().Foreground(theme.DayInk).Render(label[1:]), w))
+
+		figure := theme.LeaveInk(c).Bold(true)
+		switch {
+		case k.ID == m.timeFilter:
+			// The filtering card is reversed out, so the calendar and the card that explains
+			// it are never read apart.
+			figure = theme.LeaveDay(c)
+		case k.Available == 0:
+			// Nothing left is not news in the type's own colour.
+			figure = lipgloss.NewStyle().Foreground(theme.QuietInk)
+		}
+		// Double-width digits: the balance is the figure on this row worth reading from across
+		// the desk, and a terminal makes a number bigger by making it wider.
+		figures = append(figures, center(figure.Render(" "+wide(days(k.Available))+" "), w))
+		units = append(units, center(
+			lipgloss.NewStyle().Foreground(theme.UnitInk).Render("DAYS AVAILABLE"), w))
+	}
+
+	return []string{
+		theme.Blur.Render(strings.Join(names, div)),
+		theme.Blur.Render(strings.Join(figures, div)),
+		theme.Blur.Render(strings.Join(units, div)),
+	}
+}
+
+// wide renders a figure at double width, in the fullwidth digits: the one way a terminal has
+// of drawing a bigger number without spending a second row on it.
+//
+// Two rows of block glyphs was bigger still and read worse — a balance is a number, and a
+// number drawn out of quadrants stops looking like one.
+func wide(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune('０' + (r - '0'))
+		case r == '.':
+			b.WriteRune('．')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// timePending is whether anything on the calendar// timePending is whether anything on the calendar is still waiting on approval.
+func (m Model) timePending() bool {
+	for _, l := range m.timeLeaves {
+		if l.State != "validate" && (m.timeFilter == 0 || l.KindID == m.timeFilter) {
+			return true
+		}
+	}
+	return false
+}
+
+// timeLines is the body: the twelve months, laid out in rows of as many as fit, with the
+// holiday panel beside them when there is room, and the index of the line the month in
+// view starts on. Derived from the answer on every render, like every other body.
+func (m Model) timeLines() ([]string, int) {
+	if m.timeYear == 0 {
+		if m.timeLoading {
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading this year's time off…"))}, -1
+		}
+		return []string{theme.Blur.Render(
+			theme.Dim.Render("no time off yet — r to read this year"))}, -1
+	}
+
+	year, marks, cols := m.timeYearOf(), m.timeMarks(), m.timeCols()
+	hold, focus := m.timeMonth(), -1
+	blank := monthPanel{filler: theme.OnPanel(theme.Surface).Render(strings.Repeat(" ", monthCols))}
+	// The months are cells of one surface, divided by hairlines rather than by gaps — the
+	// style spec is explicit that every section is separated by a rule, never a space.
+	vRule := theme.Sep.Background(theme.Surface).Render("│")
+	hRule := theme.Sep.Render(strings.Repeat("─", cols*monthCols+cols-1))
+
+	var lines []string
+	for r := 0; r < (12+cols-1)/cols; r++ {
+		if r > 0 {
+			lines = append(lines, hRule)
+		}
+		blocks, tall := make([]monthPanel, 0, cols), 0
+		for c := range cols {
+			mon := r*cols + c
+			if mon > 11 {
+				blocks = append(blocks, blank) // a short last row is padded, not shifted
+				continue
+			}
+			if mon == hold {
+				focus = len(lines)
+			}
+			b := m.monthBlock(year, time.Month(mon+1), marks)
+			tall = max(tall, len(b.lines))
+			blocks = append(blocks, b)
+		}
+		// Every month in the row is padded to the tallest of them, on its own panel, and no
+		// further: a month that spans five weeks beside one that spans six costs one line,
+		// where padding all twelve to six would cost the year four.
+		for i := range tall {
+			row := make([]string, 0, cols)
+			for _, b := range blocks {
+				if i >= len(b.lines) {
+					row = append(row, b.filler)
+					continue
+				}
+				row = append(row, b.lines[i])
+			}
+			lines = append(lines, strings.Join(row, vRule))
+		}
+	}
+
+	for i, l := range lines {
+		lines[i] = theme.Blur.Render(l)
+	}
+	return lines, focus
+}
+
+// withHolidayPanel puts the public holidays down the right of the calendar, in their own
+// column with a rule between.
+//
+// It runs on the **windowed** body, after View has cut it to the rows it has, so the panel
+// is pinned: the months scroll under it and the holidays stay where they are read. Zipped
+// into the body before that, the list scrolled away with January and the header of it went
+// with the first keypress.
+func (m Model) withHolidayPanel(body []string) []string {
+	panel := m.holidayPanel(m.timeYearOf())
+	if len(panel) == 0 {
+		return body
+	}
+	// Flush to the right edge, with the rule against it: the panel is a column of the
+	// screen, not a column of the calendar, so it does not move when the months do or when
+	// one of them is a week shorter.
+	rule := theme.Sep.Render("│")
+	grid := m.cols() - m.panelCells() - 3
+
+	out := make([]string, len(body))
+	for i, l := range body {
+		out[i] = pad(l, grid) + " " + rule + " "
+		if i < len(panel) {
+			out[i] += panel[i]
+		}
+		out[i] = strings.TrimRight(out[i], " ")
+	}
+	// A panel taller than the body says so on its last line rather than stopping mid-year.
+	if hidden := len(panel) - len(body); hidden > 0 && len(out) > 0 {
+		out[len(out)-1] = strings.Repeat(" ", grid) + " " + rule + " " +
+			theme.Dim.Render(fmt.Sprintf("… %d more", hidden+1))
+	}
+	return out
+}
+
+// monthPanel is one month drawn on its own panel: the lines it occupies, and the blank
+// panel line the row pads short months with, so a five-week month beside a six-week one is
+// still a panel all the way down.
+type monthPanel struct {
+	lines  []string
+	filler string
+}
+
+// monthBlock is one month: its name and how many days off it holds, the weekday heads, and
+// its four to six rows of dates, all on the month's own panel.
+//
+// The panel colour is on every span rather than wrapped around each line: a background set
+// around a whole line dies at the first span that sets its own — a weekend badge, a leave
+// day — and never comes back, which drew the panel as a stripe that stopped at the first
+// coloured day.
+func (m Model) monthBlock(year int, mon time.Month, marks map[string]dayMark) monthPanel {
+	// The colour the days being typed are filled with: the type the request line has picked.
+	var want lipgloss.Color
+	if k, ok := m.leaveKind(); ok && m.form.open {
+		want = theme.LeaveColor(k.Name)
+	}
+	first := time.Date(year, mon, 1, 0, 0, 0, 0, time.UTC)
+	// Monday-first, so the two weekend columns sit together at the end of the week.
+	lead := (int(first.Weekday()) + 6) % 7
+	last := first.AddDate(0, 1, -1).Day()
+
+	taken := 0.0
+	for d := 1; d <= last; d++ {
+		if mk := marks[fmt.Sprintf("%04d-%02d-%02d", year, int(mon), d)]; mk.kind != "" {
+			if mk.half {
+				taken += 0.5
+				continue
+			}
+			taken++
+		}
+	}
+
+	// The month the window is built around is the tinted panel and takes the caret and the
+	// accent; the rest are quiet. That is today's month when nothing has moved it, and the
+	// month a typed date lands in while the new-timeoff line is open — either way it says
+	// which month the screen is answering for. The year rides along two digits, as in the
+	// design: a month on its own could be any year's.
+	bg := theme.Surface
+	label := fmt.Sprintf("%s %02d", mon.String()[:3], year%100)
+	name, style := "  "+label, theme.Header
+	if int(mon)-1 == m.timeMonth() {
+		bg = theme.PanelHold
+		name, style = "▸ "+label, theme.TitleFocus
+	}
+	on := theme.OnPanel(bg)
+	fill := func(n int) string {
+		if n <= 0 {
+			return ""
+		}
+		return on.Render(strings.Repeat(" ", n))
+	}
+
+	count := ""
+	if taken > 0 {
+		count = lipgloss.NewStyle().Foreground(theme.QuietInk).Background(bg).
+			Render(days(taken) + "d ")
+	}
+	head := fill(monthPad) + style.Background(bg).Render(name)
+	head += fill(monthCols-lipgloss.Width(head)-lipgloss.Width(count)) + count
+
+	// The design pads the month cell — a line above its name and one under the weekday
+	// heads — and a terminal too short for the year spends those two rows on days instead.
+	roomy := m.rows() >= roomyRows
+	var out []string
+	if roomy {
+		out = append(out, fill(monthCols))
+	}
+	out = append(out, head)
+	if roomy {
+		out = append(out, fill(monthCols))
+	}
+	out = append(out, m.weekdayHead(bg))
+	today := time.Now().Format("2006-01-02")
+	for r := range (lead + last + 6) / 7 {
+		if r > 0 {
+			out = append(out, fill(monthCols)) // air under the week above
+		}
+		// The ISO week of the row's Monday, which in the first row can belong to the month
+		// before — or to the year before, which ISOWeek answers for correctly.
+		monday := first.AddDate(0, 0, r*7-lead)
+		_, week := monday.ISOWeek()
+		cells := make([]string, 0, 9)
+		cells = append(cells, fill(monthPad),
+			lipgloss.NewStyle().Foreground(theme.WeekInk).Background(bg).
+				Render(fmt.Sprintf("%2d ", week)))
+		for c := range 7 {
+			d := r*7 + c - lead + 1
+			if d < 1 || d > last {
+				cells = append(cells, fill(dayCell))
+				continue
+			}
+			date := fmt.Sprintf("%04d-%02d-%02d", year, int(mon), d)
+			cells = append(cells,
+				dayCellOf(d, marks[date], c >= 5, date == today, bg, want)+fill(dayCell-badgeCell))
+		}
+		out = append(out, strings.Join(cells, ""))
+	}
+	if roomy {
+		out = append(out, fill(monthCols))
+	}
+	return monthPanel{lines: out, filler: fill(monthCols)}
+}
+
+// weekdayHead is the wk column and Monday-first weekday initials, right-aligned over the
+// dates they head, and the weekend pair dim so the two columns nobody works read as the
+// quiet ones. One letter each, as in the design: T and T are told apart by their column,
+// which is the only thing a date under them is read by anyway.
+func (m Model) weekdayHead(bg lipgloss.Color) string {
+	cells := []string{
+		theme.OnPanel(bg).Render(strings.Repeat(" ", monthPad)),
+		lipgloss.NewStyle().Foreground(theme.WeekInk).Background(bg).Render("wk "),
+	}
+	for i, d := range []string{"M", "T", "W", "T", "F", "S", "S"} {
+		ink := theme.Muted
+		if i >= 5 {
+			ink = theme.QuietInk
+		}
+		cells = append(cells, lipgloss.NewStyle().Foreground(ink).Background(bg).
+			Render(center(d, dayCell)))
+	}
+	return strings.Join(cells, "")
+}
+
+// dayCellOf is one day: a four-cell badge, " 21 ", filled when the day carries anything and
+// plain on the month's own surface when it does not. The date is reversed out of the fill in
+// dark ink — never white on a colour — and the fifth cell of the column, added by the caller,
+// is the gap that keeps two filled days from reading as one bar.
+//
+// Priority, from the style spec: the day being typed, then leave taken, then a weekend or a
+// holiday, then today, then a plain working day.
+func dayCellOf(day int, mk dayMark, weekend, today bool, bg, want lipgloss.Color) string {
+	num := fmt.Sprintf(" %2d ", day)
+	badge := func(fill lipgloss.Color, ink lipgloss.Color, underline bool) lipgloss.Style {
+		st := lipgloss.NewStyle().Foreground(ink).Background(fill).Bold(true)
+		if underline {
+			st = st.Underline(true)
+		}
+		return st
+	}
+
+	switch {
+	case mk.selected:
+		// The days the request line covers, reversed out in the accent — the same mark a date
+		// jump leaves on the rows it found, and the one thing on this screen the keys are
+		// about. The type it is for is on the request line itself, in its own colour.
+		return badge(theme.Accent, theme.Ink, false).Render(num)
+
+	case mk.kind != "":
+		fill := theme.LeaveColor(mk.kind)
+		if !mk.half {
+			return badge(fill, theme.Ink, mk.pending).Render(num)
+		}
+		// A half day fills half the badge: the morning is its left half, the afternoon its
+		// right, which says both that it is half a day and which half.
+		quiet := badge(theme.WeekendBand, theme.QuietInk, mk.pending)
+		full := badge(fill, theme.Ink, mk.pending)
+		if mk.period == "pm" {
+			return quiet.Render(num[:2]) + full.Render(num[2:])
+		}
+		return full.Render(num[:2]) + quiet.Render(num[2:])
+
+	case mk.holiday != "", weekend:
+		// A day nobody works is the faint fill with its number dimmed rather than reversed
+		// out: it is not an event, it is a day off the calendar.
+		return lipgloss.NewStyle().Foreground(theme.QuietInk).Background(theme.WeekendBand).
+			Render(num)
+	}
+
+	// Nothing on it: the month's own surface, today in the accent's ink — a filled accent cell
+	// is what the days being typed take, and today is not a cursor.
+	ink := lipgloss.NewStyle().Foreground(theme.DayInk).Background(bg)
+	if today {
+		ink = theme.HintKey.Background(bg)
+	}
+	return ink.Render(num)
+}
+
+// holidayPanel is the public holidays, one line each: the dates in their own column, then
+// a colon, then the name. Nil when the width cannot hold the column, in which case the
+// calendar's own dimmed days are the answer.
+func (m Model) holidayPanel(year int) []string {
+	panelCells := m.panelCells()
+	if panelCells == 0 {
+		return nil
+	}
+	// The panel is a raised surface of its own, as the style spec has it, so the colour is on
+	// every span: one wrapped around the line would stop at the first accent date.
+	on := theme.OnPanel(theme.Raised)
+	ink := lipgloss.NewStyle().Foreground(theme.DayInk).Background(theme.Raised)
+	fill := func(s string, w int) string {
+		if n := w - lipgloss.Width(s); n > 0 {
+			return s + on.Render(strings.Repeat(" ", n))
+		}
+		return s
+	}
+	head := lipgloss.NewStyle().Foreground(theme.DayInk).Background(theme.Raised).Bold(true).
+		Render(" PUBLIC HOLIDAYS")
+	// The count gives up its year, and then itself, rather than pushing the column wider
+	// than the one the layout handed out.
+	quiet := lipgloss.NewStyle().Foreground(theme.QuietInk).Background(theme.Raised)
+	count := ""
+	for _, try := range []string{
+		fmt.Sprintf("%d in %d ", len(m.timeHolidays), year),
+		fmt.Sprintf("%d ", len(m.timeHolidays)),
+	} {
+		if lipgloss.Width(head)+len(try) <= panelCells {
+			count = quiet.Render(try)
+			break
+		}
+	}
+	out := []string{
+		head + on.Render(strings.Repeat(" ",
+			max(panelCells-lipgloss.Width(head)-lipgloss.Width(count), 0))) + count,
+		on.Render(strings.Repeat(" ", panelCells)),
+	}
+
+	hold := time.Month(m.timeMonth() + 1)
+	for _, h := range m.timeHolidays {
+		mark, date, name := on.Render(" "), theme.Dim.Background(theme.Raised), ink
+		// The month in view is picked out down the panel's own edge, so the list answers the
+		// part of the calendar you are looking at rather than the whole year at once.
+		if t, err := time.Parse("2006-01-02", h.From); err == nil && t.Month() == hold {
+			mark = theme.HintKey.Background(theme.Raised).Render("▎")
+			date = theme.HintKey.Background(theme.Raised)
+			name = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).
+				Background(theme.Raised)
+		}
+		out = append(out, fill(mark+date.Render(pad(holidaySpan(h), spanCells))+
+			lipgloss.NewStyle().Foreground(theme.WeekInk).Background(theme.Raised).Render(": ")+
+			// oneLine like every other string the ERP wrote: a newline in a holiday name
+			// renders the panel a row taller than the column it was given.
+			name.Render(trunc(oneLine(h.Name), panelCells-spanCells-3)), panelCells))
+	}
+	return out
+}
+
+// holidaySpan is a holiday's dates, as short as they can be said: one day is "Aug 5", a
+// run inside one month collapses to "Mar 18-23", and one that crosses a month keeps both
+// names.
+func holidaySpan(h api.Holiday) string {
+	from, err := time.Parse("2006-01-02", h.From)
+	if err != nil {
+		return h.From
+	}
+	to, err := time.Parse("2006-01-02", h.To)
+	if err != nil || !to.After(from) {
+		return from.Format("Jan 2")
+	}
+	if to.Month() == from.Month() {
+		return from.Format("Jan 2") + "-" + to.Format("2")
+	}
+	return from.Format("Jan 2") + "-" + to.Format("Jan 2")
+}
+
+// monthMoveHelp is the footer's entry for the four motions, named after what they move —
+// months, not rows or days — with the keys read off the bindings themselves so a rebind
+// follows.
+func monthMoveHelp() key.Binding {
+	keysOf := []string{keys.Collapse.Help().Key, keys.Down.Help().Key,
+		keys.Up.Help().Key, keys.Expand.Help().Key}
+	return key.NewBinding(key.WithHelp(strings.Join(keysOf, "/"), "month"))
+}
+
+// filterHelp is the footer's entry for the filters: the leave types' own initials, in the
+// order the chips are in, since that is where they are read off. Nothing to show before
+// the types have landed.
+func (m Model) filterHelp() key.Binding {
+	if len(m.timeKinds) == 0 {
+		return key.NewBinding()
+	}
+	letters := make([]string, 0, len(m.timeKinds))
+	for _, k := range m.timeKinds {
+		letters = append(letters, strings.ToLower(firstWord(k.Name)[:1]))
+	}
+	return key.NewBinding(key.WithHelp(strings.Join(letters, " "), "filter"))
+}
+
+// timeLabel is the mode indicator on this tab: the filter, when there is one, since a
+// calendar showing one type of leave and one showing all of them look alike.
+func (m Model) timeLabel() string {
+	if k, ok := m.timeKind(m.timeFilter); ok {
+		return "-- " + strings.ToUpper(oneLine(k.Name)) + " --"
+	}
+	return "-- TIME OFF --"
+}
+
+// days renders a day count the way a person writes one: 8.5, but 8 rather than 8.0.
+func days(f float64) string {
+	if f == math.Trunc(f) {
+		return fmt.Sprintf("%.0f", f)
+	}
+	return fmt.Sprintf("%.1f", f)
+}
+
+// firstWord is the part of a leave type's name that identifies it: "Annual Time Off" is
+// three words of which only the first says anything.
+func firstWord(s string) string {
+	if f := strings.Fields(s); len(f) > 0 {
+		return f[0]
+	}
+	return s
+}
+
 func (m Model) header() string {
 	// The caret marks focus, so it goes away with focus — but keeps its cells, or
 	// the whole header would shift.
@@ -1154,8 +2041,13 @@ func padLeftCell(s string, w int) string {
 // the line either way, so opening it does not shove the body around.
 func (m Model) footer() string {
 	label := modeLabel(m.mode)
-	if m.tab == TabDash && m.mode != ModeConfirm && m.mode != ModeAuth {
-		label = "-- DASHBOARD --"
+	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm {
+		switch m.tab {
+		case TabDash:
+			label = "-- DASHBOARD --"
+		case TabTime:
+			label = m.timeLabel()
+		}
 	}
 
 	// A modal is the exception: whatever accepts it has to be on screen, since it is
@@ -1165,12 +2057,28 @@ func (m Model) footer() string {
 	case m.mode == ModeConfirm:
 		// Which key accepts depends on what is being confirmed.
 		help = []key.Binding{m.confirmKeys(), keys.No}
+	case m.mode == ModeForm:
+		// Its own keys, whichever tab is behind it, and only the ones the focused field
+		// takes: j/k belong to a dropdown and are letters everywhere else.
+		help = []key.Binding{keys.Next, keys.Accept, keys.ClearField, keys.Cancel}
+		if m.leaveFieldIsDropdown() {
+			help = []key.Binding{keys.Next, keys.Cycle, keys.Accept, keys.Cancel}
+		}
 	case !m.showHelp:
 	case m.tab == TabDash:
 		// It moves in screenfuls, not days, and there is no i: the query field filters
 		// tasks and this is not that tab.
 		help = []key.Binding{keys.Top, keys.HalfDown, keys.PrevMonth, m.clockHelp(),
 			keys.TasksTab, keys.Refresh, keys.Quit, keys.Help}
+	case m.tab == TabTime:
+		// It moves in months, and the filters are the leave types' own initials, so they
+		// are named by the answer rather than by the keymap.
+		help = []key.Binding{keys.NewLeave, monthMoveHelp(), keys.Top, m.filterHelp()}
+		if m.timeFilter != 0 {
+			help = append(help, key.NewBinding(
+				key.WithHelp(keys.Back.Help().Key, "clear filter")))
+		}
+		help = append(help, keys.TasksTab, keys.Refresh, keys.Quit, keys.Help)
 	default:
 		help = append(keys.help(m.mode), keys.Help)
 	}

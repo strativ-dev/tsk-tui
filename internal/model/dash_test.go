@@ -887,8 +887,11 @@ func TestClockTickStopsWhenCheckedOut(t *testing.T) {
 // The line above the button: where you are working, when the session started in local
 // time, and how long it has run.
 func TestClockLineReadsLocal(t *testing.T) {
-	days := month()
-	days[len(days)-1].WorkLocation = "home" // today
+	// Today, whenever the test runs: the location on the clock line is read off the day
+	// the ERP reported for today, so a fixture whose last row is a fixed date stops
+	// answering the question the day after it was written.
+	days := append(month(), api.DayLog{
+		Date: time.Now().Format("2006-01-02"), Expected: 8, WorkLocation: "home"})
 	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
 		store.KeyMsg{Key: "k", DB: "db"}, runes("d"),
 		api.HourLogsMsg{Month: "2026-08-01", Days: days})

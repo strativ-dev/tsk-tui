@@ -1,7 +1,11 @@
 // Package theme holds every color and style in the app. Nothing else picks colors.
 package theme
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 const (
 	Accent      = lipgloss.Color("#FFC000")
@@ -31,7 +35,74 @@ const (
 	TrackColor = lipgloss.Color("#2A2A33")
 	// OffBand is a day nothing was expected of.
 	OffBand = lipgloss.Color("#1E1E26")
+
+	// Time off palette, one colour per leave type, from the Time Off spec. Annual is a
+	// violet of its own rather than the accent: focus is accent everywhere else, and a
+	// calendar full of accent days beside an accent cursor says nothing.
+	LeaveSick      = Destructive
+	LeaveCasual    = Link
+	LeaveAnnual    = lipgloss.Color("#7C6BE8")
+	LeavePaternity = Complete
+	// LeaveOther is a type the palette has no colour for. White, not muted: a leave day
+	// in muted ink on a dim band is exactly what a weekend looks like.
+	LeaveOther = lipgloss.Color("#FFFFFF")
+
+	// The time off screen's surfaces, from docs/timeoff-styles.md. The calendar body is one
+	// surface with a hairline between the month cells; the month in view is tinted with the
+	// accent at 4.5%, which is the only thing that colour is doing there.
+	Surface   = lipgloss.Color("#151520")
+	PanelHold = lipgloss.Color("#201D1F")
+	// Raised is the holiday panel and the request line; Strip is the balance boxes.
+	Raised = lipgloss.Color("#12121C")
+	Strip  = lipgloss.Color("#14141F")
+	// WeekendBand is the fill under a weekend or a holiday date — white at 4.5% over the
+	// surface — so a day nobody works reads as a filled day rather than as a gap.
+	WeekendBand = lipgloss.Color("#20202A")
+
+	// The text ramp, brightest to dimmest. Ink is what sits on the accent or on a leave
+	// colour: never white, or the number stops reading against its own badge.
+	Ink      = lipgloss.Color("#0B0B10")
+	DayInk   = lipgloss.Color("#C9CCD3") // working day numbers, field values, holiday names
+	QuietInk = lipgloss.Color("#5E636E") // weekend numbers, placeholders, dropdown arrows
+	UnitInk  = lipgloss.Color("#6C717C") // DAYS AVAILABLE, the mode indicator
+	WeekInk  = lipgloss.Color("#3E424B") // week numbers
 )
+
+// OnPanel is anything drawn on a month's panel: the panel's own colour behind it, since a
+// background wrapped around a whole line does not survive the first span that sets its own.
+func OnPanel(bg lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Background(bg)
+}
+
+// LeaveColor is the colour of a leave type, matched on its name, since the ERP's own type
+// ids are per database and the palette is per meaning. An unknown type still gets a
+// colour — it is real time off, whatever it is called.
+func LeaveColor(name string) lipgloss.Color {
+	name = strings.ToLower(name)
+	switch {
+	case strings.Contains(name, "sick"):
+		return LeaveSick
+	case strings.Contains(name, "casual"):
+		return LeaveCasual
+	case strings.Contains(name, "annual"):
+		return LeaveAnnual
+	case strings.Contains(name, "paternity"), strings.Contains(name, "maternity"):
+		return LeavePaternity
+	}
+	return LeaveOther
+}
+
+// LeaveDay is a day taken off: the type's colour as a band with the date in dark ink on
+// it, the terminal's version of the spec's filled circle.
+func LeaveDay(c lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(Ink).Background(c).Bold(true)
+}
+
+// LeaveInk is the same colour as text — the balance chips and the holiday panel, where
+// there is no band to reverse out of.
+func LeaveInk(c lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(c)
+}
 
 var focusBorder = lipgloss.Border{Left: "▏"}
 
@@ -101,6 +172,17 @@ var (
 	// are just the words, and the accent is left to mean one thing — the key. White on black
 	// is the strongest ink there is, which is what makes the button read as pressable.
 	ClockText = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+
+	// The new-timeoff line's fields: a rounded box each, as the design draws them, which
+	// makes that row three lines tall — it is three lines whether or not the line is open,
+	// so revealing the fields moves nothing. Accent when the keys are going into it, which
+	// is what the search box's own frame does.
+	Field      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(Rule).Padding(0, 1)
+	FieldFocus = Field.BorderForeground(Accent)
+	// The two buttons at the end of that line carry their own meaning in the frame, as the
+	// clock's button does: green commits, red throws away.
+	FieldOk   = Field.BorderForeground(Complete)
+	FieldDrop = Field.BorderForeground(Destructive)
 
 	// Off is a day the ERP expected nothing of — weekend, holiday, leave. The band
 	// spans the whole track on purpose: width itself says "nothing was expected".
