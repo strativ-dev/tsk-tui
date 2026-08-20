@@ -479,6 +479,23 @@ One row between the balances and the calendar, and the whole request is on it:
   - The MCP is a Claude-side server, not something this binary can call, so the write stays on
     RPC; the MCP is only how the model's own rules were read.
 
+- **`enter` lists the month's own time off** in a modal (`ModeLeaves`, `view.go:
+  leavesModal`): one line a day — `19 Aug (Wed)  casual : Baby got sick` — with the type in
+  the colour its days are drawn in behind, the date as a person says it, and what the request
+  said it was for. `esc` closes it and nothing else in it needs a key, since it destroys
+  nothing.
+  - **A day, not a request**: the calendar above already reads a range as the days it covers,
+    so collapsing `19-21 Aug` into one row would answer a different question. A half day says
+    which half (`18 Feb (Wed, morning)`), and anything not yet `validate` says `pending` —
+    the underline the calendar marks that with has no room in a list.
+  - It **follows the filter** and names it in the head (`sick only`), so the list and the
+    calendar under it can never say different things. Both columns are sized from the rows,
+    so a month with no half day in it does not pay for the word "afternoon", and the rows are
+    derived on render (`monthLeaves`) like every other figure here.
+  - Routed **before the tab handlers** (`Model.updateLeaves`), the way the new-timeoff line
+    is: otherwise `h`/`l` would walk the months behind a modal whose head names the month it
+    is listing. `?` still reaches the help toggle, as on every other modal that is not a
+    confirm.
 - **It moves in months, not days.** No cursor — a year is a picture — so `Model.timeHold`
   only says which month the window is built around: `-1` follows **this** month, `h`/`l` step
   one month, `j`/`k` a row of them, `g`/`G` pin it to the ends, and `ctrl+f`/`ctrl+b` move a

@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ const (
 	ModeInsert
 	ModeJump
 	ModeDay
+	// ModeLeaves is the month's own time off, listed in a modal over the calendar.
+	ModeLeaves
 	ModeConfirm
 	ModeAuth
 	ModeForm // the new-timeoff line on TabTime
@@ -752,6 +755,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// able to hold a t, a d and an o, so it is excluded above and routed here first.
 		if m.mode == ModeForm {
 			return m.updateForm(msg)
+		}
+		// A modal over the calendar owns the keyboard the same way: routed before the tab
+		// handlers, or h/l would walk the months behind a list that says which month it is.
+		if m.mode == ModeLeaves {
+			return m.updateLeaves(msg)
 		}
 		if m.mode != ModeAuth {
 			switch m.tab {
@@ -1775,6 +1783,12 @@ func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.k().HalfUp):
 		return m.holdTime(m.timeMonth() - m.timeCols()), nil
 
+	case key.Matches(msg, m.k().Accept):
+		// The month in view is the one it lists: the caret says which that is, and there is
+		// no cursor here to mean anything else.
+		m.prev, m.mode = m.mode, ModeLeaves
+		return m, nil
+
 	case key.Matches(msg, m.k().NewLeave):
 		return m.openLeaveForm()
 
@@ -1814,6 +1828,62 @@ func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// updateLeaves is the month's time off modal: it destroys nothing, so esc and enter both
+// close it and nothing else in it needs a key.
+func (m Model) updateLeaves(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Back), key.Matches(msg, m.k().Accept):
+		m.mode = m.prev
+		if m.mode == ModeLeaves {
+			m.mode = ModeList
+		}
+	}
+	return m, nil
+}
+
+// leaveRow is one day off in the modal: the date as a person says it, and what it is for.
+type leaveRow struct {
+	date   time.Time
+	kind   string // the leave type's name, which is what its colour comes from
+	desc   string
+	half   bool
+	period string // "am" | "pm", only when half
+	state  string
+}
+
+// monthLeaves is every day off in the month in view, one line each, in date order.
+//
+// A day rather than a request: a range reads as the days it covers on the calendar above, so
+// a list that collapsed 19-21 Aug into one row would answer a different question from the one
+// the month is asking. Derived on render like everything else here, and it follows the type
+// filter, so the list and the calendar under it always say the same thing.
+func (m Model) monthLeaves() []leaveRow {
+	month, year := time.Month(m.timeMonth()+1), m.timeYearOf()
+	var out []leaveRow
+	for _, l := range m.timeLeaves {
+		if m.timeFilter != 0 && l.KindID != m.timeFilter {
+			continue
+		}
+		from, err := time.Parse("2006-01-02", l.From)
+		if err != nil {
+			continue
+		}
+		to, err := time.Parse("2006-01-02", l.To)
+		if err != nil || to.Before(from) {
+			to = from
+		}
+		for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
+			if d.Month() != month || d.Year() != year {
+				continue
+			}
+			out = append(out, leaveRow{date: d, kind: l.Kind, desc: l.Desc,
+				half: l.Half, period: l.Period, state: l.State})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].date.Before(out[j].date) })
+	return out
 }
 
 // --- the new-timeoff line ----------------------------------------------------
@@ -2719,6 +2789,8 @@ func modeLabel(m Mode) string {
 		return "-- JUMP --"
 	case ModeDay:
 		return "-- DAY --"
+	case ModeLeaves:
+		return "-- TIME OFF --"
 	case ModeConfirm:
 		return "-- CONFIRM --"
 	case ModeAuth:

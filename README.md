@@ -309,6 +309,7 @@ days nobody works read as days rather than as gaps; the month in view carries th
 | `j` / `k` | a row of months down / up |
 | `g` / `G` | January / December |
 | `ctrl+f` / `ctrl+b` | a row of months down / up, as `j` / `k` |
+| `enter` | list this month's time off — `19 Aug (Wed)  casual : Baby got sick`; `esc` closes |
 | `n` | new time off request — the form opens on the line above the calendar |
 | `s` `c` `a` `p` | show only sick / casual / annual / paternity — the initials of your own leave types, as shown on the boxes |
 | `esc` | clear the filter (the same letter again does too) |

@@ -407,6 +407,8 @@ func (k keyMap) help(m Mode) []key.Binding {
 		}
 	case ModeDay:
 		return []key.Binding{key.NewBinding(key.WithHelp("esc", "close"))}
+	case ModeLeaves:
+		return []key.Binding{key.NewBinding(key.WithHelp(k.Back.Help().Key, "close"))}
 	case ModeConfirm:
 		return []key.Binding{k.Yes, k.No} // destructive prompts swap in YesOnly, see confirmKeys
 	case ModeAuth:

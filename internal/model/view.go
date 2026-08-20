@@ -161,6 +161,8 @@ func (m Model) View() string {
 			theme.Prompt.Render("jump to date ")+m.jump.View()))
 	case ModeDay:
 		tail = append(tail, strings.Split(m.dayModal(), "\n")...)
+	case ModeLeaves:
+		tail = append(tail, strings.Split(m.leavesModal(), "\n")...)
 	}
 	// Flattened and cut to the width: a server message can arrive with newlines in it,
 	// and a status line that wraps costs the list a row it was not given.
@@ -2065,7 +2067,8 @@ func padLeftCell(s string, w int) string {
 // the line either way, so opening it does not shove the body around.
 func (m Model) footer() string {
 	label := modeLabel(m.mode)
-	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm {
+	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
+		m.mode != ModeLeaves {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -2608,4 +2611,89 @@ func (m Model) menusOn(day string) map[int]api.MealMenu {
 		}
 	}
 	return out
+}
+
+// leavesModal lists the month in view's own time off, one line a day: the date as a person
+// says it, the leave type in its own colour — the same colour that day is drawn in on the
+// calendar behind — and what the request said it was for.
+//
+// A day rather than a request: the calendar above already reads a range as the days it
+// covers, so collapsing 19-21 Aug into one row would answer a different question. It destroys
+// nothing, so esc closes it and there is nothing else to press.
+func (m Model) leavesModal() string {
+	rows := m.monthLeaves()
+	month := time.Date(m.timeYearOf(), time.Month(m.timeMonth()+1), 1, 0, 0, 0, 0, time.Local)
+
+	head := theme.Title.Render("TIME OFF "+strings.ToUpper(month.Format("Jan 2006"))) +
+		theme.Dim.Render(fmt.Sprintf("   %d %s", len(rows), plural(len(rows), "day", "days")))
+	if k, ok := m.timeKind(m.timeFilter); ok {
+		head += theme.LeaveInk(theme.LeaveColor(k.Name)).
+			Render("   " + strings.ToLower(firstWord(k.Name)) + " only")
+	}
+	lines := []string{head}
+	if len(rows) == 0 {
+		return theme.Modal.Render(head + "\n" +
+			theme.Dim.Render("nothing booked off this month"))
+	}
+
+	// Both columns are sized from the rows themselves, so the reasons line up under each
+	// other and a month with no half day in it does not pay for the words "afternoon".
+	dateW, kindW := 0, 0
+	when := make([]string, len(rows))
+	for i, r := range rows {
+		when[i] = leaveWhen(r)
+		if w := lipgloss.Width(when[i]); w > dateW {
+			dateW = w
+		}
+		if w := lipgloss.Width(firstWord(r.kind)); w > kindW {
+			kindW = w
+		}
+	}
+	dateW += 2 // the gap to the type, which the pad carries
+	kindW += 1
+	descW := m.cols() - gutter - 8 - dateW - kindW
+	if descW > descCap {
+		descW = descCap
+	}
+
+	// A month with more days off than this is a holiday, not a list; the head still counts
+	// them all.
+	const most = 14
+	for i, r := range rows {
+		if i == most {
+			lines = append(lines, theme.Dim.Render(fmt.Sprintf("… %d more", len(rows)-most)))
+			break
+		}
+		desc := trunc(oneLine(r.desc), descW)
+		if desc == "" {
+			desc = "—" // the ERP lets a request go out with no reason on it
+		}
+		line := theme.DayLabel.Render(pad(when[i], dateW)) +
+			theme.LeaveInk(theme.LeaveColor(r.kind)).Render(pad(strings.ToLower(firstWord(r.kind)), kindW)) +
+			theme.Dim.Render(" : ") + desc
+		// Waiting on an approver is the other thing a day off can be, and the calendar says
+		// it with an underline that a list has no room for.
+		if r.state != "validate" {
+			line += theme.Dim.Render("  pending")
+		}
+		lines = append(lines, line)
+	}
+	return theme.Modal.Render(strings.Join(lines, "\n"))
+}
+
+// leaveWhen is the date as a person says it — "19 Aug (Wed)" — and a half day says which half
+// rather than leaving the reader to wonder why a day is worth half of one.
+func leaveWhen(r leaveRow) string {
+	if r.half {
+		return r.date.Format("2 Jan (Mon") + ", " + halfName(r.period) + ")"
+	}
+	return r.date.Format("2 Jan (Mon)")
+}
+
+// halfName is which half of a day a half-day request takes.
+func halfName(period string) string {
+	if strings.EqualFold(period, "pm") {
+		return "afternoon"
+	}
+	return "morning"
 }

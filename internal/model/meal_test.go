@@ -397,7 +397,12 @@ func TestMealMenuPanel(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if !strings.Contains(styled, theme.HintKey.Render(truncShaped(mn.Options, m.mealPanelCells()-3))) {
+		// The dish as the panel composes it: the choice, then what everyone gets after a `·`.
+		dish := mn.Options
+		if mn.Common != "" {
+			dish += " · " + mn.Common
+		}
+		if !strings.Contains(styled, theme.HintKey.Render(truncShaped(dish, m.mealPanelCells()-3))) {
 			t.Errorf("today's %s dish is not in the accent", ty.Name)
 		}
 	}

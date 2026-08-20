@@ -86,6 +86,81 @@ func TestTimeRefreshKeepsTheYearUp(t *testing.T) {
 	}
 }
 
+// enter lists the month's own time off in a modal: a line a day, with the leave type and what
+// the request was for. esc closes it, and it destroys nothing so nothing else needs a key.
+func TestMonthLeavesModal(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	m := send(t, timeModel(t, 120, 40), runes("g")) // January, where the fixture's leave is
+	open := send(t, m, special(tea.KeyEnter))
+	if open.mode != ModeLeaves {
+		t.Fatalf("enter did not open the list: mode = %v", open.mode)
+	}
+	v := plain(open.View())
+	// One line per day of a range, since that is what the calendar above reads as days.
+	for _, want := range []string{"TIME OFF JAN 2026", "3 days",
+		"21 Jan (Wed)", "22 Jan (Thu)", "23 Jan (Fri)", "casual", "Family errand"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the modal is missing %q:\n%s", want, v)
+		}
+	}
+	// The type reads in its own colour, the one its days are drawn in behind the modal.
+	if want := theme.LeaveInk(theme.LeaveColor("Casual Time Off")).Render("casual "); !strings.Contains(open.View(), want) {
+		t.Error("the leave type is not in its own colour")
+	}
+	if !strings.Contains(plain(open.footer()), "-- TIME OFF --") {
+		t.Errorf("the mode line does not name the modal:\n%s", plain(open.footer()))
+	}
+
+	// A half day says which half; a request still waiting on an approver says so.
+	feb := send(t, m, runes("l"), special(tea.KeyEnter))
+	if got := plain(feb.View()); !strings.Contains(got, "18 Feb (Wed, morning)") {
+		t.Errorf("a half day does not say which half:\n%s", got)
+	}
+	apr := send(t, m, runes("l"), runes("l"), runes("l"), special(tea.KeyEnter))
+	if got := plain(apr.View()); !strings.Contains(got, "pending") {
+		t.Errorf("a request waiting on approval is not marked:\n%s", got)
+	}
+
+	// A month with nothing off says so rather than drawing an empty box.
+	if got := plain(send(t, send(t, m, runes("G")), special(tea.KeyEnter)).View()); !strings.Contains(got,
+		"nothing booked off this month") {
+		t.Errorf("an empty month does not say so:\n%s", got)
+	}
+
+	// esc closes it, and the calendar is where it was.
+	back := send(t, open, special(tea.KeyEsc))
+	if back.mode == ModeLeaves {
+		t.Error("esc did not close the list")
+	}
+	if back.timeMonth() != 0 {
+		t.Errorf("closing it moved the calendar to month %d", back.timeMonth())
+	}
+	// The modal owns the keyboard while it is up: h and l do not walk the months behind it.
+	if held := send(t, open, runes("l")); held.timeMonth() != 0 || held.mode != ModeLeaves {
+		t.Errorf("l walked to month %d behind the modal", held.timeMonth())
+	}
+}
+
+// The list follows the filter, so it and the calendar under it always say the same thing.
+func TestMonthLeavesFollowsTheFilter(t *testing.T) {
+	m := send(t, timeModel(t, 120, 40), runes("g"), runes("s")) // sick only
+	// The modal itself, not the whole screen: the balance cards behind it name every type.
+	got := plain(send(t, m, special(tea.KeyEnter)).leavesModal())
+	if strings.Contains(got, "casual") {
+		t.Errorf("the list ignored the sick filter:\n%s", got)
+	}
+	if !strings.Contains(got, "sick only") {
+		t.Errorf("the head does not name the filter:\n%s", got)
+	}
+	// January holds only casual leave in the fixture, so with the sick filter on it is empty.
+	if !strings.Contains(got, "nothing booked off this month") {
+		t.Errorf("a filtered month with nothing in it does not say so:\n%s", got)
+	}
+}
+
 // A letter filters by the leave type it starts, the same letter clears it, and so does
 // esc. The types come from the ERP, so nothing here is hardcoded.
 func TestTimeFilterFollowsTheTypes(t *testing.T) {
