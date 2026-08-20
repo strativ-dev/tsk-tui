@@ -56,15 +56,17 @@ binary, no CGO.
 - **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
   full or half day, the dates, why. The days light up on the calendar as you type them, and
   ✓ files the request with the ERP after showing you exactly what it is about to send.
-- **This month's canteen meals, and booking them.** `m` opens a month grid with one bar per
-  meal per day — amber breakfast, paprika lunch, green snacks — booked meals solid, open slots
-  hueless, weekends and office holidays bare, and the week's menu pinned down the right. `b`
-  books today, tomorrow, the week or a range you type; `x` cancels a day. `<` / `>` step months.
+- **This month's canteen meals, booking and cancelling them.** `m` opens a month grid with one
+  bar per meal per day — amber breakfast, paprika lunch, green snacks — booked meals solid, open
+  slots hueless, weekends and office holidays bare, and the week's menu pinned down the right.
+  `b` books today, tomorrow, the week ahead or a range you type; `c` cancels the same way and
+  the calendar shows the day as it will be; `x` clears one day whole. `<` / `>` step months.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
 - **No mouse, ever.** `?` lists the keys the current screen takes.
-- **Change any key.** Rebind anything you like in a small text file.
+- **Change any key, on every screen or just one.** Rebind anything in a small text file; a
+  `[keys.meal]` table changes a key on that screen alone.
 - **Your API key stays private.** Encrypted at rest, never written to a file or a screen.
 - **Works with no internet.** Everything is cached; entries reach the ERP when you are back.
 
@@ -252,8 +254,8 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `?` | show or hide the key list |
 | `q` | quit (asks first; `ctrl+c` quits at once) |
 
-`d` / `o` / `t` and `?` work from anywhere that is not typing into a field, so they reach
-the tabs and the key list from inside a task too.
+`d` / `o` / `m` / `t` and `?` work from anywhere that is not typing into a field, so they
+reach the tabs and the key list from inside a task too.
 
 **Inside a task**
 
@@ -533,7 +535,9 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `write` / `unlink` | editing and deleting a line |
 | JSON-RPC `get_employee_hour_logs` | the dashboard's month of daily hours |
 | JSON-RPC `hr.employee` / `hr.attendance` | checking in and out, and the session you are in |
-| JSON-RPC `serp.meal.booking` / `serp.meal.type` | the month's canteen meals and the days it is shut |
+| JSON-RPC `serp.meal.booking` / `serp.meal.type` | the month's canteen meals, booking and cancelling them, and the days it is shut |
+| JSON-RPC `serp.meal.menu` | what the canteen is serving that week |
+| JSON-RPC `hr.leave` / `hr.leave.type` | time off: the year's requests, the balances, filing one |
 
 Worth knowing:
 
