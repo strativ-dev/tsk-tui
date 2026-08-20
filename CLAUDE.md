@@ -543,9 +543,9 @@ One row between the balances and the calendar, and the whole request is on it:
 ## Meals (`TabMeal`)
 
 This month's canteen bookings: a Monday-first month grid where every day carries one short
-bar per meal type. `m` to open, `t` to go back. **Read only** — the design
-(`docs/meal-calendar-palette.html`) also has staged edits, a save modal and a delete, which
-are not built.
+bar per meal type, the week's menu down the right, `b` to book and `x` to cancel. `m` to open,
+`t` to go back. The design (`docs/meal-calendar-palette.html`) also has staged edits and a
+save modal, which are not built — `b` books outright instead.
 
 - Four RPC reads, **one message** (`api.FetchMeals` → `MealMsg`), for the same reason the
   time off screen reads four in one: the types landing without the bookings would draw a
@@ -621,8 +621,11 @@ are not built.
   or the 1st in a month today is not in — and `h`/`l` walk a day, `j`/`k` and `ctrl+f`/`b` a
   week, `g`/`G` the ends of the month, clamped, since wrapping would land on a month this
   screen has not read. They are the same four bindings the task list moves by.
-- **`x` cancels a day's meals** — the footer says `x cancel meal`, off the same binding, since
-  a rebind has to follow it — with a modal that **names them** — `Cancel 3 meals on Mon 3
+- **`x` clears the cursor's day** — every meal on it — and the footer says `x clear day`, off
+  the same binding since a rebind has to follow it. It names the **scope** on purpose: `c`
+  cancels the meals it is told to over the days it is given, and this takes one day whole. Two
+  keys both reading `cancel meal` said nothing about which was which. The modal **names what
+  goes** — `Cancel 3 meals on Mon 3
   Aug?  breakfast · lunch · snacks` — and takes **`y` only** (`keys.YesOnly`): an unlink
   cannot be undone. `x`, not `d`: `d` is the dashboard from every screen, and the design's
   own `d delete day` cannot have that key.
@@ -646,6 +649,118 @@ are not built.
   that is what fits the month on an 80-cell terminal. Narrower ones shed the gap to 2 then 1
   (`mealGapFor`); the bars never lose a cell, or a booked meal and an open one would measure
   the same.
+### The book-meal and cancel-meal lines (`b`, `c`)
+
+Two labels under the calendar, a line each, and the whole request is on whichever one is open:
+
+```
+  book meal   │ today ▾ │ │✓│ │✕│
+   ☑ breakfast
+   ☑ lunch
+   ☑ snacks
+  cancel meal                        ← dim while the other line has the keyboard
+```
+
+- **One form, two verbs** (`mealForm.drop`): `b` books what `c` cancels, over a scope and a set
+  of meals chosen exactly the same way. One struct for both, since a row that can hold only one
+  of them cannot hold two states — and opening either **replaces** whatever was there.
+- **The label that is not on the row stays, and goes fully dim, key and all**: its key does
+  nothing while the other line owns the keyboard, and an accent on a key that does nothing is
+  the accent lying. Closed, both carry their key in the accent.
+- **No switching while a line is open.** `b`, `l` and `s` are the meals' own ticks there, so `b`
+  meaning breakfast on one line and "start booking instead" on the other would be one key with
+  two jobs. `esc` closes the row; then `b` or `c` opens the one you want.
+- The cancel line's ✓ takes **`y` only** (`confirmDropForm`) — an unlink cannot be undone, the
+  same rule `x` follows on a single day — where the booking line's takes `y`/`n`. It drops what
+  the ERP has already **locked** before asking (`dropWanted`), since it refuses to change those.
+- **✓ is green on both lines.** It means "commit this row", and the row already says which verb
+  it is; red there made the cancel line's commit look like its discard, which are the two things
+  a reader most needs to tell apart. ✕ carries the red.
+- **The calendar previews the day as it will be**, not what is going: on the cancel line a
+  ticked meal that is booked is drawn as the **open slot it is about to become**, and one left
+  unticked keeps its own colour because it is staying. Ticking lunch takes the lunch bar off
+  the day, which is the whole question the tick is answering.
+- **A meal with nothing to cancel in the scope is disabled** (`dropAvailable`): dim box, dim
+  name, no accent on its letter, and `none` beside it. Its key says `no lunch booked on those
+  days` rather than moving a tick that could not act on anything. The line **opens ticking only
+  what it can cancel**, and the ticks are re-derived whenever the days change — a new scope or a
+  typed date is a new set of bookings (`retickForScope`), so a tick can never be left behind on
+  a meal the scope no longer holds.
+- **The tick map is copied on write** (`ticksWith`). The model is a value everywhere else in
+  this app, but a map inside it is a reference: toggling in place reached every copy that still
+  held the old form.
+
+- **The row is there whether or not the line is open** — closed it is the label alone with
+  `b` in the accent. `TestBookMealLineOpensWithoutShifting` holds the view's line count.
+- It sits **directly under the calendar**, one blank line below the last week, not pinned to
+  the bottom of the screen: it is about the days on the grid, and a row of fields a screen away
+  from them reads as belonging to nothing. It is appended **before the padding** that fills the
+  body — after it, the line drifted to the bottom of the screen, which is exactly what it is
+  not for — and its rows come out of the weeks' budget, so the month is windowed into what is
+  left rather than the line being pushed off.
+- The menu column is zipped over the **whole** body, this row included, so it keeps its own
+  length instead of being cut to however tall the month happens to be. Which means the row has
+  to fit what that column leaves: `bookCompact` measures against `cols - panel - 3`, and
+  `withMealPanel` **trims** as well as pads, so nothing beside the column can push it past the
+  terminal. `monthCells` is the one place a month's width is worked out, so the two-up test and
+  the layout that puts two months side by side cannot disagree by the cell that wraps a row.
+- **One meal a line**, under the boxes and indented to them: three ticks in a row read as three
+  more fields to tab through, and they are not.
+- **The ticks are not tab stops.** `tab` runs scope → the two dates → ✓ → ✕, so it lands where
+  the booking is actually pressed; each meal is toggled by its own letter instead, which is
+  what makes a stop on it pointless.
+- **The scope is a dropdown and nothing more**: `j`/`k`/`space` step it — today, tomorrow,
+  week, custom — wherever the cursor is on the line, since it is the only dropdown there.
+  It has **no letter of its own**, and nothing in its label is picked out: `t` and `c` are the
+  tasks tab and a leave filter everywhere else, and a line that quietly took them back for one
+  screen is a key meaning two things.
+- **`custom` is the only scope with dates**, and turning it off takes its two fields away —
+  `clampBookField` keeps the cursor on a field that still exists. The dates normalize on exit
+  and the end follows the start past it, the same rules the time off line has
+  (`normalizeBookDates`, `before`).
+- **A meal's own initial ticks it** — `b`, `l`, `s` here, off the ERP's own names
+  (`mealByLetter`), so an office that starts serving dinner gets `d` with nothing to edit. All
+  of them open **ticked**: booking every meal is the common case, and unticking one is a
+  keystroke where ticking three is three.
+- **The line owns the keyboard while it is open** (`ModeBook`, excluded from the tab-key block
+  and routed before the tab handlers): `t` is tomorrow here, `w` and `c` are scopes, and `b`
+  is breakfast rather than the key that opened the line.
+- **`✕` and `esc` close it outright, with no confirm** — nothing has been filed, so there is
+  nothing to lose, and the meals it would have booked are one `b` away again.
+- **`✓` asks first** (`confirmBookMeals`), with a modal that states what it is about to book —
+  the days, then the meals — and takes `y` or `n`: a scope key can turn one day into thirty, so
+  the count is worth reading before it is filed. `n` comes back to the line with everything
+  still on it. It is **`y`/`n`, not `y` alone**, since a booking is reversible: `x` cancels the
+  day, which is the destructive half and takes `y` only.
+- **What the ERP would refuse is dropped before the round trip** (`bookDays`, `bookMeals`),
+  the way the hour log refuses what the endpoint would: a past date, a day the canteen is shut
+  (`mealClosed`), anything past the ERP's 30-day ceiling, and a meal already booked on that day
+  — it holds one booking per meal per day. Nothing ticked says `tick a meal first`.
+- The write is `serp.meal.booking` **`create`, one row at a time** (`api.BookMeals`). Odoo's
+  create takes a list, but one refused row would roll the whole list back, and the refusals
+  here are ordinary — a cutoff that passed while the line was open. Booking four days and
+  being told the fifth was full beats booking nothing, so the message carries **counts**:
+  `booked 6 meals`, or `booked 2 meals, 1 refused: Booking is closed`, the ERP's own words.
+- **`user_id` is left out** — it defaults to the caller, and naming it would let a meal-admin
+  key book for somebody else by accident — and so are `menu_id` / `menu_item_id`, which
+  resolve themselves from the date and the type. `TestBookMeals` holds all three out.
+- **The range is marked on the calendar as it is typed** (`bookCovers`, `bookBar`): every day
+  the ✓ would book is reversed out in the accent — the same mark a date jump leaves — with the
+  ticked meals drawn in their own colours on it, so the ticks read on the grid as well as on
+  the row. It comes from the same `bookDays` the request is built from, so the calendar cannot
+  mark a day the ✓ would skip.
+- **A range that runs past the end of the month brings the next month with it** (`bookSpill`,
+  `monthGrid`): side by side where two grids fit, stacked underneath where they do not
+  (`mealTwoUp`), and the **menu column gives up its cells first** — seeing the days a booking
+  covers beats knowing what is on the menu. The spill month carries no cursor and says its own
+  name, since the header names the other. `FetchMeals` reads **two months** in its one set of
+  calls for exactly this: fetching the second on demand would cost three more round trips and
+  a screen that disagreed with itself until they landed.
+- **Nothing a day draws may exceed its own column** (`fitCell`): the weekend columns are
+  narrower, since a day the canteen is shut carries no bars, and a Saturday the ERP does serve
+  on would otherwise run a cell past its neighbour and wrap the row.
+- Anything booked **closes the line and re-reads the month**: what was booked is on the
+  calendar behind it, which is a better answer than a form still asking the same question.
 - **The head's legend gives up its parts from the tail in** — the `N of M days` count, then
   the meals' names, leaving the swatches the bars are read by — and each tier is measured **on
   the line as it will be drawn** rather than by adding up its parts, since the padding, the

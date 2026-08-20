@@ -111,6 +111,9 @@ const (
 	panelMin  = 24
 	panelMax  = 34
 	spanCells = 12 // "Sep 10 (Wed)" and "Mar 30-Apr 2", the longest a span gets
+	// bookScopeCells is the widest scope name plus its arrow, so the dropdown does not
+	// resize as it is cycled — a field that changes width moves everything to its right.
+	bookScopeCells = 10
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -232,7 +235,23 @@ func (m Model) View() string {
 			body = append(body, dFoot...)
 		}
 	}
+	// The book-meal line sits directly under the calendar with one blank line above it, not
+	// pinned to the bottom of the screen: it is about the days on the grid, and a row of
+	// fields a screen away from them reads as belonging to nothing. Its rows come out of the
+	// weeks' budget, so the month is windowed into what is left rather than being pushed off.
+	var band []string
+	if m.tab == TabMeal {
+		band = m.bookBand()
+		budget = max(budget-len(band)-1, 1)
+	}
 	body = window(body, focus, budget)
+	if m.tab == TabMeal {
+		// Directly under the last week, before the padding rather than after it: padded first,
+		// the line drifted to the bottom of the screen, which is what it is not for.
+		body = append(body, "")
+		body = append(body, band...)
+		budget += len(band) + 1
+	}
 	for len(body) < budget {
 		body = append(body, "")
 	}
@@ -243,6 +262,8 @@ func (m Model) View() string {
 	}
 	if m.tab == TabMeal {
 		// Same reason: the week's menu is a column of the screen, so the weeks scroll under it.
+		// Composed over the whole body, the line included, so the column keeps its own length
+		// instead of being cut to however tall this month happens to be.
 		body = m.withMealPanel(body)
 	}
 
@@ -2067,8 +2088,12 @@ func padLeftCell(s string, w int) string {
 // the line either way, so opening it does not shove the body around.
 func (m Model) footer() string {
 	label := modeLabel(m.mode)
+	if m.mode == ModeBook && m.book.drop {
+		// One mode, two verbs: the line says which it is, and so should the mode line.
+		label = "-- CANCEL MEAL --"
+	}
 	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
-		m.mode != ModeLeaves {
+		m.mode != ModeLeaves && m.mode != ModeBook {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -2086,6 +2111,10 @@ func (m Model) footer() string {
 	case m.mode == ModeConfirm:
 		// Which key accepts depends on what is being confirmed.
 		help = []key.Binding{m.confirmKeys(), m.k().No}
+	case m.mode == ModeBook:
+		// Its own keys, whichever tab is behind it: the line holds the keyboard, so the tab's
+		// own hints would be advertising keys that cannot fire.
+		help = m.k().help(ModeBook)
 	case m.mode == ModeForm:
 		// Its own keys, whichever tab is behind it, and only the ones the focused field
 		// takes: j/k belong to a dropdown and are letters everywhere else.
@@ -2113,8 +2142,8 @@ func (m Model) footer() string {
 		// is no key here that changes a booking.
 		// No tab key here: the bar across the top already picks the letter out of every tab's
 		// own label, so repeating `t tasks` in the footer spends a slot saying it twice.
-		help = []key.Binding{m.mealMoveHelp(), m.k().PrevMonth, m.mealDropHelp(),
-			m.mealRefreshHelp(), m.k().Quit, m.k().Help}
+		help = []key.Binding{m.mealMoveHelp(), m.k().PrevMonth, m.k().BookMeal, m.k().DropMeal,
+			m.mealDropHelp(), m.mealRefreshHelp(), m.k().Quit, m.k().Help}
 	default:
 		help = append(keys.help(m.mode), m.k().Help)
 	}
@@ -2301,15 +2330,104 @@ func (m Model) mealLines() ([]string, int) {
 	}
 
 	at := m.mealViewed()
+	lines, focus := m.monthGrid(at, true)
+
+	// A booking range that runs past the end of the month brings the next month with it: the
+	// days it covers are marked, and marks on a month that is not on screen say nothing.
+	// Side by side where the width holds two grids, stacked underneath where it does not.
+	if next, ok := m.bookSpill(); ok {
+		spill, _ := m.monthGrid(next, false)
+		if m.mealTwoUp() {
+			lines = m.sideBySide(lines, spill)
+		} else {
+			lines = append(append(lines, ""), spill...)
+		}
+	}
+	return lines, focus
+}
+
+// mealTwoUp says whether two month grids fit beside each other, with the menu column and the
+// hairline between them accounted for. Below that they stack, since a grid cut in half is not
+// a calendar.
+func (m Model) mealTwoUp() bool { return m.twoUpWithout(m.mealPanelCells()) }
+
+// monthCells is one month grid's own width, gutter aside: five weekday columns and the two
+// narrow weekend ones. The two-up test and the zip that lays them out both measure with it, so
+// they cannot disagree by the cell that wraps a row.
+func (m Model) monthCells() int {
+	return 5*m.mealCell(mealGap) + 2*mealQuietCol
+}
+
+// twoUpWithout says whether two grids fit beside each other once panel cells are taken out of
+// the width. Split from mealTwoUp so the panel can ask the question without asking itself.
+func (m Model) twoUpWithout(panel int) bool {
+	return m.twoUpCells()+3+panel <= m.cols()
+}
+
+// twoUpCells is what two months side by side occupy, laid out the way sideBySide lays them.
+func (m Model) twoUpCells() int { return gutter + m.monthCells() + 2 + m.monthCells() }
+
+// sideBySide zips two grids into one column of lines, the second beginning where the first
+// month's own width ends, so the weekday heads above still line up over the left one.
+func (m Model) sideBySide(left, right []string) []string {
+	w := gutter + m.monthCells()
+	out := make([]string, max(len(left), len(right)))
+	for i := range out {
+		l := ""
+		if i < len(left) {
+			l = left[i]
+		}
+		out[i] = pad(l, w+2)
+		if i < len(right) {
+			out[i] += right[i]
+		}
+		out[i] = strings.TrimRight(out[i], " ")
+	}
+	return out
+}
+
+// bookSpill is the month a booking range runs into, when it runs into one. Only the next
+// month: the ERP takes bookings 30 days out, so a range can cross one month boundary and no
+// more, and the read already covers that month.
+func (m Model) bookSpill() (time.Time, bool) {
+	if !m.book.open {
+		return time.Time{}, false
+	}
+	at := m.mealViewed()
+	next := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0)
+	for _, iso := range m.bookDays() {
+		d, err := time.Parse("2006-01-02", iso)
+		if err != nil {
+			continue
+		}
+		if d.Year() == next.Year() && d.Month() == next.Month() {
+			return next, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// monthGrid draws one month: a week to a row of dates, its bars under it, and a blank line
+// between. head puts the month's name over it, which the month in the header does not need.
+func (m Model) monthGrid(at time.Time, main bool) ([]string, int) {
 	gap := m.mealGapFor()
 	first := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.Local)
 	days := first.AddDate(0, 1, -1).Day()
 	// Monday is column 0, which is what the ERP's own working week starts on.
 	lead := (int(first.Weekday()) + 6) % 7
 	today, cursor := time.Now().Format("2006-01-02"), m.mealCursor()
+	if !main {
+		// The cursor belongs to the month the keys move in; the month a range spilled into
+		// carries no cursor and says its own name instead, since the header names the other.
+		cursor = 0
+	}
 
 	var lines []string
 	focus := -1
+	if !main {
+		lines = append(lines, theme.Blur.Render(theme.Title.Render(
+			strings.ToUpper(at.Format("January 2006")))), "")
+	}
 	for start := 1 - lead; start <= days; start += 7 {
 		dates, bars, served := make([]string, 0, 7), make([]string, 0, 7), false
 		for i := range 7 {
@@ -2325,7 +2443,8 @@ func (m Model) mealLines() ([]string, int) {
 			}
 			day := time.Date(at.Year(), at.Month(), d, 0, 0, 0, 0, time.Local)
 			iso := day.Format("2006-01-02")
-			date, bar := m.mealDay(d, iso, w, gap, iso == today, iso < today, d == cursor)
+			date, bar := m.mealDay(d, iso, w, gap, iso == today, iso < today,
+				d == cursor && main)
 			if d == cursor {
 				focus = len(lines)
 			}
@@ -2377,6 +2496,11 @@ func (m Model) mealDay(d int, iso string, w, gap int, today, past, cursor bool) 
 
 	label, ink := strconv.Itoa(d), theme.MealDate
 	switch {
+	// A day the open booking line covers is reversed out in the accent — the same mark a date
+	// jump leaves on the rows it found, and what the time off form does with its own range.
+	// It outranks the rest, because it is what the keys are about.
+	case m.bookCovers(iso):
+		return theme.Match.Render(pad(label, 2)) + fill(w-2), m.bookBar(iso, w, gap)
 	case today:
 		ink = theme.MealToday
 	case cursor:
@@ -2409,6 +2533,9 @@ func (m Model) mealDay(d int, iso string, w, gap int, today, past, cursor bool) 
 		}
 	}
 	bar := strings.Join(cells, band(lipgloss.NewStyle()).Render(" "))
+	if lipgloss.Width(bar) > w {
+		return date, fitCell(bar, w)
+	}
 	return date, bar + fill(w-lipgloss.Width(bar))
 }
 
@@ -2424,7 +2551,7 @@ func (m Model) mealMoveHelp() key.Binding {
 // everywhere else, but the description is this tab's: it cancels the day's meals, not a
 // timesheet row — and it says "meal", since that is the thing being cancelled.
 func (m Model) mealDropHelp() key.Binding {
-	return key.NewBinding(key.WithHelp(m.k().Delete.Help().Key, "cancel meal"))
+	return key.NewBinding(key.WithHelp(m.k().Delete.Help().Key, "clear day"))
 }
 
 // mealRefreshHelp is r on this screen: it re-reads the month, not the task list, so the
@@ -2448,6 +2575,7 @@ func (m Model) mealPanelCells() int {
 	if m.mealMonth == 0 {
 		return 0
 	}
+
 	// Measured against a grid at gap 2, not at the narrowest one: at a single cell between
 	// days a week of bars runs together into one stripe, which is the thing the gap exists to
 	// stop. The panel gives its cells back before that happens.
@@ -2455,7 +2583,14 @@ func (m Model) mealPanelCells() int {
 	if room < mealPanelMin {
 		return 0
 	}
-	return min(room, mealPanelMax)
+	panel := min(room, mealPanelMax)
+	// A booking range that crosses into the next month wants both grids side by side, and the
+	// days it covers are worth more than what is on the menu — so the column goes when the
+	// two cannot both fit, and stays when they can.
+	if _, spill := m.bookSpill(); spill && m.twoUpWithout(0) && !m.twoUpWithout(panel) {
+		return 0
+	}
+	return panel
 }
 
 // withMealPanel pins the week's menu flush to the right edge, exactly as the holiday panel
@@ -2472,7 +2607,9 @@ func (m Model) withMealPanel(body []string) []string {
 
 	out := make([]string, len(body))
 	for i, l := range body {
-		out[i] = pad(l, grid) + " " + rule + " "
+		// Trimmed as well as padded: a row wider than the grid — a booking line with every
+		// box open — would push the column past the terminal and wrap it.
+		out[i] = trunc(pad(l, grid), grid) + " " + rule + " "
 		if i < len(panel) {
 			out[i] += panel[i]
 		}
@@ -2690,10 +2827,245 @@ func leaveWhen(r leaveRow) string {
 	return r.date.Format("2 Jan (Mon)")
 }
 
+// bookCovers says whether the open booking line would book this day. Derived from the same
+// bookDays the request is built from, so the calendar cannot mark a day the ✓ would skip.
+func (m Model) bookCovers(iso string) bool {
+	if !m.book.open {
+		return false
+	}
+	for _, d := range m.bookDays() {
+		if d == iso {
+			return true
+		}
+	}
+	return false
+}
+
+// bookBar is a covered day's bars: the ticked meals in their own colours, the rest as open
+// slots, so the line's own ticks read on the calendar as well as on the row.
+//
+// On the cancel line the ticked meals are drawn in the destructive colour instead, and only
+// where one is actually booked: what is about to be taken away should look like it.
+func (m Model) bookBar(iso string, w, gap int) string {
+	booked := m.mealsOn(iso)
+	cells := make([]string, 0, len(m.mealTypes))
+	past := iso < time.Now().Format("2006-01-02")
+	for _, t := range m.mealTypes {
+		if m.book.drop {
+			// The day as it will be, not as it is: a ticked meal that is booked is **gone** —
+			// drawn as the open slot it is about to become — and one left unticked keeps its
+			// own colour, because it is staying. Ticking lunch takes the lunch bar off the day,
+			// which is the whole question the tick is answering.
+			_, held := booked[t.ID]
+			switch {
+			case held && m.book.on[t.ID]:
+				cells = append(cells, theme.MealSlot.Render("──"))
+			case held && past:
+				cells = append(cells, theme.MealBooked(theme.MealPastColor(t.Name)).Render("━━"))
+			case held:
+				cells = append(cells, theme.MealBooked(theme.MealColor(t.Name)).Render("━━"))
+			default:
+				cells = append(cells, theme.MealSlot.Render("──"))
+			}
+			continue
+		}
+		switch {
+		case m.book.on[t.ID]:
+			cells = append(cells, theme.MealBooked(theme.MealColor(t.Name)).Render("━━"))
+		case len(booked) > 0:
+			if _, held := booked[t.ID]; held {
+				cells = append(cells, theme.MealQuietInk.Render("━━"))
+				continue
+			}
+			cells = append(cells, theme.MealSlot.Render("──"))
+		default:
+			cells = append(cells, theme.MealSlot.Render("──"))
+		}
+	}
+	return fitCell(strings.Join(cells, " "), w)
+}
+
+// fitCell holds a day's own drawing inside its column: the two weekend columns are narrower
+// than the rest, since a day the canteen is shut carries no bars — and a Saturday the ERP does
+// serve on would otherwise run a cell past its neighbour and wrap the row.
+func fitCell(s string, w int) string {
+	if d := w - lipgloss.Width(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return trunc(s, w)
+}
+
 // halfName is which half of a day a half-day request takes.
 func halfName(period string) string {
 	if strings.EqualFold(period, "pm") {
 		return "afternoon"
 	}
 	return "morning"
+}
+
+// --- the book-meal line ------------------------------------------------------
+
+// bookBand is the row under the calendar. Closed it is the label alone with its key picked
+// out; open it is the same row with the fields revealed, three lines either way, so pressing
+// b moves nothing above or below it — the same shape the new-timeoff line keeps.
+func (m Model) bookBand() []string {
+	// A label a line, in the order they read: book, then cancel. Closed, both carry their key
+	// in the accent. Open, the one that is not on the row goes **fully dim, key and all** — its
+	// key does nothing while the other line holds the keyboard, and an accent on a key that
+	// does nothing is the accent lying.
+	label := func(name string, k key.Binding, live bool) string {
+		hint := theme.HintKey
+		if !live {
+			hint = theme.Dim
+		}
+		return theme.Blur.Render(hinted(name, k, theme.Dim, hint))
+	}
+	book := label("book meal", m.k().BookMeal, !m.book.open)
+	drop := label("cancel meal", m.k().DropMeal, !m.book.open)
+	if !m.book.open {
+		return []string{"", book, drop, ""}
+	}
+
+	row := make([]string, 0, 8)
+	for _, l := range strings.Split(m.bookRow(m.bookCompact()), "\n") {
+		row = append(row, theme.Blur.Render(l))
+	}
+	// The open line keeps its place in the pair: booking first, cancelling under it.
+	if m.book.drop {
+		return append([]string{"", book}, row...)
+	}
+	return append(append([]string{""}, row...), drop)
+}
+
+// bookCompact says whether the row has to give up the spaces around its boxes. Measured on
+// the row as it is drawn, since that is the only thing that cannot disagree with itself.
+func (m Model) bookCompact() bool {
+	room := m.cols() - gutter
+	if p := m.mealPanelCells(); p > 0 {
+		// The menu column is beside this row too, so the boxes have to fit what it leaves.
+		room -= p + 3
+	}
+	return lipgloss.Width(strings.Split(m.bookRow(false), "\n")[1]) > room
+}
+
+// bookRow draws the line: the scope, the two dates when it is custom, a tick per meal, then
+// ✓ and ✕ — left to right, which is the only order it reads in.
+func (m Model) bookRow(compact bool) string {
+	sep := " "
+	if compact {
+		sep = ""
+	}
+
+	// The line says which of the two verbs it is. Only the label: the other's key does not
+	// work while this one is open — b, l and s are the meals' own ticks here — so advertising
+	// it would advertise a key that does nothing.
+	verb := "book meal"
+	if m.book.drop {
+		verb = "cancel meal"
+	}
+	parts := []string{
+		theme.DayLabel.Render(verb),
+		m.bookField(m.bookScope(), bookScopeField, compact),
+	}
+	if from, to := m.bookDateFields(); from >= 0 {
+		parts = append(parts,
+			m.bookField(m.bookDate(0), from, compact),
+			theme.Dim.Render(" → "),
+			m.bookField(m.bookDate(1), to, compact))
+	}
+	// The two buttons carry what they do in the frame and fill when the keys are on them,
+	// exactly as the time off line's do: these are pressed, not typed into.
+	// ✓ is green on both lines: it means "commit this row", and the row already says which verb
+	// it is. Red there made the cancel line's commit look like its discard, which are the two
+	// things a reader most needs to tell apart. ✕ carries the red.
+	ok, drop := theme.FieldOk, theme.FieldDrop
+	tick, cross := theme.Ok, theme.Err
+	if m.book.field == m.bookOKField() {
+		ok, tick = theme.FieldOkOn, theme.OnOk
+	}
+	if m.book.field == m.bookXField() {
+		drop, cross = theme.FieldDropOn, theme.OnDrop
+	}
+	if compact {
+		ok, drop = ok.Padding(0), drop.Padding(0)
+	}
+	parts = append(parts, ok.Render(tick.Render("✓")), drop.Render(cross.Render("✕")))
+
+	if sep != "" {
+		spaced := make([]string, 0, 2*len(parts))
+		for i, p := range parts {
+			if i > 0 {
+				spaced = append(spaced, sep)
+			}
+			spaced = append(spaced, p)
+		}
+		parts = spaced
+	}
+	row := lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+
+	// One meal a line under the fields, indented to the boxes: three ticks in a row read as
+	// three more fields to tab through, and they are not — each is its own letter.
+	lines := strings.Split(row, "\n")
+	indent := strings.Repeat(" ", lipgloss.Width(verb)+2)
+	for _, t := range m.mealTypes {
+		lines = append(lines, indent+m.bookTick(t))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// bookField is one box on the line, framed in the accent while it holds the keys.
+func (m Model) bookField(s string, field int, compact bool) string {
+	box := theme.Field
+	if m.book.field == field {
+		box = theme.FieldFocus
+	}
+	if compact {
+		box = box.Padding(0)
+	}
+	return box.Render(s)
+}
+
+// bookScope is the days dropdown. Nothing inside it is picked out: it is stepped with j/k or
+// space like every other dropdown in the app, and a hint here would be advertising a letter
+// that means the tasks tab everywhere else.
+func (m Model) bookScope() string {
+	name := []string{"today", "tomorrow", "week", "custom"}[m.book.scope]
+	return theme.DayLabel.Render(name) + theme.Dim.Render(" ▾") +
+		strings.Repeat(" ", max(bookScopeCells-len(name)-2, 0))
+}
+
+// bookTick is one meal's checkbox: its own initial picked out of the name, and the box filled
+// when it is on. A meal that is already booked on every day the scope covers says so instead,
+// since ticking it again would only be refused.
+func (m Model) bookTick(t api.MealType) string {
+	name := strings.ToLower(firstWord(t.Name))
+	letter := key.NewBinding(key.WithKeys(name[:1]), key.WithHelp(name[:1], ""))
+
+	// On the cancel line a meal with nothing to cancel in this scope is **disabled**: dim box,
+	// dim name, and no accent on its letter, because the letter does nothing. A tick that
+	// cannot act on anything would be a tick that lies.
+	if m.book.drop && !m.dropAvailable(t.ID) {
+		return theme.Dim.Render("☐ ") + hinted(name, letter, theme.Dim, theme.Dim) +
+			theme.Dim.Render("  none")
+	}
+
+	box, ink := "☐", theme.Dim
+	if m.book.on[t.ID] {
+		box, ink = "☑", theme.MealBooked(theme.MealColor(t.Name))
+	}
+	return ink.Render(box) + " " + hinted(name, letter, theme.DayLabel, theme.HintKey)
+}
+
+// bookDate draws one of the two date fields. A field just tabbed onto shows its value
+// selected — the next keystroke replaces the whole thing — which is what the accent fill
+// means here, as it does on the time off line.
+func (m Model) bookDate(i int) string {
+	in := m.book.from
+	if i == 1 {
+		in = m.book.to
+	}
+	if m.bookDateIndex() == i && m.book.fresh[i] {
+		return theme.Match.Render(pad(in.Value(), dateWidth-1))
+	}
+	return in.View()
 }

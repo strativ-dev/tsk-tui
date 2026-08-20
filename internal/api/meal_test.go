@@ -136,6 +136,76 @@ func TestFetchMeals(t *testing.T) {
 	}
 }
 
+// A booking is one create per meal per day, with the caller left implicit and the menu left
+// to resolve itself, and a refused row does not take the others with it.
+func TestBookMeals(t *testing.T) {
+	var calls []map[string]any
+	fakeMeals(t, &calls)
+
+	msg, ok := BookMeals("secret-key", "user@example.com", "erp-test",
+		[]string{"2026-08-24", "2026-08-25"}, []int{2, 1})().(MealBookedMsg)
+	if !ok {
+		t.Fatal("BookMeals did not return MealBookedMsg")
+	}
+	if msg.Err != nil {
+		t.Fatalf("Err = %v", msg.Err)
+	}
+	// The fake answers create with an empty list, which is neither an id nor an error: two
+	// days by two meals is four attempts either way, which is what the counts have to add to.
+	if msg.Booked+msg.Skipped != 4 {
+		t.Errorf("booked %d, skipped %d, want four attempts", msg.Booked, msg.Skipped)
+	}
+
+	var creates []map[string]any
+	for _, c := range calls {
+		args, _ := c["args"].([]any)
+		if len(args) < 6 {
+			continue
+		}
+		if model, _ := args[3].(string); model != "serp.meal.booking" {
+			continue
+		}
+		if method, _ := args[4].(string); method != "create" {
+			continue
+		}
+		// create takes its values inside a list: args = [vals], the way Odoo's own client
+		// sends it.
+		inner, _ := args[5].([]any)
+		if len(inner) == 0 {
+			t.Errorf("create was called with no values: %v", args[5])
+			continue
+		}
+		vals, _ := inner[0].(map[string]any)
+		creates = append(creates, vals)
+	}
+	if len(creates) != 4 {
+		t.Fatalf("%d create calls, want one per meal per day", len(creates))
+	}
+	for _, v := range creates {
+		if _, named := v["user_id"]; named {
+			// It defaults to the caller; naming it lets a meal-admin key book for somebody
+			// else by accident.
+			t.Errorf("create names a user: %v", v)
+		}
+		for _, computed := range []string{"menu_id", "menu_item_id", "state"} {
+			if _, sent := v[computed]; sent {
+				t.Errorf("create sends %s, which resolves itself: %v", computed, v)
+			}
+		}
+		if v["meal_type_id"] == nil || v["date"] == nil {
+			t.Errorf("create is missing the meal or the day: %v", v)
+		}
+	}
+
+	// Nothing to do is refused before the round trip.
+	if got := BookMeals("k", "l", "db", nil, []int{2})().(MealBookedMsg); got.Err == nil {
+		t.Error("a booking with no day was sent")
+	}
+	if got := BookMeals("k", "l", "db", []string{"2026-08-24"}, nil)().(MealBookedMsg); got.Err == nil {
+		t.Error("a booking with no meal was sent")
+	}
+}
+
 // The two argument shapes a real ERP is strict about: the bookings must be scoped to the
 // caller, and get_unusual_days takes the two ends with no ids list in front of them.
 func TestMealCallShapes(t *testing.T) {
@@ -185,8 +255,10 @@ func TestMealCallShapes(t *testing.T) {
 	if len(unusual) != 2 {
 		t.Fatalf("get_unusual_days args = %v, want the two ends alone", unusual)
 	}
-	if unusual[0] != "2026-08-01 00:00:00" || unusual[1] != "2026-08-31 23:59:59" {
-		t.Errorf("get_unusual_days spans %v, want the whole month", unusual)
+	// The viewed month and the one after it: a booking range can cross the end of a month, and
+	// the calendar draws both when it does.
+	if unusual[0] != "2026-08-01 00:00:00" || unusual[1] != "2026-09-30 23:59:59" {
+		t.Errorf("get_unusual_days spans %v, want the month and the next", unusual)
 	}
 
 	// The menus span the whole month, not one week: the panel follows the cursor and the

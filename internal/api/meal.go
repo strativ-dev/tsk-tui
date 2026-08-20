@@ -85,8 +85,12 @@ func FetchMeals(key, login, db string, year int, month time.Month) tea.Cmd {
 		if err != nil {
 			return fail(err)
 		}
+		// The viewed month, and the one after it: a booking range can run past the end of a
+		// month, and the calendar draws both when it does. One wider range costs the same
+		// three calls, where fetching the second month on demand would cost three more and a
+		// screen that disagrees with itself until they land.
 		first := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
-		last := first.AddDate(0, 1, -1)
+		last := first.AddDate(0, 2, -1)
 		booked, err := mealBookings(db, uid, key, uid, first, last)
 		if err != nil {
 			return fail(err)
@@ -291,5 +295,71 @@ func CancelMeals(key, login, db, date string, ids []int) tea.Cmd {
 			return fail(errors.New("the ERP would not cancel it"))
 		}
 		return MealsDeletedMsg{Date: date, N: len(ids)}
+	}
+}
+
+// MealBookedMsg answers a booking with what the ERP took and what it refused.
+//
+// Booked and Skipped are counts because the request is a batch: one create per meal per day,
+// and a day the canteen will not take is not a failure of the others. Why is the first
+// refusal the ERP gave, verbatim — "already exists", "Booking is closed", and so on.
+type MealBookedMsg struct {
+	Booked  int
+	Skipped int
+	Why     string
+	Err     error
+}
+
+// BookMeals is a tea.Cmd: one serp.meal.booking per meal per day.
+//
+// The rows are created one at a time on purpose. Odoo's create takes a list, but one refused
+// row would roll the whole list back — and the refusals here are ordinary: a day already
+// booked, a meal past its cutoff, a type not served that day. Booking four days and being
+// told the fifth was full beats booking nothing.
+//
+// user_id is left out: it defaults to the caller, and naming it would let a key with the
+// meal-admin group book for somebody else by accident. menu_id and menu_item_id resolve
+// themselves from the date and the type, so they are not sent either.
+func BookMeals(key, login, db string, days []string, types []int) tea.Cmd {
+	return func() tea.Msg {
+		key, login, db = strings.TrimSpace(key), strings.TrimSpace(login), strings.TrimSpace(db)
+		fail := func(err error) tea.Msg { return MealBookedMsg{Err: err} }
+		if len(days) == 0 || len(types) == 0 {
+			return fail(errors.New("pick a day and a meal first"))
+		}
+
+		uid, err := connect(db, login, key)
+		if err != nil {
+			return fail(err)
+		}
+
+		out := MealBookedMsg{}
+		for _, day := range days {
+			for _, t := range types {
+				raw, err := rpc("object", "execute_kw", []any{
+					db, uid, key,
+					"serp.meal.booking", "create",
+					[]any{map[string]any{"meal_type_id": t, "date": day}},
+					map[string]any{"context": map[string]any{
+						"tz": "Asia/Dhaka", "lang": "en_US"}},
+				})
+				var id int
+				switch {
+				case err != nil:
+					out.Skipped++
+					if out.Why == "" {
+						out.Why = oneLine(err.Error())
+					}
+				case json.Unmarshal(raw, &id) != nil || id == 0:
+					out.Skipped++
+					if out.Why == "" {
+						out.Why = "the ERP would not take " + day
+					}
+				default:
+					out.Booked++
+				}
+			}
+		}
+		return out
 	}
 }

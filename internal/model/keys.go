@@ -24,7 +24,7 @@ type keyMap struct {
 	Refresh, SetKey, ClearSearch   key.Binding
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab, TimeTab     key.Binding
-	MealTab                        key.Binding
+	MealTab, BookMeal, DropMeal    key.Binding
 	Help, Clock, NewLeave          key.Binding
 	PrevMonth, NextMonth           key.Binding
 	Cycle                          key.Binding
@@ -88,6 +88,12 @@ func defaultKeys() keyMap {
 		TimeTab: key.NewBinding(key.WithKeys("o", "3"), key.WithHelp("o", "timeoff")),
 		// m, the initial of the word, free of every other tab key.
 		MealTab: key.NewBinding(key.WithKeys("m", "4"), key.WithHelp("m", "meal")),
+		// The book-meal line, b for the word it opens. Inside the line b is breakfast's own
+		// tick — the line owns the keyboard, so the two never meet.
+		BookMeal: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "book meal")),
+		// Its twin: the same line, cancelling instead of booking. Only one of the two is on
+		// screen at a time, so the keys never compete for the row.
+		DropMeal: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel meal")),
 
 		// The footer's key list, off by default and toggled from anywhere that is not
 		// typing. ? is the one key the closed footer still advertises, so the rest are
@@ -409,6 +415,9 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{key.NewBinding(key.WithHelp("esc", "close"))}
 	case ModeLeaves:
 		return []key.Binding{key.NewBinding(key.WithHelp(k.Back.Help().Key, "close"))}
+	case ModeBook:
+		return []key.Binding{k.Next, k.Cycle,
+			key.NewBinding(key.WithHelp("b l s", "meal")), k.Accept, k.Cancel}
 	case ModeConfirm:
 		return []key.Binding{k.Yes, k.No} // destructive prompts swap in YesOnly, see confirmKeys
 	case ModeAuth:

@@ -56,9 +56,10 @@ binary, no CGO.
 - **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
   full or half day, the dates, why. The days light up on the calendar as you type them, and
   ✓ files the request with the ERP after showing you exactly what it is about to send.
-- **This month's canteen meals.** `m` opens a month grid with one bar per meal per day —
-  amber breakfast, paprika lunch, green snacks — booked meals solid, open slots hueless,
-  weekends and office holidays bare. `<` / `>` step months. Read only for now.
+- **This month's canteen meals, and booking them.** `m` opens a month grid with one bar per
+  meal per day — amber breakfast, paprika lunch, green snacks — booked meals solid, open slots
+  hueless, weekends and office holidays bare, and the week's menu pinned down the right. `b`
+  books today, tomorrow, the week or a range you type; `x` cancels a day. `<` / `>` step months.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
@@ -367,16 +368,34 @@ From about 92 columns the week's menu is pinned down the right: one block per we
 line per meal — what the canteen is serving, the choice first — with **today's whole block in
 amber**, heading and dishes. It follows the cursor, so `j` brings next week's menu with it.
 
-`x` cancels the cursor day's meals after a prompt that names them, and takes `y` only. Days
+`b` opens a booking line under the calendar: when — today, tomorrow, the week ahead, or a
+custom range with two dates, stepped with `j`/`k` — then a tick per meal, `b` breakfast, `l` lunch,
+`s` snacks, all on to start with — one to a line, so `tab` runs scope → dates → ✓ → ✕ and
+skips them. The days it would book light up on the calendar as you type, and a range that
+crosses into the next month puts that month on screen beside this one. `enter` on ✓ shows what
+it is about to book and takes `y`; ✕ or `esc` closes the line with nothing filed. Days the
+canteen is shut, days already gone and meals you already have are dropped before the request,
+and whatever the ERP refuses is reported in its own words.
+
+`c` opens the same line with the opposite verb — it cancels what `b` books, over the same
+scopes and ticks, and takes `y` only. The calendar shows the day **as it will be**: tick lunch
+and the lunch bar comes off it. A meal with nothing booked in the chosen days is disabled and
+says `none`. Whichever line is open, the other's label stays but goes dim: its key does nothing
+until `esc` closes the row.
+
+`x` clears the cursor day — every meal on it — after a prompt that names them, and takes `y`
+only; `c` is the key for cancelling chosen meals over chosen days. Days
 past their booking cutoff are refused before the request goes out — the ERP will not change
-them. Booking a meal from here is not built yet.
+them.
 
 | Key | Does |
 |---|---|
 | `h` / `l` | previous / next day |
 | `j` / `k` | a week down / up |
 | `g` / `G` | first / last day of the month |
-| `x` | cancel the meals on this day (asks; `y` only) |
+| `b` | book meals — the line opens under the calendar |
+| `c` | cancel meals — the same line, the opposite verb |
+| `x` | clear this day — every meal on it (asks; `y` only) |
 | `<` / `>` | previous / next month — `>` stops at the current one |
 | `r` | re-read the month from the ERP |
 | `t` / `d` / `o` | back to the tasks / the dashboard / time off (`1` / `2` / `3` too) |

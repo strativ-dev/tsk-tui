@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -153,8 +154,9 @@ func TestMealTextCannotGrowTheView(t *testing.T) {
 	}
 }
 
-// x cancels a day's meals, and it asks first with what will go named — three meals is
-// information, a yes/no question is not. It takes y alone, since an unlink cannot be undone.
+// x clears the cursor day — every meal on it — and asks first with what will go named: three
+// meals is information, a yes/no question is not. It takes y alone, since an unlink cannot be
+// undone. The word is "clear", not "cancel": c is the key that cancels chosen meals.
 func TestMealCancelAsksFirst(t *testing.T) {
 	m := mealCursorOn(t, mealModel(t, 100, 40), mealAt(1))
 
@@ -163,7 +165,7 @@ func TestMealCancelAsksFirst(t *testing.T) {
 		t.Fatalf("x did not ask: mode = %v, kind = %v", ask.mode, ask.cKind)
 	}
 	prompt := plain(ask.View())
-	for _, want := range []string{"Cancel 3 meals", "breakfast", "lunch", "snacks"} {
+	for _, want := range []string{"Clear ", "3 meals", "breakfast", "lunch", "snacks"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the prompt does not name %q:\n%s", want, prompt)
 		}
@@ -288,6 +290,406 @@ func mealCursorOn(t *testing.T, m Model, iso string) Model {
 	return m
 }
 
+// b opens the book-meal line, and the row is three lines tall either way — so revealing the
+// fields moves neither the calendar above it nor the status line below.
+func TestBookMealLineOpensWithoutShifting(t *testing.T) {
+	m := mealMenuModel(t, 120, 34)
+	closed := strings.Split(plain(m.View()), "\n")
+	open := send(t, m, runes("b"))
+	if open.mode != ModeBook || !open.book.open {
+		t.Fatalf("b did not open the line: mode %v", open.mode)
+	}
+	if got := len(strings.Split(plain(open.View()), "\n")); got != len(closed) {
+		t.Errorf("opening the line changed the view from %d to %d lines", len(closed), got)
+	}
+	if !strings.Contains(plain(m.View()), "book meal") {
+		t.Error("the closed row does not carry its label")
+	}
+	// Every meal starts ticked: booking all of them is the common case.
+	for _, ty := range open.mealTypes {
+		if !open.book.on[ty.ID] {
+			t.Errorf("%s did not open ticked", ty.Name)
+		}
+	}
+	// esc closes it outright — nothing was filed, so nothing asks.
+	if got := send(t, open, special(tea.KeyEsc)); got.book.open || got.mode == ModeBook {
+		t.Error("esc left the line open")
+	}
+	// And so does ✕.
+	x := open
+	for x.book.field != x.bookXField() {
+		x = send(t, x, special(tea.KeyTab))
+	}
+	if got := send(t, x, special(tea.KeyEnter)); got.book.open {
+		t.Error("✕ left the line open")
+	}
+}
+
+// The scope is a dropdown and nothing more: j, k and space step it, the way they step every
+// other dropdown, and it has no letter of its own — t and c mean the tasks tab and a leave
+// filter everywhere else in the app.
+func TestBookMealScopeCycles(t *testing.T) {
+	m := send(t, mealMenuModel(t, 120, 34), runes("b"))
+	if m.book.scope != scopeToday {
+		t.Fatalf("the line opens on scope %d, want today", m.book.scope)
+	}
+	for i, want := range []struct {
+		scope int
+		label string
+	}{
+		{scopeTomorrow, "tomorrow"}, {scopeWeek, "week"}, {scopeCustom, "custom"},
+		{scopeToday, "today"},
+	} {
+		m = send(t, m, runes("j"))
+		if m.book.scope != want.scope {
+			t.Errorf("step %d landed on scope %d, want %d", i+1, m.book.scope, want.scope)
+		}
+		if row := bookRowLine(t, m); !strings.Contains(row, want.label) {
+			t.Errorf("step %d does not read %q:\n%s", i+1, want.label, row)
+		}
+	}
+	if back := send(t, m, runes("k")); back.book.scope != scopeCustom {
+		t.Errorf("k stepped to scope %d, want custom", back.book.scope)
+	}
+	// The letters are gone: neither the row nor the footer advertises one, and pressing them
+	// does not move the scope.
+	for _, k := range []string{".", "t", "w", "c"} {
+		if got := send(t, m, runes(k)); got.book.scope != m.book.scope {
+			t.Errorf("%q still steps the scope", k)
+		}
+	}
+	if row := bookRowLine(t, send(t, m, runes("j"))); strings.Contains(row, ".today") {
+		t.Errorf("the row still hints a key:\n%s", row)
+	}
+
+	// Custom brings the two dates with it, and nothing else does.
+	custom := m
+	for custom.book.scope != scopeCustom {
+		custom = send(t, custom, runes("j"))
+	}
+	if from, _ := custom.bookDateFields(); from < 0 {
+		t.Error("custom has no date fields")
+	}
+	if from, _ := send(t, custom, runes("j")).bookDateFields(); from >= 0 {
+		t.Error("the scope after custom is showing date fields")
+	}
+	// tab from the last date lands on ✓: the meals are their own letters, so a stop on each
+	// tick would do nothing the letter does not.
+	tabbed := send(t, custom, special(tea.KeyTab), special(tea.KeyTab), special(tea.KeyTab))
+	if tabbed.book.field != tabbed.bookOKField() {
+		t.Errorf("three tabs from the scope landed on field %d, want ✓ at %d",
+			tabbed.book.field, tabbed.bookOKField())
+	}
+	if got := custom.bookFieldCount(); got != 5 {
+		t.Errorf("the custom line has %d fields, want scope, two dates, ✓ and ✕", got)
+	}
+
+	// A cursor on the last field survives losing the two date fields.
+	deep := custom
+	for deep.book.field != deep.bookXField() {
+		deep = send(t, deep, special(tea.KeyTab))
+	}
+	if got := send(t, deep, runes("j")); got.book.field >= got.bookFieldCount() {
+		t.Errorf("the cursor is on field %d of %d", got.book.field, got.bookFieldCount())
+	}
+}
+
+// A meal's own initial ticks it, and the days a scope covers skip what the canteen is shut on.
+func TestBookMealTicksAndDays(t *testing.T) {
+	m := send(t, mealMenuModel(t, 120, 34), runes("b"))
+
+	off := send(t, m, runes("l"))
+	if off.book.on[1] {
+		t.Error("l did not untick lunch")
+	}
+	if again := send(t, off, runes("l")); !again.book.on[1] {
+		t.Error("l did not tick lunch back on")
+	}
+	if got := send(t, m, runes("b")); got.book.on[2] {
+		t.Error("b did not untick breakfast")
+	}
+
+	// today is one day, and the week is the seven ahead minus the closed ones.
+	if got := len(m.bookDays()); got != 1 && !m.mealClosed[time.Now().Format("2006-01-02")] {
+		t.Errorf("today covers %d days", got)
+	}
+	week := m
+	for week.book.scope != scopeWeek {
+		week = send(t, week, runes("j"))
+	}
+	days := week.bookDays()
+	if len(days) == 0 || len(days) > 7 {
+		t.Fatalf("the week covers %d days", len(days))
+	}
+	for _, d := range days {
+		if week.mealClosed[d] {
+			t.Errorf("%s is closed and still in the range", d)
+		}
+		if d < time.Now().Format("2006-01-02") {
+			t.Errorf("%s is in the past", d)
+		}
+	}
+}
+
+// enter on ✓ books what is ticked, with no modal: a booking is reversible — x cancels the day
+// — so a prompt in front of every meal costs more than the mistake.
+func TestBookMealSends(t *testing.T) {
+	m := send(t, mealMenuModel(t, 120, 34), runes("b"), runes("w"))
+	ok := m
+	for ok.book.field != ok.bookOKField() {
+		ok = send(t, ok, special(tea.KeyTab))
+	}
+	ask := send(t, ok, special(tea.KeyEnter))
+	if ask.mode != ModeConfirm || ask.cKind != confirmBookMeals {
+		t.Fatalf("enter on ✓ did not ask: mode %v, kind %v", ask.mode, ask.cKind)
+	}
+	// The prompt states what it is about to book — the days and the meals, not "are you sure".
+	prompt := plain(ask.View())
+	for _, want := range []string{"Book ", "breakfast", "lunch", "snacks"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt does not name %q:\n%s", want, prompt)
+		}
+	}
+	// n comes back to the line with everything still on it.
+	if no := send(t, ask, runes("n")); no.mode != ModeBook || !no.book.open {
+		t.Errorf("n left the line: mode %v, open %v", no.mode, no.book.open)
+	}
+	sent, cmd := sendCmd(t, ask, runes("y"))
+	if cmd == nil || !sent.booking {
+		t.Fatalf("y did not book: booking = %v", sent.booking)
+	}
+	if !strings.Contains(sent.status, "booking") {
+		t.Errorf("status = %q", sent.status)
+	}
+
+	// The answer closes the line and re-reads the month: what was booked is on the calendar.
+	done, cmd := sendCmd(t, sent, api.MealBookedMsg{Booked: 6})
+	if done.book.open || done.mode == ModeBook {
+		t.Error("a booked line stayed open")
+	}
+	if cmd == nil || !done.mealLoading {
+		t.Error("a finished booking did not re-read the month")
+	}
+	if !strings.Contains(done.status, "booked 6 meals") {
+		t.Errorf("status = %q", done.status)
+	}
+	// What the ERP refused is said in its own words, since it is usually a rule this screen
+	// cannot see — a cutoff that passed while the line was open.
+	part := send(t, sent, api.MealBookedMsg{Booked: 2, Skipped: 1, Why: "Booking is closed"})
+	if !strings.Contains(part.status, "1 refused: Booking is closed") {
+		t.Errorf("status = %q", part.status)
+	}
+
+	// Nothing ticked is refused before the round trip, and so is a range with no open day.
+	bare := m
+	for _, ty := range bare.mealTypes {
+		bare.book.on[ty.ID] = false
+	}
+	for bare.book.field != bare.bookOKField() {
+		bare = send(t, bare, special(tea.KeyTab))
+	}
+	if got, cmd := sendCmd(t, bare, special(tea.KeyEnter)); cmd != nil || got.mode == ModeConfirm {
+		t.Error("a line with no meal ticked asked to be booked")
+	} else if !strings.Contains(got.status, "tick a meal first") {
+		t.Errorf("status = %q", got.status)
+	}
+}
+
+// c opens the cancel line — the same fields, the opposite verb — and only one of the two is
+// ever on the row: the other's label stays but goes dim, key and all.
+func TestCancelMealLine(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	m := mealMenuModel(t, 120, 34)
+	// Closed, both labels are there with their keys in the accent.
+	closed := strings.Join(m.bookBand(), "\n")
+	for _, want := range []string{theme.HintKey.Render("b"), theme.HintKey.Render("c")} {
+		if !strings.Contains(closed, want) {
+			t.Errorf("the closed row is missing an accented key")
+		}
+	}
+	if got := plain(closed); !strings.Contains(got, "book meal") ||
+		!strings.Contains(got, "cancel meal") {
+		t.Errorf("the closed row does not carry both labels:\n%s", got)
+	}
+
+	drop := send(t, m, runes("c"))
+	if drop.mode != ModeBook || !drop.book.open || !drop.book.drop {
+		t.Fatalf("c did not open the cancel line: open %v, drop %v",
+			drop.book.open, drop.book.drop)
+	}
+	if row := bookRowLine(t, drop); !strings.Contains(row, "cancel meal") {
+		t.Errorf("the row does not say what it does:\n%s", row)
+	}
+	if !strings.Contains(plain(drop.footer()), "-- CANCEL MEAL --") {
+		t.Errorf("the mode line does not name the verb:\n%s", plain(drop.footer()))
+	}
+	// The other verb's key is dim while this line is open: it does nothing until esc.
+	if band := strings.Join(drop.bookBand(), "\n"); strings.Contains(band,
+		theme.HintKey.Render("c")) {
+		t.Error("the open line's own key is still advertised")
+	}
+	// b is breakfast here, not a way back — one key, one job. With nothing booked today it is
+	// disabled instead, and says so rather than moving a tick that could not act.
+	if got := send(t, drop, runes("b")); !got.book.drop {
+		t.Error("b on the cancel line switched the verb")
+	} else if !strings.Contains(got.status, "no breakfast booked") {
+		t.Errorf("status = %q", got.status)
+	}
+
+	// ✓ refuses a scope with nothing of yours in it.
+	ok := drop
+	for ok.book.field != ok.bookOKField() {
+		ok = send(t, ok, special(tea.KeyTab))
+	}
+	if empty := send(t, ok, special(tea.KeyEnter)); empty.mode == ModeConfirm {
+		t.Error("✓ asked about a day with nothing of yours on it")
+	}
+
+	// With a booking on today, the line opens with that meal ticked and ✓ asks — y only.
+	held := m
+	held.mealBookings = append(held.mealBookings, api.MealBooking{ID: 900,
+		Date: time.Now().Format("2006-01-02"), TypeID: 2, Type: "Breakfast"})
+	held = send(t, held, runes("c"))
+	if !held.book.on[2] {
+		t.Error("the cancel line did not tick the meal it could cancel")
+	}
+	// A tick change does not reach the model it was copied from.
+	if off := send(t, held, runes("b")); off.book.on[2] || !held.book.on[2] {
+		t.Errorf("tick after b = %v, original = %v", off.book.on[2], held.book.on[2])
+	}
+	for held.book.field != held.bookOKField() {
+		held = send(t, held, special(tea.KeyTab))
+	}
+	ask := send(t, held, special(tea.KeyEnter))
+	if ask.mode != ModeConfirm || ask.cKind != confirmDropForm {
+		t.Fatalf("✓ did not ask: mode %v, kind %v", ask.mode, ask.cKind)
+	}
+	if !strings.Contains(plain(ask.View()), "Cancel 1 meal?") {
+		t.Errorf("the prompt does not say what goes:\n%s", ask.cPrompt)
+	}
+	if still, cmd := sendCmd(t, ask, special(tea.KeyEnter)); cmd != nil || still.mealCancelling {
+		t.Error("enter fired the cancellation, want y only")
+	}
+	sent, cmd := sendCmd(t, ask, runes("y"))
+	if cmd == nil || !sent.mealCancelling {
+		t.Fatal("y did not send the cancellation")
+	}
+	// The answer closes the line and re-reads the month.
+	done, cmd := sendCmd(t, sent, api.MealsDeletedMsg{Date: time.Now().Format("2006-01-02"), N: 1})
+	if done.book.open || cmd == nil || !done.mealLoading {
+		t.Errorf("open %v, loading %v", done.book.open, done.mealLoading)
+	}
+	if !strings.Contains(done.status, "cancelled 1 meal") {
+		t.Errorf("status = %q", done.status)
+	}
+}
+
+// The cancel line previews the day as it will be: a ticked meal that is booked comes off the
+// calendar, and one left unticked keeps its own colour, because it is staying.
+func TestCancelMealPreviewsTheDay(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	day := mealSoon()
+	if day == "" {
+		t.Skip("no working day left in this month to book on")
+	}
+	m := mealMenuModel(t, 120, 34)
+	for i, ty := range m.mealTypes {
+		m.mealBookings = append(m.mealBookings, api.MealBooking{ID: 900 + i, Date: day,
+			TypeID: ty.ID, Type: ty.Name})
+	}
+
+	c := send(t, m, runes("c"))
+	for i := 0; !c.bookCovers(day) && i <= scopeCount; i++ {
+		c = send(t, c, runes("j")) // walk the scope until it covers that day
+	}
+	if !c.bookCovers(day) {
+		t.Fatalf("no scope covers %s", day)
+	}
+
+	slot := theme.MealSlot.Render("──")
+	lunch := theme.MealBooked(theme.MealColor("Lunch")).Render("━━")
+	breakfast := theme.MealBooked(theme.MealColor("Breakfast")).Render("━━")
+
+	// Everything ticked: the day empties.
+	all := c.bookBar(day, m.mealCell(mealGap), mealGap)
+	if strings.Contains(all, lunch) || strings.Contains(all, breakfast) {
+		t.Errorf("a fully ticked day still draws its meals: %q", plain(all))
+	}
+	if got := strings.Count(all, slot); got != len(m.mealTypes) {
+		t.Errorf("%d open slots, want %d", got, len(m.mealTypes))
+	}
+
+	// Only lunch ticked: lunch goes, the other two stay in their own colours.
+	one := send(t, c, runes("b"), runes("s")) // untick breakfast and snacks
+	bar := one.bookBar(day, m.mealCell(mealGap), mealGap)
+	if strings.Contains(bar, lunch) {
+		t.Errorf("lunch is ticked and still on the day: %q", plain(bar))
+	}
+	if !strings.Contains(bar, breakfast) {
+		t.Errorf("breakfast is not ticked and came off the day: %q", plain(bar))
+	}
+	if got := strings.Count(bar, slot); got != 1 {
+		t.Errorf("%d open slots, want just the lunch one", got)
+	}
+}
+
+// A meal with nothing to cancel in the chosen scope is disabled: its tick is dim, its letter
+// carries no accent, and pressing it says why rather than moving a tick that cannot act.
+func TestCancelMealDisablesEmptyTicks(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	day := mealSoon()
+	if day == "" {
+		t.Skip("no working day left in this month")
+	}
+	m := mealMenuModel(t, 120, 34)
+	// Lunch alone, on one day ahead.
+	m.mealBookings = append(m.mealBookings, api.MealBooking{ID: 900, Date: day,
+		TypeID: 1, Type: "Lunch"})
+
+	c := send(t, m, runes("c"))
+	for i := 0; !c.bookCovers(day) && i <= scopeCount; i++ {
+		c = send(t, c, runes("j")) // a scope wide enough to reach that day
+	}
+	if !c.dropAvailable(1) {
+		t.Fatalf("lunch is booked on %s and reads as unavailable", day)
+	}
+	for _, id := range []int{2, 6} {
+		if c.dropAvailable(id) {
+			t.Errorf("meal %d has nothing booked and reads as available", id)
+		}
+	}
+	// Only what can be cancelled is ticked, and the scope walk keeps that true.
+	if !c.book.on[1] || c.book.on[2] || c.book.on[6] {
+		t.Errorf("ticks = %v, want lunch alone", c.book.on)
+	}
+	// The disabled ones say so and take no accent.
+	band := strings.Join(c.bookBand(), "\n")
+	if !strings.Contains(plain(band), "breakfast  none") {
+		t.Errorf("a disabled tick does not say it has nothing:\n%s", plain(band))
+	}
+	if strings.Contains(band, theme.HintKey.Render("b")) {
+		t.Error("a disabled tick still advertises its letter in the accent")
+	}
+	if !strings.Contains(band, theme.HintKey.Render("l")) {
+		t.Error("lunch can be cancelled and its letter is not in the accent")
+	}
+	// And its key does nothing but explain itself.
+	if got := send(t, c, runes("s")); got.book.on[6] {
+		t.Error("a disabled tick toggled")
+	} else if !strings.Contains(got.status, "no snacks booked") {
+		t.Errorf("status = %q", got.status)
+	}
+}
+
 // mealModel is the tab open with one month of meals on it.
 func mealModel(t *testing.T, width, height int) Model {
 	t.Helper()
@@ -372,9 +774,12 @@ func TestMealMenuPanel(t *testing.T) {
 	if !strings.Contains(v, "MENU · week of "+m.mealWeekStart().Format("2 Jan")) {
 		t.Fatalf("no menu panel on a 120-cell terminal:\n%s", v)
 	}
+	// The panel's own lines: the body cuts the tail of a long week with "… N more", so what is
+	// on screen depends on the terminal's height rather than on the panel being right.
+	column := plain(strings.Join(m.mealMenuPanel(), "\n"))
 	for _, want := range []string{"paratha, omlet, mug dal", "chatpati", "faluda"} {
-		if !strings.Contains(v, want) {
-			t.Errorf("the panel is missing %q:\n%s", want, v)
+		if !strings.Contains(column, want) {
+			t.Errorf("the panel is missing %q:\n%s", want, column)
 		}
 	}
 	// Today's heading is the accent, and it says so; no other day's is.
@@ -382,7 +787,7 @@ func TestMealMenuPanel(t *testing.T) {
 	if !strings.Contains(v, today) {
 		t.Errorf("the panel does not mark today (%q):\n%s", today, v)
 	}
-	styled := m.View()
+	styled := strings.Join(m.mealMenuPanel(), "\n")
 	if !strings.Contains(styled, theme.HintKey.Render(today)) {
 		t.Errorf("today's weekday is not in the accent")
 	}
@@ -528,4 +933,82 @@ func TestMealPanelFitsUnshapedText(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The days a booking would cover are marked on the calendar as the range is typed, and a range
+// that runs into the next month brings that month onto the screen with it.
+func TestBookMealRangeShowsOnTheCalendar(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	// A range from the 28th into the next month, typed the way the keys do it.
+	m := bookCustom(t, mealMenuModel(t, 160, 40))
+	m = send(t, m, special(tea.KeyTab), runes("28"), special(tea.KeyTab), runes("3/9"),
+		special(tea.KeyTab))
+
+	days := m.bookDays()
+	if len(days) == 0 {
+		t.Fatal("the range covers no day")
+	}
+	if !m.bookCovers(days[0]) {
+		t.Errorf("%s is in the range and not marked", days[0])
+	}
+	// Marked in the accent, the same mark a date jump leaves.
+	grid, _ := m.mealLines()
+	first, _ := time.Parse("2006-01-02", days[0])
+	if want := theme.Match.Render(pad(strconv.Itoa(first.Day()), 2)); !strings.Contains(
+		strings.Join(grid, "\n"), want) {
+		t.Error("no accent mark on a day the range covers")
+	}
+
+	// Both months are on screen, side by side on a terminal this wide.
+	next := time.Now().AddDate(0, 1, 0)
+	if v := plain(m.View()); !strings.Contains(v, strings.ToUpper(next.Format("January 2006"))) {
+		t.Errorf("the month the range runs into is not on screen:\n%s", v)
+	}
+	if !m.mealTwoUp() {
+		t.Error("160 cells does not fit two months")
+	}
+	// Narrow, they stack instead, and the menu column gives up its cells first.
+	tight := bookCustom(t, mealMenuModel(t, 100, 40))
+	tight = send(t, tight, special(tea.KeyTab), runes("28"), special(tea.KeyTab), runes("3/9"),
+		special(tea.KeyTab))
+	if tight.mealTwoUp() {
+		t.Error("100 cells claims to fit two months")
+	}
+	if v := plain(tight.View()); !strings.Contains(v, strings.ToUpper(next.Format("January 2006"))) {
+		t.Errorf("the stacked month is missing:\n%s", v)
+	}
+	// Closing the line takes the second month with it.
+	if v := plain(send(t, m, special(tea.KeyEsc)).View()); strings.Contains(v,
+		strings.ToUpper(next.Format("January 2006"))) {
+		t.Error("the second month outlived the line that brought it")
+	}
+}
+
+// bookCustom opens the booking line and steps its dropdown to the custom scope, the way the
+// keys do it now that the scopes have no letters of their own.
+func bookCustom(t *testing.T, m Model) Model {
+	t.Helper()
+	m = send(t, m, runes("b"))
+	for i := 0; m.book.scope != scopeCustom; i++ {
+		if i > scopeCount {
+			t.Fatalf("could not reach the custom scope, stuck on %d", m.book.scope)
+		}
+		m = send(t, m, runes("j"))
+	}
+	return m
+}
+
+// bookRowLine is the booking line's own row — the one with the dropdown on it — found by what
+// is on it rather than by its index, since the band grows a label line above or below it.
+func bookRowLine(t *testing.T, m Model) string {
+	t.Helper()
+	for _, l := range m.bookBand() {
+		if strings.Contains(plain(l), "▾") {
+			return plain(l)
+		}
+	}
+	return ""
 }

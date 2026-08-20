@@ -30,6 +30,9 @@ const (
 	ModeDay
 	// ModeLeaves is the month's own time off, listed in a modal over the calendar.
 	ModeLeaves
+	// ModeBook is the book-meal line under the meal calendar. It owns every key while it is
+	// open, the way the new-timeoff line does: t means tomorrow there, not the tasks tab.
+	ModeBook
 	ModeConfirm
 	ModeAuth
 	ModeForm // the new-timeoff line on TabTime
@@ -71,6 +74,8 @@ const (
 	confirmApplyLeave
 	confirmDropLeave
 	confirmDropMeals
+	confirmBookMeals
+	confirmDropForm
 )
 
 // The new-timeoff line's fields, in tab order. leaveTo is the range's end on a full day and
@@ -99,6 +104,37 @@ type leaveForm struct {
 	// first keystroke replaces it rather than appending to it.
 	from, to, desc textinput.Model
 	fresh          [2]bool
+}
+
+// The book-meal line's scopes, in the order the dropdown cycles them. No letter of their own:
+// `t` and `c` are the tasks tab and a leave filter everywhere else in the app, and a line that
+// quietly took them back for one screen is a key meaning two things. j/k and space step this
+// dropdown, the way they step every other one.
+const (
+	scopeToday = iota
+	scopeTomorrow
+	scopeWeek
+	scopeCustom
+	scopeCount
+)
+
+// mealForm is the book-meal line: which days, which meals, and the two buttons. One struct,
+// so closing it is one assignment and nothing half-typed outlives the line.
+//
+// on is keyed by serp.meal.type id rather than by index: the types come from the ERP, and a
+// tick that survived a re-read into a different order would book the wrong meal.
+type mealForm struct {
+	open bool
+	// drop is the cancel line rather than the book one: the same fields, the opposite verb.
+	// One struct for both, since a row that can only hold one of them cannot hold two states.
+	drop  bool
+	field int
+	scope int
+	// from and to are dd/mm/yy text fields, used by the custom scope alone; fresh marks one
+	// whose value is selected, so the first keystroke replaces it.
+	from, to textinput.Model
+	fresh    [2]bool
+	on       map[int]bool
 }
 
 // Insert-mode focus positions.
@@ -216,6 +252,10 @@ type Model struct {
 	// calendar this screen has something to do to a day — x cancels its meals — so it needs
 	// to say which one.
 	mealHold int
+	// book is the book-meal line. Closed, it is a label and nothing else.
+	book mealForm
+	// booking is a batch of creates in flight.
+	booking bool
 	// mealCancelling is an unlink in flight.
 	mealCancelling bool
 	// mealWanted is the meal calendar waiting on the login, exactly as dashWanted and
@@ -346,7 +386,7 @@ func clockTick() tea.Cmd {
 // time off (applying), a check in or out (clocking), or a task's lines.
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
-		m.mealCancelling || m.clocking || len(m.pulling) > 0
+		m.mealCancelling || m.booking || m.clocking || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -538,9 +578,47 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "the ERP kept " + mealDayLabel(msg.Date) + ": " + oneLine(msg.Err.Error())
 			return m, nil
 		}
-		m.status = fmt.Sprintf("cancelled %d meals on %s", msg.N, mealDayLabel(msg.Date))
+		if m.book.open && m.book.drop {
+			// What went is off the calendar behind it, which is a better answer than a form
+			// still asking the same question.
+			m.book = mealForm{}
+			if m.mode == ModeBook {
+				m.mode = ModeList
+			}
+		}
+		m.status = fmt.Sprintf("cancelled %d %s", msg.N, plural(msg.N, "meal", "meals"))
 		// Re-read rather than dropping the rows here: someone else can book or cancel for
 		// you in the web client, so the month is only ever what the ERP says it is.
+		return m.loadMeal()
+
+	case api.MealBookedMsg:
+		m.booking = false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.err = msg.Err
+			m.status = "nothing was booked: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// The line closes on anything the ERP took: what it booked is on the calendar behind
+		// it, which is a better answer than a form still asking the same question.
+		if msg.Booked > 0 {
+			m.book = mealForm{}
+			if m.mode == ModeBook {
+				m.mode = ModeList
+			}
+		}
+		m.status = fmt.Sprintf("booked %d %s", msg.Booked,
+			plural(msg.Booked, "meal", "meals"))
+		if msg.Skipped > 0 {
+			// Whatever the ERP said about the ones it would not take, verbatim: it is usually
+			// a rule this screen cannot see — a cutoff that passed while the line was open.
+			m.status += fmt.Sprintf(", %d refused: %s", msg.Skipped, msg.Why)
+		}
+		// Re-read rather than adding the rows here: someone else can book for you in the web
+		// client, so the month is only ever what the ERP says it is.
 		return m.loadMeal()
 
 	case api.LeaveRequestedMsg:
@@ -732,7 +810,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// matched first and that tab loses the shortcut. Only that tab — everywhere else
 		// the key is still the tab it always was.
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
-			m.mode != ModeAuth && m.mode != ModeForm && !claims(m.tab, msg) {
+			m.mode != ModeAuth && m.mode != ModeForm && m.mode != ModeBook &&
+			!claims(m.tab, msg) {
 			switch {
 			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
@@ -760,6 +839,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// handlers, or h/l would walk the months behind a list that says which month it is.
 		if m.mode == ModeLeaves {
 			return m.updateLeaves(msg)
+		}
+		// The book-meal line owns the keyboard while it is open: its scope keys are t, w and
+		// c, which are the tasks tab, nothing, and a leave filter everywhere else.
+		if m.mode == ModeBook {
+			return m.updateBook(msg)
 		}
 		if m.mode != ModeAuth {
 			switch m.tab {
@@ -2524,6 +2608,12 @@ func (m Model) updateMeal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.k().HalfUp):
 		return m.holdMeal(m.mealCursor() - 7), nil
 
+	case key.Matches(msg, m.k().BookMeal):
+		return m.openBookMeal()
+
+	case key.Matches(msg, m.k().DropMeal):
+		return m.openDropMeal()
+
 	case key.Matches(msg, m.k().Delete):
 		return m.askCancelMeals()
 
@@ -2662,10 +2752,12 @@ func (m Model) askCancelMeals() (tea.Model, tea.Cmd) {
 
 	m.prev, m.mode = m.mode, ModeConfirm
 	m.cKind = confirmDropMeals
-	m.cPrompt = fmt.Sprintf("Cancel %d meals on %s?\n\n%s",
-		len(names), mealDayLabel(day), strings.Join(names, " · "))
+	// "Clear", not "cancel": c cancels the meals it is told to over the days it is given, and
+	// this takes the cursor's day whole — the prompt should say which of the two is happening.
+	m.cPrompt = fmt.Sprintf("Clear %s?\n\n%d %s: %s", mealDayLabel(day),
+		len(names), plural(len(names), "meal", "meals"), strings.Join(names, " · "))
 	if len(names) == 1 {
-		m.cPrompt = fmt.Sprintf("Cancel %s on %s?", names[0], mealDayLabel(day))
+		m.cPrompt = fmt.Sprintf("Clear %s on %s?", names[0], mealDayLabel(day))
 	}
 	return m, nil
 }
@@ -2700,6 +2792,502 @@ func mealDayLabel(iso string) string {
 	return t.Format("Mon 2 Jan")
 }
 
+// --- the book-meal line ------------------------------------------------------
+
+// bookFieldCount is how many fields the line has: the scope, the two dates when the scope is
+// custom, then ✓ and ✕.
+//
+// The ticks are **not** among them. Each meal is toggled by its own initial — b, l, s — so
+// tabbing onto one would be a stop that does nothing the letter does not already do, and tab
+// from the last date lands where the booking is actually pressed.
+func (m Model) bookFieldCount() int {
+	n := 1 + 2
+	if m.book.scope == scopeCustom {
+		n += 2
+	}
+	return n
+}
+
+// The scope is always the first field; the rest is laid out around what it chose.
+const bookScopeField = 0
+
+// bookDateFields is where the two date fields sit, or -1 when the scope has no dates.
+func (m Model) bookDateFields() (from, to int) {
+	if m.book.scope != scopeCustom {
+		return -1, -1
+	}
+	return 1, 2
+}
+
+func (m Model) bookOKField() int { return m.bookFieldCount() - 2 }
+func (m Model) bookXField() int  { return m.bookFieldCount() - 1 }
+
+// openBookMeal reveals the line's fields and focuses the scope, which is the first thing a
+// booking has to say. The label was on screen all along and the row does not move, so nothing
+// below it shifts.
+func (m Model) openBookMeal() (tea.Model, tea.Cmd) { return m.openMealForm(false) }
+
+// openDropMeal is the same line with the opposite verb: `c` cancels what `b` books, over a
+// scope and a set of meals chosen the same way.
+func (m Model) openDropMeal() (tea.Model, tea.Cmd) { return m.openMealForm(true) }
+
+// openMealForm reveals the line's fields and focuses the scope. Opening either one **replaces**
+// whatever was there: the row holds one line, so `b` while cancelling turns it into a booking
+// rather than leaving two verbs on screen with one ✓ between them.
+func (m Model) openMealForm(drop bool) (tea.Model, tea.Cmd) {
+	if len(m.mealTypes) == 0 {
+		// Without the types there is nothing to book, and inventing them locally would be a
+		// tick that books nothing.
+		m.status = "no meal types yet — r to read this month"
+		return m, nil
+	}
+	f := mealForm{open: true, drop: drop, field: bookScopeField, on: map[int]bool{}}
+	for _, in := range []*textinput.Model{&f.from, &f.to} {
+		*in = textinput.New()
+		in.Prompt = ""
+		in.Placeholder = "dd/mm/yy"
+		in.Width = fieldWidth(dateWidth)
+		in.CharLimit = 8
+	}
+	// Today in both, which is the day you are most likely booking, and it makes the dates
+	// mean something the moment the scope turns to custom.
+	f.from.SetValue(parse.Today())
+	f.to.SetValue(parse.Today())
+	f.fresh = [2]bool{true, true}
+	// Every meal ticked: booking all of them is the common case, and unticking one is a
+	// keystroke where ticking three is three. On the cancel line only what is **there** to
+	// cancel is ticked, since the rest cannot be.
+	m.book, m.mode = f, ModeBook
+	for _, t := range m.mealTypes {
+		m.book.on[t.ID] = !drop || m.dropAvailable(t.ID)
+	}
+	m.err = nil
+	return m, textinput.Blink
+}
+
+// closeBookMeal takes the line back to its label. Nothing has been filed, so nothing asks:
+// the meals it would have booked are one `b` away again.
+func (m Model) closeBookMeal() (tea.Model, tea.Cmd) {
+	m.book = mealForm{}
+	m.mode, m.err = ModeList, nil
+	return m, nil
+}
+
+// updateBook is the book-meal line: tab through the fields, a letter for the scope, a meal's
+// own initial for its tick, enter on ✓ to book and on ✕ to close.
+func (m Model) updateBook(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Next):
+		return m.moveBookField(1), nil
+	case key.Matches(msg, m.k().Prev):
+		return m.moveBookField(-1), nil
+
+	case key.Matches(msg, m.k().Accept):
+		switch m.book.field {
+		case m.bookOKField():
+			if m.book.drop {
+				return m.askDropMeals()
+			}
+			return m.askBookMeals()
+		case m.bookXField():
+			return m.closeBookMeal()
+		default:
+			return m.moveBookField(1), nil
+		}
+
+	case key.Matches(msg, m.k().Cancel):
+		// esc closes it outright, as ✕ does: a booking that was never filed has nothing to
+		// lose, and asking about it would be a modal in front of two keystrokes of typing.
+		return m.closeBookMeal()
+
+	case key.Matches(msg, m.k().ClearField):
+		if in := m.bookInput(); in != nil {
+			in.SetValue("")
+			if i := m.bookDateIndex(); i >= 0 {
+				m.book.fresh[i] = false
+			}
+		}
+		return m, nil
+	}
+
+	// A meal's own initial ticks it — b, l, s here, off the ERP's own names, so an office
+	// that starts serving dinner gets d with nothing to edit.
+	if id, ok := m.mealByLetter(msg.String()); ok {
+		if m.book.drop && !m.dropAvailable(id) {
+			// Nothing of that meal to cancel in this scope, so the key does nothing and says
+			// so rather than moving a tick that could not act on anything.
+			m.status = "no " + strings.ToLower(firstWord(m.mealName(id))) +
+				" booked on those days"
+			return m, nil
+		}
+		// Copied before it is written: the model is a value everywhere else in this app, but a
+		// map inside it is a reference, so toggling in place reaches every copy that still
+		// holds the old form — including the one a test or an earlier frame kept.
+		m.book.on = ticksWith(m.book.on, id, !m.book.on[id])
+		return m, nil
+	}
+	// No switching between the two verbs while a line is open: b and l and s are the meals'
+	// own ticks here, and b meaning breakfast on one line and "start booking instead" on the
+	// other is a key with two jobs. esc closes the row, and then b or c opens the one you
+	// want.
+	// space and j/k cycle the scope: a dropdown is a button as much as it is a list, and this
+	// is the only dropdown on the line, so they mean it wherever the cursor is.
+	if key.Matches(msg, m.k().Cycle) {
+		back := msg.String() == "k" || msg.String() == "up"
+		if back {
+			m.book.scope = (m.book.scope - 1 + scopeCount) % scopeCount
+		} else {
+			m.book.scope = (m.book.scope + 1) % scopeCount
+		}
+		return m.retickForScope().clampBookField(), nil
+	}
+
+	in := m.bookInput()
+	if in == nil {
+		return m, nil
+	}
+	// A date field opens with its value selected: the first thing typed replaces it whole.
+	if i := m.bookDateIndex(); i >= 0 && m.book.fresh[i] && msg.Type == tea.KeyRunes {
+		in.SetValue("")
+		m.book.fresh[i] = false
+	}
+	var cmd tea.Cmd
+	*in, cmd = in.Update(msg)
+	// A typed date changes which days the scope covers, so on the cancel line it changes what
+	// is there to cancel.
+	return m.retickForScope(), cmd
+}
+
+// mealName is a meal type's name by id, for the sentences that have to name one.
+func (m Model) mealName(id int) string {
+	for _, t := range m.mealTypes {
+		if t.ID == id {
+			return t.Name
+		}
+	}
+	return "meal"
+}
+
+// ticksWith is the tick map with one meal changed, as a new map: see the note where it is
+// called — the form is copied by value and the map inside it is not.
+func ticksWith(on map[int]bool, id int, want bool) map[int]bool {
+	out := make(map[int]bool, len(on)+1)
+	for k, v := range on {
+		out[k] = v
+	}
+	out[id] = want
+	return out
+}
+
+// moveBookField normalizes the date being left — dates are rewritten on exit, never per
+// keystroke — and focuses the next field, wrapping.
+func (m Model) moveBookField(by int) Model {
+	m.normalizeBookDates()
+	n := m.bookFieldCount()
+	m.book.field = (m.book.field + by + n) % n
+	for _, in := range []*textinput.Model{&m.book.from, &m.book.to} {
+		in.Blur()
+	}
+	if in := m.bookInput(); in != nil {
+		in.Focus()
+	}
+	if i := m.bookDateIndex(); i >= 0 {
+		m.book.fresh[i] = true // freshly focused: the value is selected
+	}
+	return m
+}
+
+// retickForScope re-derives the cancel line's ticks after the days change: a new scope is a
+// new set of bookings, so what is there to cancel is a different question — and a tick left
+// behind on a meal the scope no longer holds would be a tick that cannot act. The booking line
+// keeps whatever was ticked, since every meal is bookable on every open day.
+func (m Model) retickForScope() Model {
+	if !m.book.drop {
+		return m
+	}
+	on := make(map[int]bool, len(m.mealTypes))
+	for _, t := range m.mealTypes {
+		on[t.ID] = m.dropAvailable(t.ID)
+	}
+	m.book.on = on
+	return m
+}
+
+// clampBookField keeps the cursor on a field that still exists: turning custom off takes two
+// fields away, and a cursor left past the end would land on nothing.
+func (m Model) clampBookField() Model {
+	if n := m.bookFieldCount(); m.book.field >= n {
+		m.book.field = n - 1
+	}
+	return m
+}
+
+// bookInput is the text field the cursor is in, or nil on the scope, a tick or a button.
+func (m *Model) bookInput() *textinput.Model {
+	from, to := m.bookDateFields()
+	switch m.book.field {
+	case from:
+		return &m.book.from
+	case to:
+		return &m.book.to
+	}
+	return nil
+}
+
+// bookDateIndex is which of the two date fields has the cursor, or -1.
+func (m Model) bookDateIndex() int {
+	from, to := m.bookDateFields()
+	switch m.book.field {
+	case from:
+		return 0
+	case to:
+		return 1
+	}
+	return -1
+}
+
+// mealByLetter is the id of the first meal type whose name starts with s, the same match the
+// leave filters make on their own types.
+func (m Model) mealByLetter(s string) (int, bool) {
+	if len([]rune(s)) != 1 {
+		return 0, false
+	}
+	for _, t := range m.mealTypes {
+		if strings.HasPrefix(strings.ToLower(t.Name), strings.ToLower(s)) {
+			return t.ID, true
+		}
+	}
+	return 0, false
+}
+
+// normalizeBookDates rewrites a date field as it is left, and drags the end along when the
+// start passes it — a range that reads backwards would book the days between.
+func (m *Model) normalizeBookDates() {
+	from, to := m.bookDateFields()
+	switch m.book.field {
+	case from:
+		if d, err := parse.Date(m.book.from.Value(), parse.Today()); err == nil {
+			m.book.from.SetValue(d)
+			if before(d, m.book.to.Value()) {
+				m.book.to.SetValue(d)
+			}
+			m.err = nil
+		} else {
+			m.err = err
+		}
+	case to:
+		if d, err := parse.Date(m.book.to.Value(), m.book.from.Value()); err == nil {
+			m.book.to.SetValue(d)
+			m.err = nil
+		} else {
+			m.err = err
+		}
+	}
+}
+
+// bookDays is the days the line would book, in order: what the scope says, minus the days the
+// canteen is shut and the days already gone.
+//
+// The ERP refuses a past date and a day it serves nothing on, so both are dropped here rather
+// than sent to be refused one round trip later — the same rule the hour log follows.
+func (m Model) bookDays() []string {
+	today := time.Now()
+	first, last := today, today
+	switch m.book.scope {
+	case scopeTomorrow:
+		first = today.AddDate(0, 0, 1)
+		last = first
+	case scopeWeek:
+		// The week ahead, today included: a canteen books forward, and "this week" on a
+		// Friday would be one day.
+		last = today.AddDate(0, 0, 6)
+	case scopeCustom:
+		a, errA := time.Parse(parse.DateLayout, strings.TrimSpace(m.book.from.Value()))
+		b, errB := time.Parse(parse.DateLayout, strings.TrimSpace(m.book.to.Value()))
+		if errA != nil || errB != nil {
+			return nil
+		}
+		if b.Before(a) {
+			a, b = b, a // typed backwards is still a range
+		}
+		first, last = a, b
+	}
+
+	var out []string
+	for d := first; !d.After(last); d = d.AddDate(0, 0, 1) {
+		iso := d.Format("2006-01-02")
+		switch {
+		case iso < today.Format("2006-01-02"):
+			continue // the ERP takes no past date
+		case m.mealClosed[iso]:
+			continue // nothing is served, so there is nothing to book
+		case d.After(today.AddDate(0, 0, 30)):
+			continue // the ERP's own ceiling
+		}
+		out = append(out, iso)
+	}
+	return out
+}
+
+// bookTypes is the ticked meals, in the ERP's own order so the request reads the way the line
+// does.
+func (m Model) bookTypes() []int {
+	var out []int
+	for _, t := range m.mealTypes {
+		if m.book.on[t.ID] {
+			out = append(out, t.ID)
+		}
+	}
+	return out
+}
+
+// askBookMeals states what is about to be booked and waits for a y or an n.
+//
+// The refusals happen here, before the modal as well as before the round trip: a day with
+// nothing left to book is not worth a prompt. Days the ERP already holds are dropped the same
+// way, since it keeps one booking per meal per day.
+func (m Model) askBookMeals() (tea.Model, tea.Cmd) {
+	days, types := m.bookWanted()
+	switch {
+	case len(m.bookTypes()) == 0:
+		m.status = "tick a meal first"
+		return m, nil
+	case len(m.bookDays()) == 0:
+		m.status = "no day to book — the canteen is shut on those"
+		return m, nil
+	case len(days) == 0:
+		m.status = "already booked"
+		return m, nil
+	}
+
+	names := make([]string, 0, len(types))
+	for _, t := range m.mealTypes {
+		if m.book.on[t.ID] {
+			names = append(names, strings.ToLower(firstWord(t.Name)))
+		}
+	}
+	when := mealDayLabel(days[0])
+	if len(days) > 1 {
+		when = fmt.Sprintf("%s → %s  (%d days)", mealDayLabel(days[0]),
+			mealDayLabel(days[len(days)-1]), len(days))
+	}
+	m.prev, m.mode = m.mode, ModeConfirm
+	m.cKind = confirmBookMeals
+	m.cPrompt = fmt.Sprintf("Book %d %s?\n\n%s\n%s", len(names)*len(days),
+		plural(len(names)*len(days), "meal", "meals"), when, strings.Join(names, " · "))
+	return m, nil
+}
+
+// bookWanted is the days the request would actually create rows on, and the meals it would
+// create them for: the scope's days minus the ones already booked for every ticked meal.
+func (m Model) bookWanted() ([]string, []int) {
+	types := m.bookTypes()
+	var want []string
+	for _, day := range m.bookDays() {
+		on := m.mealsOn(day)
+		for _, t := range types {
+			if _, taken := on[t]; !taken {
+				want = append(want, day)
+				break
+			}
+		}
+	}
+	return want, types
+}
+
+// bookMeals sends the batch, once the modal has been answered.
+func (m Model) bookMeals() (Model, tea.Cmd) {
+	want, types := m.bookWanted()
+	if len(want) == 0 || len(types) == 0 {
+		m.status = "nothing left to book"
+		return m, nil
+	}
+
+	m.booking, m.err = true, nil
+	m.status = fmt.Sprintf("booking %d %s on %d %s…", len(types),
+		plural(len(types), "meal", "meals"), len(want), plural(len(want), "day", "days"))
+	return m, api.BookMeals(m.key, m.login, m.db, want, types)
+}
+
+// dropWanted is what the cancel line would unlink: the bookings on the scope's days for the
+// ticked meals, minus the ones the ERP has already locked — it refuses to change those, so
+// sending them would only collect refusals.
+func (m Model) dropWanted() (ids []int, days []string, names []string) {
+	types := m.bookTypes()
+	seen := map[string]bool{}
+	for _, day := range m.bookDays() {
+		on := m.mealsOn(day)
+		for _, t := range types {
+			b, held := on[t]
+			if !held || b.Locked {
+				continue
+			}
+			ids = append(ids, b.ID)
+			if !seen[day] {
+				seen[day], days = true, append(days, day)
+			}
+		}
+	}
+	for _, t := range m.mealTypes {
+		if m.book.on[t.ID] {
+			names = append(names, strings.ToLower(firstWord(t.Name)))
+		}
+	}
+	return ids, days, names
+}
+
+// dropAvailable says whether a meal has anything to cancel in the chosen scope: a booking of
+// that type, on one of those days, that the ERP has not locked. It is what greys the tick —
+// there is nothing for it to do, and a tick that cannot act on anything is a tick that lies.
+func (m Model) dropAvailable(id int) bool {
+	for _, day := range m.bookDays() {
+		if b, held := m.mealsOn(day)[id]; held && !b.Locked {
+			return true
+		}
+	}
+	return false
+}
+
+// askDropMeals states what is about to go and takes **y only**: an unlink cannot be undone,
+// which is the same rule x follows on a single day.
+func (m Model) askDropMeals() (tea.Model, tea.Cmd) {
+	ids, days, names := m.dropWanted()
+	switch {
+	case len(m.bookTypes()) == 0:
+		m.status = "tick a meal first"
+		return m, nil
+	case len(m.bookDays()) == 0:
+		m.status = "no day to cancel — the canteen is shut on those"
+		return m, nil
+	case len(ids) == 0:
+		m.status = "nothing of yours to cancel on those days"
+		return m, nil
+	}
+
+	when := mealDayLabel(days[0])
+	if len(days) > 1 {
+		when = fmt.Sprintf("%s → %s  (%d days)", mealDayLabel(days[0]),
+			mealDayLabel(days[len(days)-1]), len(days))
+	}
+	m.prev, m.mode = m.mode, ModeConfirm
+	m.cKind = confirmDropForm
+	m.cPrompt = fmt.Sprintf("Cancel %d %s?\n\n%s\n%s", len(ids),
+		plural(len(ids), "meal", "meals"), when, strings.Join(names, " · "))
+	return m, nil
+}
+
+// dropMeals sends the unlink, once the modal has been answered.
+func (m Model) dropMeals() (Model, tea.Cmd) {
+	ids, days, _ := m.dropWanted()
+	if len(ids) == 0 {
+		m.status = "nothing left to cancel"
+		return m, nil
+	}
+	m.mealCancelling, m.err = true, nil
+	m.status = fmt.Sprintf("cancelling %d %s…", len(ids), plural(len(ids), "meal", "meals"))
+	return m, api.CancelMeals(m.key, m.login, m.db, days[0], ids)
+}
+
 // --- confirm -----------------------------------------------------------------
 
 // confirmKeys is what accepts the open modal. Anything that destroys something —
@@ -2707,7 +3295,8 @@ func mealDayLabel(iso string) string {
 // Discarding an entry you are still typing keeps y or enter.
 func (m Model) confirmKeys() key.Binding {
 	switch m.cKind {
-	case confirmQuit, confirmDeleteRow, confirmCheckOut, confirmApplyLeave, confirmDropMeals:
+	case confirmQuit, confirmDeleteRow, confirmCheckOut, confirmApplyLeave, confirmDropMeals,
+		confirmDropForm:
 		return m.k().YesOnly
 	}
 	return m.k().Yes
@@ -2761,6 +3350,18 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = m.prev
 			return m.cancelMeals()
 
+		case confirmDropForm:
+			// Back to the line: a refused cancel is worth having the fields still on screen
+			// for, the same as a refused booking.
+			m.mode = ModeBook
+			return m.dropMeals()
+
+		case confirmBookMeals:
+			// Back to the line, which the answer closes if the ERP takes anything: a booking
+			// that was refused is worth having the fields still on screen for.
+			m.mode = ModeBook
+			return m.bookMeals()
+
 		case confirmDropLeave:
 			// Everything typed goes with the line, which is what the prompt asked about.
 			m.form = leaveForm{}
@@ -2791,6 +3392,8 @@ func modeLabel(m Mode) string {
 		return "-- DAY --"
 	case ModeLeaves:
 		return "-- TIME OFF --"
+	case ModeBook:
+		return "-- BOOK MEAL --"
 	case ModeConfirm:
 		return "-- CONFIRM --"
 	case ModeAuth:
