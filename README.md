@@ -1,8 +1,17 @@
 # tsk
 
-A keyboard-only timesheet client for the terminal. It lists the tasks assigned to you
-in Strativ's ERP360 (Odoo 16), expands each one into its timesheet lines, and logs,
-edits and deletes hours without leaving the keyboard.
+A keyboard-only client for Strativ's ERP360 (Odoo 16), in the terminal. Four screens, no
+browser and no mouse:
+
+- **Tasks** — the tasks assigned to you, each expanding into its timesheet lines. Log, edit
+  and delete hours; `/` takes a date — from the list it lists everything logged on that day
+  across every task, inside a task it walks the cursor to the rows that match.
+- **Dashboard** — hours logged per day this month against what was expected, and the ERP's own
+  attendance clock: check in and out from the same screen.
+- **Time off** — a year calendar of the days you took off, your leave balances, the public
+  holidays, and a one-line form that files a request the way the web UI does.
+- **Meals** — this month's meal bookings with the week's menu beside them; book today,
+  tomorrow, the week ahead or a range, and cancel the same way.
 
 ![tsk filtering 22 tasks down to three by typing "discuss" in the search field](screenshot.png)
 
@@ -56,7 +65,7 @@ binary, no CGO.
 - **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
   full or half day, the dates, why. The days light up on the calendar as you type them, and
   ✓ files the request with the ERP after showing you exactly what it is about to send.
-- **This month's canteen meals, booking and cancelling them.** `m` opens a month grid with one
+- **This month's meals, booking and cancelling them.** `m` opens a month grid with one
   bar per meal per day — amber breakfast, paprika lunch, green snacks — booked meals solid, open
   slots hueless, weekends and office holidays bare, and the week's menu pinned down the right.
   `b` books today, tomorrow, the week ahead or a range you type; `c` cancels the same way and
@@ -493,8 +502,8 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `write` / `unlink` | editing and deleting a line |
 | JSON-RPC `get_employee_hour_logs` | the dashboard's month of daily hours |
 | JSON-RPC `hr.employee` / `hr.attendance` | checking in and out, and the session you are in |
-| JSON-RPC `serp.meal.booking` / `serp.meal.type` | the month's canteen meals, booking and cancelling them, and the days it is shut |
-| JSON-RPC `serp.meal.menu` | what the canteen is serving that week |
+| JSON-RPC `serp.meal.booking` / `serp.meal.type` | the month's meals, booking and cancelling them, and the days nothing is served |
+| JSON-RPC `serp.meal.menu` | what is on the menu that week |
 | JSON-RPC `hr.leave` / `hr.leave.type` | time off: the year's requests, the balances, filing one |
 
 Worth knowing:
