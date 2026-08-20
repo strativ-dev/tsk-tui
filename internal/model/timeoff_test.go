@@ -164,7 +164,7 @@ func TestTimeWalksMonthsWithHJKL(t *testing.T) {
 		t.Errorf("the month walked to has no caret:\n%s", v)
 	}
 	// And the footer names the four keys off their own bindings.
-	if got := monthMoveHelp().Help(); got.Key != "h/j/k/l" || got.Desc != "month" {
+	if got := m.monthMoveHelp().Help(); got.Key != "h/j/k/l" || got.Desc != "month" {
 		t.Errorf("the footer hint is %q %q", got.Key, got.Desc)
 	}
 }

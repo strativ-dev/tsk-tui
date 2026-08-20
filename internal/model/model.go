@@ -40,7 +40,13 @@ const (
 	TabTasks Tab = iota // where the app opens
 	TabDash
 	TabTime
+	TabMeal
 )
+
+// k is the keymap this screen reads: the global one, or the tab's own where the config file
+// gave it overrides. A method rather than a field, so there is no copy to keep in step with
+// m.tab — every handler and the footer resolve it the same way, from the tab itself.
+func (m Model) k() keyMap { return keysFor(m.tab) }
 
 // DailyGoal is the 8h bar the header measures today against.
 const DailyGoal = 8 * 60
@@ -61,6 +67,7 @@ const (
 	confirmCheckOut
 	confirmApplyLeave
 	confirmDropLeave
+	confirmDropMeals
 )
 
 // The new-timeoff line's fields, in tab order. leaveTo is the range's end on a full day and
@@ -189,6 +196,28 @@ type Model struct {
 	// timeEmp is the hr.employee a new request is filed for, from the same read that found
 	// the working calendar.
 	timeEmp int
+	// One month of meals, the same one-in-hand rule the chart's month follows. mealMonth is
+	// the cache key as well as what is on screen — year*12+month, 0 for nothing read yet —
+	// and mealOffset is the viewed month in months from this one, so 0 is now and -1 is last
+	// month.
+	mealMonth    int
+	mealOffset   int
+	mealTypes    []api.MealType
+	mealBookings []api.MealBooking
+	mealMenus    []api.MealMenu
+	// mealClosed is the ERP's own answer to which days the canteen is shut, weekends and
+	// holidays together, keyed yyyy-mm-dd.
+	mealClosed  map[string]bool
+	mealLoading bool
+	// mealHold is the day of the month the cursor is on, 0 to follow today. Unlike the year
+	// calendar this screen has something to do to a day — x cancels its meals — so it needs
+	// to say which one.
+	mealHold int
+	// mealCancelling is an unlink in flight.
+	mealCancelling bool
+	// mealWanted is the meal calendar waiting on the login, exactly as dashWanted and
+	// timeWanted are: RPC needs the key owner's email and only the REST day total carries it.
+	mealWanted bool
 	// form is the new-timeoff line. Closed, it is a label and nothing else.
 	form leaveForm
 	// applying is a request for time off in flight.
@@ -313,8 +342,8 @@ func clockTick() tea.Cmd {
 // the month's hour log (dashLoading), the year's time off (timeLoading), a request for
 // time off (applying), a check in or out (clocking), or a task's lines.
 func (m Model) busy() bool {
-	return m.syncing || m.dashLoading || m.timeLoading || m.applying ||
-		m.clocking || len(m.pulling) > 0
+	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
+		m.mealCancelling || m.clocking || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -417,13 +446,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m, cmd = m.loadTime()
 				cmds = append(cmds, cmd)
 			}
+			if m.mealWanted {
+				m, cmd = m.loadMeal()
+				cmds = append(cmds, cmd)
+			}
 			if len(cmds) > 0 {
 				return m, tea.Batch(cmds...)
 			}
 		}
-		if msg.Err != nil && (m.dashWanted || m.timeWanted) {
-			m.dashWanted, m.timeWanted = false, false
+		if msg.Err != nil && (m.dashWanted || m.timeWanted || m.mealWanted) {
+			m.dashWanted, m.timeWanted, m.mealWanted = false, false, false
 			m.dashLoading, m.timeLoading, m.syncing, m.clocking = false, false, false, false
+			m.mealLoading = false
 			m.err = msg.Err
 		}
 		return m, nil
@@ -468,6 +502,43 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		return m, nil
+
+	case api.MealMsg:
+		m.mealLoading = false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			m.err = msg.Err
+			m.status = "no meals for " + msg.Month.String()
+			return m, nil
+		}
+		// One answer, one calendar: the types, the bookings and the closed days replace each
+		// other together, so a day can never disagree with the legend above it.
+		m.mealMonth = msg.Year*12 + int(msg.Month)
+		m.mealTypes, m.mealBookings, m.mealClosed = msg.Types, msg.Bookings, msg.Closed
+		m.mealMenus = msg.Menus
+		m.err = nil
+		return m, nil
+
+	case api.MealsDeletedMsg:
+		m.mealCancelling = false
+		switch {
+		case errors.Is(msg.Err, api.ErrUnauthorized):
+			m.key = ""
+			return m.askKey(msg.Err.Error()), textinput.Blink
+		case msg.Err != nil:
+			// The day is left exactly as it was: a refused cancel must not hide a meal the
+			// canteen is still counting on.
+			m.err = msg.Err
+			m.status = "the ERP kept " + mealDayLabel(msg.Date) + ": " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		m.status = fmt.Sprintf("cancelled %d meals on %s", msg.N, mealDayLabel(msg.Date))
+		// Re-read rather than dropping the rows here: someone else can book or cancel for
+		// you in the web client, so the month is only ever what the ERP says it is.
+		return m.loadMeal()
 
 	case api.LeaveRequestedMsg:
 		m.applying = false
@@ -653,17 +724,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Tabs and the key list come before modes, but never while a field is taking
 		// letters — t, d and ? have to stay typeable in the search box and in an entry's
 		// description.
+		// A screen that bound one of its own actions to a tab key keeps it there: the
+		// per-tab table is an explicit "on this screen, this key does that", so it is
+		// matched first and that tab loses the shortcut. Only that tab — everywhere else
+		// the key is still the tab it always was.
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
-			m.mode != ModeAuth && m.mode != ModeForm {
+			m.mode != ModeAuth && m.mode != ModeForm && !claims(m.tab, msg) {
 			switch {
-			case key.Matches(msg, keys.Help):
+			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
 				return m, nil
-			case key.Matches(msg, keys.DashTab):
+			case key.Matches(msg, m.k().DashTab):
 				return m.showDash()
-			case key.Matches(msg, keys.TimeTab):
+			case key.Matches(msg, m.k().TimeTab):
 				return m.showTime()
-			case key.Matches(msg, keys.TasksTab):
+			case key.Matches(msg, m.k().MealTab):
+				return m.showMeal()
+			case key.Matches(msg, m.k().TasksTab):
 				m.tab = TabTasks
 				return m, nil
 			}
@@ -682,6 +759,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.updateDash(msg)
 			case TabTime:
 				return m.updateTime(msg)
+			case TabMeal:
+				return m.updateMeal(msg)
 			}
 		}
 
@@ -812,7 +891,7 @@ func (m *Model) clampRow() {
 
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.ClearQuery):
+	case key.Matches(msg, m.k().ClearQuery):
 		m.search.SetValue("")
 		m.expanded = map[int]bool{}
 		m.jumpDate, m.jumpQuery, m.status = "", "", "" // a clean search drops the marks
@@ -821,7 +900,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// ClearSearch is ctrl+u too, so ClearQuery above already handles it here:
 		// in the field, ctrl+u clears and also collapses.
 
-	case key.Matches(msg, keys.Focus):
+	case key.Matches(msg, m.k().Focus):
 		m.search.Blur()
 		m.mode = ModeList
 		m.clampCursor()
@@ -870,14 +949,14 @@ func (m Model) startSync() (tea.Model, tea.Cmd) {
 
 func (m Model) updateAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Cancel):
+	case key.Matches(msg, m.k().Cancel):
 		m.auth.SetValue("")
 		m.auth.Blur()
 		m.mode, m.status = ModeSearch, "no API key — working offline on "+store.Path()
 		m.search.Focus()
 		return m, textinput.Blink
 
-	case key.Matches(msg, keys.Accept):
+	case key.Matches(msg, m.k().Accept):
 		v := strings.TrimSpace(m.auth.Value())
 		if v == "" {
 			return m, nil
@@ -903,13 +982,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	t, ok := m.current()
 
 	switch {
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, m.k().Quit):
 		// q is one key away from every other list key, so it asks first. ctrl+c
 		// still leaves immediately.
 		m.prev, m.mode = ModeList, ModeConfirm
 		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
 
-	case key.Matches(msg, keys.ClearSearch):
+	case key.Matches(msg, m.k().ClearSearch):
 		m.search.SetValue("")
 		m.jumpDate, m.jumpQuery, m.status = "", "", ""
 		m.mode = ModeSearch
@@ -917,30 +996,30 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clampCursor() // the unfiltered list is longer than the filtered one
 		return m, textinput.Blink
 
-	case key.Matches(msg, keys.Down):
+	case key.Matches(msg, m.k().Down):
 		m.cursor++
 		m.clampCursor()
 
-	case key.Matches(msg, keys.Up):
+	case key.Matches(msg, m.k().Up):
 		m.cursor--
 		m.clampCursor()
 
-	case key.Matches(msg, keys.Top):
+	case key.Matches(msg, m.k().Top):
 		m.cursor = 0
 
-	case key.Matches(msg, keys.Bottom):
+	case key.Matches(msg, m.k().Bottom):
 		m.cursor = len(m.filtered()) - 1
 		m.clampCursor()
 
-	case key.Matches(msg, keys.HalfDown):
+	case key.Matches(msg, m.k().HalfDown):
 		m.cursor += m.halfPage(taskLines)
 		m.clampCursor()
 
-	case key.Matches(msg, keys.HalfUp):
+	case key.Matches(msg, m.k().HalfUp):
 		m.cursor -= m.halfPage(taskLines)
 		m.clampCursor()
 
-	case key.Matches(msg, keys.Expand):
+	case key.Matches(msg, m.k().Expand):
 		// An empty task still opens: the table is where `a` adds the first entry.
 		if ok {
 			m.expanded[t.ID] = true
@@ -949,12 +1028,12 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.pullEntries(t.ID) // its lines live in Odoo, not on disk
 		}
 
-	case key.Matches(msg, keys.Collapse):
+	case key.Matches(msg, m.k().Collapse):
 		if ok {
 			delete(m.expanded, t.ID)
 		}
 
-	case key.Matches(msg, keys.Jump):
+	case key.Matches(msg, m.k().Jump):
 		// From the list a jump reaches every task, so it needs neither this task open
 		// nor any rows in it to be worth opening.
 		m.jumpInTask = false
@@ -963,13 +1042,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeJump
 		return m, textinput.Blink
 
-	case key.Matches(msg, keys.Refresh):
+	case key.Matches(msg, m.k().Refresh):
 		return m.startSync()
 
-	case key.Matches(msg, keys.SetKey):
+	case key.Matches(msg, m.k().SetKey):
 		return m.askKey("Replace the API key (current: " + store.MaskKey(m.key) + ")."), textinput.Blink
 
-	case key.Matches(msg, keys.Search), key.Matches(msg, keys.Back):
+	case key.Matches(msg, m.k().Search), key.Matches(msg, m.k().Back):
 		m.mode = ModeSearch
 		m.search.Focus()
 		return m, textinput.Blink
@@ -987,40 +1066,40 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
-	case key.Matches(msg, keys.Down):
+	case key.Matches(msg, m.k().Down):
 		m.row++
 		m.clampRow()
 
-	case key.Matches(msg, keys.Up):
+	case key.Matches(msg, m.k().Up):
 		m.row--
 		m.clampRow()
 
-	case key.Matches(msg, keys.Top):
+	case key.Matches(msg, m.k().Top):
 		m.row = 0
 
-	case key.Matches(msg, keys.Bottom):
+	case key.Matches(msg, m.k().Bottom):
 		m.row = len(t.Rows) - 1
 		m.clampRow()
 
-	case key.Matches(msg, keys.HalfDown):
+	case key.Matches(msg, m.k().HalfDown):
 		m.row += m.halfPage(entryLines)
 		m.clampRow()
 
-	case key.Matches(msg, keys.HalfUp):
+	case key.Matches(msg, m.k().HalfUp):
 		m.row -= m.halfPage(entryLines)
 		m.clampRow()
 
-	case key.Matches(msg, keys.Edit):
+	case key.Matches(msg, m.k().Edit):
 		if len(t.Rows) == 0 {
 			return m, nil
 		}
 		r := t.Rows[m.row]
 		return m.openInsert(insertEdit, r.Date, r.Desc, parse.FormatHM(r.Minutes))
 
-	case key.Matches(msg, keys.Add):
+	case key.Matches(msg, m.k().Add):
 		return m.openInsert(insertNew, parse.Today(), "", "")
 
-	case key.Matches(msg, keys.Delete):
+	case key.Matches(msg, m.k().Delete):
 		if m.row >= len(t.Rows) {
 			return m, nil
 		}
@@ -1035,7 +1114,7 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cPrompt = fmt.Sprintf("Delete the entry of %s?", r.Date)
 		}
 
-	case key.Matches(msg, keys.Jump):
+	case key.Matches(msg, m.k().Jump):
 		// Inside the rows a jump is a move, not a report: these rows are on screen, so
 		// walk the cursor to the date instead of covering them with a modal.
 		m.jumpInTask = true
@@ -1044,26 +1123,26 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeJump
 		return m, textinput.Blink
 
-	case key.Matches(msg, keys.Collapse):
+	case key.Matches(msg, m.k().Collapse):
 		delete(m.expanded, t.ID)
 		m.mode = ModeList
 
-	case key.Matches(msg, keys.Back):
+	case key.Matches(msg, m.k().Back):
 		m.mode = ModeList
 
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, m.k().Quit):
 		// Same prompt as from the list, and "no" comes back to these rows rather than
 		// collapsing the task you were reading.
 		m.prev, m.mode = ModeTable, ModeConfirm
 		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
 
-	case key.Matches(msg, keys.Search):
+	case key.Matches(msg, m.k().Search):
 		delete(m.expanded, t.ID)
 		m.mode = ModeSearch
 		m.search.Focus()
 		return m, textinput.Blink
 
-	case key.Matches(msg, keys.ClearSearch):
+	case key.Matches(msg, m.k().ClearSearch):
 		// Same as from the list, plus collapsing this task: ctrl+u means "back to a
 		// clean search" wherever it is pressed.
 		delete(m.expanded, t.ID)
@@ -1137,24 +1216,24 @@ func (m *Model) normalize(i int) {
 
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Next):
+	case key.Matches(msg, m.k().Next):
 		m.normalize(m.focus)
 		m.setFocus(m.focus + 1)
 		return m, nil
 
-	case key.Matches(msg, keys.Prev):
+	case key.Matches(msg, m.k().Prev):
 		m.normalize(m.focus)
 		m.setFocus(m.focus - 1)
 		return m, nil
 
-	case key.Matches(msg, keys.ClearField):
+	case key.Matches(msg, m.k().ClearField):
 		if m.focus < len(m.fields) {
 			m.fields[m.focus].SetValue("")
 			m.datePristine = false
 		}
 		return m, nil
 
-	case key.Matches(msg, keys.Accept):
+	case key.Matches(msg, m.k().Accept):
 		switch m.focus {
 		case fieldAccept:
 			return m.commit()
@@ -1166,7 +1245,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-	case key.Matches(msg, keys.Cancel):
+	case key.Matches(msg, m.k().Cancel):
 		if m.kind == insertEdit {
 			m.mode = ModeTable
 			m.err = nil
@@ -1271,13 +1350,13 @@ func (m Model) commit() (tea.Model, tea.Cmd) {
 
 func (m Model) updateJump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Cancel):
+	case key.Matches(msg, m.k().Cancel):
 		m.jump.Blur()
 		m.err = nil
 		m.mode = m.jumpReturn()
 		return m, nil
 
-	case key.Matches(msg, keys.Accept):
+	case key.Matches(msg, m.k().Accept):
 		m.jump.Blur()
 		m.err = nil
 		if strings.TrimSpace(m.jump.Value()) == "" {
@@ -1381,8 +1460,8 @@ func (m Model) applyJump(q string) (tea.Model, tea.Cmd) {
 // needs no confirmation.
 func (m Model) updateDay(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Accept),
-		key.Matches(msg, keys.Collapse):
+	case key.Matches(msg, m.k().Cancel), key.Matches(msg, m.k().Accept),
+		key.Matches(msg, m.k().Collapse):
 		m.mode = m.jumpReturn()
 	}
 	return m, nil
@@ -1528,30 +1607,30 @@ func (m Model) toggleClock() (tea.Model, tea.Cmd) {
 // ctrl+f / ctrl+b by half of what is showing, and today in between, where it opens.
 func (m Model) updateDash(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Top):
+	case key.Matches(msg, m.k().Top):
 		return m.holdDash(0), nil
-	case key.Matches(msg, keys.Bottom):
+	case key.Matches(msg, m.k().Bottom):
 		return m.holdDash(len(m.dashDays) - 1), nil
-	case key.Matches(msg, keys.HalfDown):
+	case key.Matches(msg, m.k().HalfDown):
 		return m.holdDash(m.dashDayIndex() + m.halfPage(dashRowLines)), nil
-	case key.Matches(msg, keys.HalfUp):
+	case key.Matches(msg, m.k().HalfUp):
 		return m.holdDash(m.dashDayIndex() - m.halfPage(dashRowLines)), nil
 
-	case key.Matches(msg, keys.PrevMonth):
+	case key.Matches(msg, m.k().PrevMonth):
 		// dashMonth is left alone: the month on screen stays coherent — its own header
 		// and rows, both from the same answer — with a loader beside the title, until
 		// the new one lands and replaces both at once.
 		m.dashOffset--
 		return m.loadDash()
 
-	case key.Matches(msg, keys.NextMonth):
+	case key.Matches(msg, m.k().NextMonth):
 		if m.dashOffset >= 0 {
 			return m, nil // nothing to report on a month that has not happened
 		}
 		m.dashOffset++
 		return m.loadDash()
 
-	case key.Matches(msg, keys.Clock):
+	case key.Matches(msg, m.k().Clock):
 		// Checking in is one keystroke; checking out asks first, since it closes a session
 		// the ERP then bills, and y alone answers it.
 		if m.attKnown && m.att.CheckedIn && m.attEmp != 0 && !m.clocking {
@@ -1565,19 +1644,19 @@ func (m Model) updateDash(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.toggleClock()
 
-	case key.Matches(msg, keys.Refresh):
+	case key.Matches(msg, m.k().Refresh):
 		m.dashMonth = "" // force a re-read of the month
 		return m.loadDash()
 
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, m.k().Quit):
 		m.prev, m.mode = m.mode, ModeConfirm
 		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
 		return m, nil
 
-	case key.Matches(msg, keys.Search), key.Matches(msg, keys.ClearSearch):
+	case key.Matches(msg, m.k().Search), key.Matches(msg, m.k().ClearSearch):
 		// Searching is a task-list act, so it takes you back there.
 		m.tab, m.mode = TabTasks, ModeSearch
-		if key.Matches(msg, keys.ClearSearch) {
+		if key.Matches(msg, m.k().ClearSearch) {
 			m.search.SetValue("")
 			m.clampCursor()
 		}
@@ -1678,46 +1757,46 @@ func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// h j k l walk the grid the months are laid out in: one month either way, one row of them
 	// up or down. They are the same four bindings the task list moves by, so a rebind moves
 	// both, and the row is however many months the width is showing.
-	case key.Matches(msg, keys.Collapse):
+	case key.Matches(msg, m.k().Collapse):
 		return m.holdTime(m.timeMonth() - 1), nil
-	case key.Matches(msg, keys.Expand):
+	case key.Matches(msg, m.k().Expand):
 		return m.holdTime(m.timeMonth() + 1), nil
-	case key.Matches(msg, keys.Down):
+	case key.Matches(msg, m.k().Down):
 		return m.holdTime(m.timeMonth() + m.timeCols()), nil
-	case key.Matches(msg, keys.Up):
+	case key.Matches(msg, m.k().Up):
 		return m.holdTime(m.timeMonth() - m.timeCols()), nil
 
-	case key.Matches(msg, keys.Top):
+	case key.Matches(msg, m.k().Top):
 		return m.holdTime(0), nil
-	case key.Matches(msg, keys.Bottom):
+	case key.Matches(msg, m.k().Bottom):
 		return m.holdTime(11), nil
-	case key.Matches(msg, keys.HalfDown):
+	case key.Matches(msg, m.k().HalfDown):
 		return m.holdTime(m.timeMonth() + m.timeCols()), nil
-	case key.Matches(msg, keys.HalfUp):
+	case key.Matches(msg, m.k().HalfUp):
 		return m.holdTime(m.timeMonth() - m.timeCols()), nil
 
-	case key.Matches(msg, keys.NewLeave):
+	case key.Matches(msg, m.k().NewLeave):
 		return m.openLeaveForm()
 
-	case key.Matches(msg, keys.Refresh):
+	case key.Matches(msg, m.k().Refresh):
 		// timeYear is left alone: loadTime is called outright here, so nothing needs the
 		// cache key cleared, and clearing it would blank the calendar and its totals for
 		// as long as the read takes. The loader beside the title says it is re-reading.
 		return m.loadTime()
 
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, m.k().Quit):
 		m.prev, m.mode = m.mode, ModeConfirm
 		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
 		return m, nil
 
-	case key.Matches(msg, keys.Back):
+	case key.Matches(msg, m.k().Back):
 		m.timeFilter = 0 // esc clears the filter, whatever set it
 		return m, nil
 
-	case key.Matches(msg, keys.Search), key.Matches(msg, keys.ClearSearch):
+	case key.Matches(msg, m.k().Search), key.Matches(msg, m.k().ClearSearch):
 		// Searching is a task-list act, so it takes you back there.
 		m.tab, m.mode = TabTasks, ModeSearch
-		if key.Matches(msg, keys.ClearSearch) {
+		if key.Matches(msg, m.k().ClearSearch) {
 			m.search.SetValue("")
 			m.clampCursor()
 		}
@@ -1780,12 +1859,12 @@ func (m Model) openLeaveForm() (tea.Model, tea.Cmd) {
 // description has to be able to hold a t, a d and an o.
 func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.Next):
+	case key.Matches(msg, m.k().Next):
 		return m.moveLeaveField(1), nil
-	case key.Matches(msg, keys.Prev):
+	case key.Matches(msg, m.k().Prev):
 		return m.moveLeaveField(-1), nil
 
-	case key.Matches(msg, keys.Accept):
+	case key.Matches(msg, m.k().Accept):
 		switch m.form.field {
 		case leaveOKField:
 			return m.askApplyLeave()
@@ -1800,13 +1879,13 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.moveLeaveField(1), nil
 		}
 
-	case key.Matches(msg, keys.Cancel):
+	case key.Matches(msg, m.k().Cancel):
 		// esc asks, because everything typed goes with it.
 		m.prev, m.mode = ModeForm, ModeConfirm
 		m.cKind, m.cPrompt = confirmDropLeave, "Discard this time off request?"
 		return m, nil
 
-	case key.Matches(msg, keys.ClearField):
+	case key.Matches(msg, m.k().ClearField):
 		switch m.form.field {
 		case leaveFromField:
 			m.form.from.SetValue("")
@@ -1823,7 +1902,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// The dropdowns take j/k and space; the text fields must keep those letters.
-	if m.leaveFieldIsDropdown() && key.Matches(msg, keys.Cycle) {
+	if m.leaveFieldIsDropdown() && key.Matches(msg, m.k().Cycle) {
 		return m.cycleLeaveField(msg.String()), nil
 	}
 	// On the leave type, a type's own initial picks it — the same letters the filter chips
@@ -2306,6 +2385,251 @@ func (m Model) timeTaken() float64 {
 	return days
 }
 
+// --- meals -------------------------------------------------------------------
+
+// showMeal opens the meal calendar and reads the month if it is not already on screen.
+// One month in hand at a time, the way the chart holds its own: r re-reads it.
+func (m Model) showMeal() (tea.Model, tea.Cmd) {
+	m.tab = TabMeal
+	if m.mealMonth == mealKey(m.mealViewed()) || m.mealLoading {
+		return m, nil // already have it, or it is on its way
+	}
+	return m.loadMeal()
+}
+
+// loadMeal asks for the month in one call. The month on screen is left alone while it is in
+// flight, so a re-read keeps a coherent calendar — its own days, its own count — with the
+// loader beside the title, exactly as the chart and the year calendar do.
+func (m Model) loadMeal() (Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.mealLoading = true
+	if strings.TrimSpace(m.login) == "" {
+		// The day total's answer carries the email the RPC login needs.
+		m.mealWanted = true
+		return m, api.FetchDayHours(m.key, parse.Today())
+	}
+	m.mealWanted = false
+	at := m.mealViewed()
+	return m, api.FetchMeals(m.key, m.login, m.db, at.Year(), at.Month())
+}
+
+// updateMeal is the meal calendar. There is no cursor — a month of meals is a picture, not
+// a list — so the only motion is between months, the same keys the chart steps by.
+func (m Model) updateMeal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().PrevMonth), key.Matches(msg, m.k().NextMonth):
+		by := -1
+		if key.Matches(msg, m.k().NextMonth) {
+			by = 1
+		}
+		// Forward stops at this month: the canteen has nothing to report on one that has
+		// not happened, and the bookings for it do not exist yet.
+		if m.mealOffset+by > 0 {
+			return m, nil
+		}
+		m.mealOffset += by
+		m.mealMonth = 0 // a new month, so it is read rather than kept
+		m.mealHold = 0  // and the cursor follows today again, or the first of a past month
+		return m.loadMeal()
+
+	// The cursor walks the grid the days are laid out in: one day either way, one week up or
+	// down. They are the four bindings the task list moves by, so a rebind moves both.
+	case key.Matches(msg, m.k().Collapse):
+		return m.holdMeal(m.mealCursor() - 1), nil
+	case key.Matches(msg, m.k().Expand):
+		return m.holdMeal(m.mealCursor() + 1), nil
+	case key.Matches(msg, m.k().Up):
+		return m.holdMeal(m.mealCursor() - 7), nil
+	case key.Matches(msg, m.k().Down):
+		return m.holdMeal(m.mealCursor() + 7), nil
+	case key.Matches(msg, m.k().Top):
+		return m.holdMeal(1), nil
+	case key.Matches(msg, m.k().Bottom):
+		return m.holdMeal(m.mealDays()), nil
+	case key.Matches(msg, m.k().HalfDown):
+		return m.holdMeal(m.mealCursor() + 7), nil
+	case key.Matches(msg, m.k().HalfUp):
+		return m.holdMeal(m.mealCursor() - 7), nil
+
+	case key.Matches(msg, m.k().Delete):
+		return m.askCancelMeals()
+
+	case key.Matches(msg, m.k().Refresh):
+		// mealMonth is left alone: loadMeal is called outright, so nothing needs the cache
+		// key cleared, and clearing it would blank the month for as long as the read takes.
+		return m.loadMeal()
+
+	case key.Matches(msg, m.k().Quit):
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+		return m, nil
+
+	case key.Matches(msg, m.k().Search), key.Matches(msg, m.k().ClearSearch):
+		// Searching is a task-list act, so it takes you back there.
+		m.tab, m.mode = TabTasks, ModeSearch
+		if key.Matches(msg, m.k().ClearSearch) {
+			m.search.SetValue("")
+			m.clampCursor()
+		}
+		m.search.Focus()
+		return m, textinput.Blink
+	}
+	return m, nil
+}
+
+// mealViewed is the month on screen: this one, or however many months back mealOffset says.
+// The day is the first of it, so adding months can never land on a 31st that does not exist.
+func (m Model) mealViewed() time.Time {
+	now := time.Now()
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).
+		AddDate(0, m.mealOffset, 0)
+}
+
+// mealKey is the cache key for a month: one number, so "have I read this" is a comparison
+// rather than two.
+func mealKey(t time.Time) int { return t.Year()*12 + int(t.Month()) }
+
+// mealsOn is what is booked on one day, keyed by meal type id, derived on every render
+// from the answer the ERP gave — never stored, so a re-read cannot leave a stale day behind.
+func (m Model) mealsOn(day string) map[int]api.MealBooking {
+	out := make(map[int]api.MealBooking, len(m.mealTypes))
+	for _, b := range m.mealBookings {
+		if b.Date == day {
+			out[b.TypeID] = b
+		}
+	}
+	return out
+}
+
+// mealDaysBooked counts the days with anything booked on them, and the days the canteen was
+// open at all, which is what those days are worth reading against.
+func (m Model) mealDaysBooked() (booked, open int) {
+	at := m.mealViewed()
+	days := time.Date(at.Year(), at.Month()+1, 0, 0, 0, 0, 0, time.Local).Day()
+	on := make(map[string]bool, len(m.mealBookings))
+	for _, b := range m.mealBookings {
+		on[b.Date] = true
+	}
+	for d := 1; d <= days; d++ {
+		day := time.Date(at.Year(), at.Month(), d, 0, 0, 0, 0, time.Local).
+			Format("2006-01-02")
+		if m.mealClosed[day] {
+			continue
+		}
+		open++
+		if on[day] {
+			booked++
+		}
+	}
+	return booked, open
+}
+
+// mealDays is how many days the viewed month has.
+func (m Model) mealDays() int {
+	at := m.mealViewed()
+	return time.Date(at.Year(), at.Month()+1, 0, 0, 0, 0, 0, time.Local).Day()
+}
+
+// mealCursor is the day the cursor is on: whichever a motion pinned, else today — or the
+// first of the month, in a month that is not this one, since today is not among its days.
+func (m Model) mealCursor() int {
+	if m.mealHold > 0 {
+		return min(m.mealHold, m.mealDays())
+	}
+	if m.mealOffset == 0 {
+		return time.Now().Day()
+	}
+	return 1
+}
+
+// holdMeal pins the cursor to a day, clamped, so the ends of the month stop rather than
+// wrap into the next one — which would be a month this screen has not read.
+func (m Model) holdMeal(d int) Model {
+	m.mealHold = min(max(d, 1), m.mealDays())
+	return m
+}
+
+// mealCursorDate is the cursor's day as the ERP writes it.
+func (m Model) mealCursorDate() string {
+	at := m.mealViewed()
+	return time.Date(at.Year(), at.Month(), m.mealCursor(), 0, 0, 0, 0, time.Local).
+		Format("2006-01-02")
+}
+
+// askCancelMeals opens the modal for x: cancelling a day's meals unlinks rows the canteen
+// has already counted, so it names what will go rather than asking whether you are sure —
+// three named meals is information, a yes/no question is not.
+//
+// The refusals happen here, before the round trip, the same way the hour log refuses what
+// the endpoint would: a day with nothing on it, and a day the ERP has already locked, which
+// it reports per booking rather than leaving us to work out from the cutoff.
+func (m Model) askCancelMeals() (tea.Model, tea.Cmd) {
+	day := m.mealCursorDate()
+	booked := m.mealsOn(day)
+	if len(booked) == 0 {
+		m.status = "nothing booked on " + mealDayLabel(day)
+		return m, nil
+	}
+	names := make([]string, 0, len(booked))
+	locked := 0
+	for _, t := range m.mealTypes {
+		b, ok := booked[t.ID]
+		if !ok {
+			continue
+		}
+		names = append(names, strings.ToLower(firstWord(t.Name)))
+		if b.Locked {
+			locked++
+		}
+	}
+	if locked == len(names) {
+		m.status = mealDayLabel(day) + " is past its cutoff — the ERP will not change it"
+		return m, nil
+	}
+
+	m.prev, m.mode = m.mode, ModeConfirm
+	m.cKind = confirmDropMeals
+	m.cPrompt = fmt.Sprintf("Cancel %d meals on %s?\n\n%s",
+		len(names), mealDayLabel(day), strings.Join(names, " · "))
+	if len(names) == 1 {
+		m.cPrompt = fmt.Sprintf("Cancel %s on %s?", names[0], mealDayLabel(day))
+	}
+	return m, nil
+}
+
+// cancelMeals unlinks the cursor day's bookings and re-reads the month, so what is on screen
+// is what the ERP has rather than what this screen guessed.
+func (m Model) cancelMeals() (Model, tea.Cmd) {
+	day := m.mealCursorDate()
+	ids := make([]int, 0, len(m.mealTypes))
+	for _, t := range m.mealTypes {
+		if b, ok := m.mealsOn(day)[t.ID]; ok && !b.Locked {
+			ids = append(ids, b.ID)
+		}
+	}
+	if len(ids) == 0 {
+		m.status = "nothing left to cancel on " + mealDayLabel(day)
+		return m, nil
+	}
+	m.mealCancelling = true
+	m.err = nil
+	m.status = fmt.Sprintf("cancelling %d meals on %s…", len(ids), mealDayLabel(day))
+	return m, api.CancelMeals(m.key, m.login, m.db, day, ids)
+}
+
+// mealDayLabel is a day as a person says it — "Thu 20 Aug" — for the modal and the status
+// line. The grid says the number; a prompt about deleting something should say the weekday.
+func mealDayLabel(iso string) string {
+	t, err := time.Parse("2006-01-02", iso)
+	if err != nil {
+		return iso
+	}
+	return t.Format("Mon 2 Jan")
+}
+
 // --- confirm -----------------------------------------------------------------
 
 // confirmKeys is what accepts the open modal. Anything that destroys something —
@@ -2313,15 +2637,15 @@ func (m Model) timeTaken() float64 {
 // Discarding an entry you are still typing keeps y or enter.
 func (m Model) confirmKeys() key.Binding {
 	switch m.cKind {
-	case confirmQuit, confirmDeleteRow, confirmCheckOut, confirmApplyLeave:
-		return keys.YesOnly
+	case confirmQuit, confirmDeleteRow, confirmCheckOut, confirmApplyLeave, confirmDropMeals:
+		return m.k().YesOnly
 	}
-	return keys.Yes
+	return m.k().Yes
 }
 
 func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, keys.No): // checked first: esc is in both sets
+	case key.Matches(msg, m.k().No): // checked first: esc is in both sets
 		m.mode = m.prev
 		return m, nil
 
@@ -2362,6 +2686,10 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// to have something to come back to.
 			m.mode = ModeForm
 			return m.applyLeave()
+
+		case confirmDropMeals:
+			m.mode = m.prev
+			return m.cancelMeals()
 
 		case confirmDropLeave:
 			// Everything typed goes with the line, which is what the prompt asked about.

@@ -56,6 +56,9 @@ binary, no CGO.
 - **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
   full or half day, the dates, why. The days light up on the calendar as you type them, and
   ✓ files the request with the ERP after showing you exactly what it is about to send.
+- **This month's canteen meals.** `m` opens a month grid with one bar per meal per day —
+  amber breakfast, paprika lunch, green snacks — booked meals solid, open slots hueless,
+  weekends and office holidays bare. `<` / `>` step months. Read only for now.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
@@ -240,7 +243,7 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
-| `d` / `o` / `t` | dashboard / time off / back to the tasks (`2` / `3` / `1` too) |
+| `d` / `o` / `m` / `t` | dashboard / time off / meals / back to the tasks (`2` / `3` / `4` / `1` too) |
 | `r` | re-fetch tasks from the ERP |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
@@ -352,6 +355,34 @@ Two things it checks before sending: a day you already have time off on is refus
 the confirmation rather than blocked — some leave types are allowed to run negative, and the
 ERP is the one that decides.
 
+**Meals** (`m` or `4`)
+
+This month's canteen bookings: a Monday-first grid with one short bar per meal per day —
+solid and coloured for a meal you have booked, thin and grey for a slot still open, nothing
+at all on a weekend or an office holiday. A meal already eaten keeps its colour, dimmed. The
+cursor carries a band; today's date is underlined.
+
+From about 92 columns the week's menu is pinned down the right: one block per weekday with a
+line per meal — what the canteen is serving, the choice first — with **today's whole block in
+amber**, heading and dishes. It follows the cursor, so `j` brings next week's menu with it.
+
+`x` cancels the cursor day's meals after a prompt that names them, and takes `y` only. Days
+past their booking cutoff are refused before the request goes out — the ERP will not change
+them. Booking a meal from here is not built yet.
+
+| Key | Does |
+|---|---|
+| `h` / `l` | previous / next day |
+| `j` / `k` | a week down / up |
+| `g` / `G` | first / last day of the month |
+| `x` | cancel the meals on this day (asks; `y` only) |
+| `<` / `>` | previous / next month — `>` stops at the current one |
+| `r` | re-read the month from the ERP |
+| `t` / `d` / `o` | back to the tasks / the dashboard / time off (`1` / `2` / `3` too) |
+| `i` / `ctrl+u` | back to the tasks, in the search field |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
 **Editing an entry**
 
 | Key | Does |
@@ -433,6 +464,21 @@ down      = ["j", "down", "n"]  # several keys per action
 quit      = []                  # an empty list unbinds it; ctrl+c always quits
 ```
 
+Any action can also be rebound **on one screen only**, with a `[keys.<tab>]` table —
+`tasks`, `dash`, `time`, `meal`:
+
+```toml
+[keys]
+delete = ["x"]        # everywhere
+
+[keys.meal]
+delete = ["d"]        # ...but on the meal tab, d cancels the day's meals
+```
+
+A screen's own binding is matched before the tab keys, so the example above gives up `d` for
+the dashboard **on the meal tab only**. In the global table a key the tab bar owns is refused
+at startup instead, since the tab keys are matched first and the action could never fire.
+
 Keep only the lines you want to change — anything absent keeps its default, and **no
 config file at all is perfectly fine**. Action names are listed by `--print-keys`.
 Keys are spelled the way Bubble Tea spells them: a single character, a `ctrl+` /
@@ -467,6 +513,7 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `write` / `unlink` | editing and deleting a line |
 | JSON-RPC `get_employee_hour_logs` | the dashboard's month of daily hours |
 | JSON-RPC `hr.employee` / `hr.attendance` | checking in and out, and the session you are in |
+| JSON-RPC `serp.meal.booking` / `serp.meal.type` | the month's canteen meals and the days it is shut |
 
 Worth knowing:
 

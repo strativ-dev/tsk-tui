@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,7 +144,7 @@ func (m Model) View() string {
 		// else: this is what to press. The slash between them stays dim — it is punctuation,
 		// not a key.
 		hint := theme.HintKey.Render(m.confirmKeys().Help().Key) +
-			theme.Dim.Render(" / ") + theme.HintKey.Render(keys.No.Help().Key)
+			theme.Dim.Render(" / ") + theme.HintKey.Render(m.k().No.Help().Key)
 		// A prompt of several lines puts its keys on a line of their own: appended to the
 		// last one they read as part of it, and "Coast trip  y / n" is not a description.
 		prompt := m.cPrompt + "  " + hint
@@ -201,6 +202,12 @@ func (m Model) View() string {
 	if m.tab == TabTime {
 		head = append(head, m.timeHead()...)
 	}
+	if m.tab == TabMeal {
+		// The month, the keys that step it and the legend are laid out with the header, so
+		// the weeks scroll under the figures they are read against rather than taking them
+		// along.
+		head = append(head, m.mealHead()...)
+	}
 
 	// The body takes the rows left between header and footer, and is padded out to
 	// them, which pins the status line and the key hints to the bottom of the screen.
@@ -208,6 +215,9 @@ func (m Model) View() string {
 	body, focus := m.listLines()
 	if m.tab == TabTime {
 		body, focus = m.timeLines()
+	}
+	if m.tab == TabMeal {
+		body, focus = m.mealLines()
 	}
 	if m.tab == TabDash {
 		body, focus = m.dashLines(budget)
@@ -228,6 +238,10 @@ func (m Model) View() string {
 		// After the window, not before it: the holiday list is a pinned column, so the
 		// months scroll under it rather than taking it with them.
 		body = m.withHolidayPanel(body)
+	}
+	if m.tab == TabMeal {
+		// Same reason: the week's menu is a column of the screen, so the weeks scroll under it.
+		body = m.withMealPanel(body)
 	}
 
 	out := make([]string, 0, len(head)+len(body)+len(tail))
@@ -303,9 +317,10 @@ func (m Model) tabBar() string {
 		label string
 		key   key.Binding
 	}{
-		{TabTasks, "tasks", keys.TasksTab},
-		{TabDash, "dashboard", keys.DashTab},
-		{TabTime, "timeoff", keys.TimeTab},
+		{TabTasks, "tasks", m.k().TasksTab},
+		{TabDash, "dashboard", m.k().DashTab},
+		{TabTime, "timeoff", m.k().TimeTab},
+		{TabMeal, "meal", m.k().MealTab},
 	}
 
 	var b strings.Builder
@@ -416,8 +431,8 @@ func (m Model) clockHelp() key.Binding {
 	case m.attKnown && m.att.CheckedIn:
 		what = "check out"
 	}
-	return key.NewBinding(key.WithKeys(keys.Clock.Keys()...),
-		key.WithHelp(keys.Clock.Help().Key, what))
+	return key.NewBinding(key.WithKeys(m.k().Clock.Keys()...),
+		key.WithHelp(m.k().Clock.Help().Key, what))
 }
 
 // clockLine puts the clock cluster at the right edge. spread does not truncate — it clamps
@@ -460,7 +475,7 @@ func (m Model) clockStatus() string {
 // The words themselves are white and the c is the accent, so the one colour that means "this
 // is the key" is not competing with the state's colour for the same cells.
 func (m Model) clockButton() string {
-	box, label := theme.ClockIn, hinted("check in", keys.Clock, theme.ClockText, theme.HintKey)
+	box, label := theme.ClockIn, hinted("check in", m.k().Clock, theme.ClockText, theme.HintKey)
 	switch {
 	case m.clocking:
 		// The loader takes the label's place, so the box does not move while the ERP thinks
@@ -474,7 +489,7 @@ func (m Model) clockButton() string {
 		box, label = theme.ClockOff, theme.Dim.Render("check in")
 	case m.att.CheckedIn:
 		box = theme.ClockOut
-		label = hinted("check out", keys.Clock, theme.ClockText, theme.HintKey)
+		label = hinted("check out", m.k().Clock, theme.ClockText, theme.HintKey)
 	}
 	return box.Render(label)
 }
@@ -968,7 +983,7 @@ func fits(room int, parts ...string) string {
 func (m Model) leaveBand() []string {
 	if !m.form.open {
 		return []string{"",
-			theme.Blur.Render(hinted("new timeoff", keys.NewLeave, theme.Dim, theme.HintKey)),
+			theme.Blur.Render(hinted("new timeoff", m.k().NewLeave, theme.Dim, theme.HintKey)),
 			""}
 	}
 	label, compact := m.leaveTier()
@@ -1005,7 +1020,7 @@ func (m Model) leaveRow(label, compact bool, desc string) string {
 
 	var parts []string
 	if label {
-		parts = append(parts, hinted("new timeoff", keys.NewLeave, theme.DayLabel, theme.HintKey))
+		parts = append(parts, hinted("new timeoff", m.k().NewLeave, theme.DayLabel, theme.HintKey))
 	}
 	// The type reads in its own colour — the same one its days are drawn in on the calendar
 	// below — and keeps it while it holds the keys, only bolder: cycling the dropdown is
@@ -1621,9 +1636,9 @@ func holidaySpan(h api.Holiday) string {
 // monthMoveHelp is the footer's entry for the four motions, named after what they move —
 // months, not rows or days — with the keys read off the bindings themselves so a rebind
 // follows.
-func monthMoveHelp() key.Binding {
-	keysOf := []string{keys.Collapse.Help().Key, keys.Down.Help().Key,
-		keys.Up.Help().Key, keys.Expand.Help().Key}
+func (m Model) monthMoveHelp() key.Binding {
+	keysOf := []string{m.k().Collapse.Help().Key, m.k().Down.Help().Key,
+		m.k().Up.Help().Key, m.k().Expand.Help().Key}
 	return key.NewBinding(key.WithHelp(strings.Join(keysOf, "/"), "month"))
 }
 
@@ -2056,40 +2071,49 @@ func (m Model) footer() string {
 			label = "-- DASHBOARD --"
 		case TabTime:
 			label = m.timeLabel()
+		case TabMeal:
+			label = "-- MEAL --"
 		}
 	}
 
 	// A modal is the exception: whatever accepts it has to be on screen, since it is
 	// holding the keyboard and ? will not reach the toggle.
-	help := []key.Binding{keys.Help}
+	help := []key.Binding{m.k().Help}
 	switch {
 	case m.mode == ModeConfirm:
 		// Which key accepts depends on what is being confirmed.
-		help = []key.Binding{m.confirmKeys(), keys.No}
+		help = []key.Binding{m.confirmKeys(), m.k().No}
 	case m.mode == ModeForm:
 		// Its own keys, whichever tab is behind it, and only the ones the focused field
 		// takes: j/k belong to a dropdown and are letters everywhere else.
-		help = []key.Binding{keys.Next, keys.Accept, keys.ClearField, keys.Cancel}
+		help = []key.Binding{m.k().Next, m.k().Accept, m.k().ClearField, m.k().Cancel}
 		if m.leaveFieldIsDropdown() {
-			help = []key.Binding{keys.Next, keys.Cycle, keys.Accept, keys.Cancel}
+			help = []key.Binding{m.k().Next, m.k().Cycle, m.k().Accept, m.k().Cancel}
 		}
 	case !m.showHelp:
 	case m.tab == TabDash:
 		// It moves in screenfuls, not days, and there is no i: the query field filters
 		// tasks and this is not that tab.
-		help = []key.Binding{keys.Top, keys.HalfDown, keys.PrevMonth, m.clockHelp(),
-			keys.TasksTab, keys.Refresh, keys.Quit, keys.Help}
+		help = []key.Binding{m.k().Top, m.k().HalfDown, m.k().PrevMonth, m.clockHelp(),
+			m.k().TasksTab, m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabTime:
 		// It moves in months, and the filters are the leave types' own initials, so they
 		// are named by the answer rather than by the keymap.
-		help = []key.Binding{keys.NewLeave, monthMoveHelp(), keys.Top, m.filterHelp()}
+		help = []key.Binding{m.k().NewLeave, m.monthMoveHelp(), m.k().Top, m.filterHelp()}
 		if m.timeFilter != 0 {
 			help = append(help, key.NewBinding(
-				key.WithHelp(keys.Back.Help().Key, "clear filter")))
+				key.WithHelp(m.k().Back.Help().Key, "clear filter")))
 		}
-		help = append(help, keys.TasksTab, keys.Refresh, keys.Quit, keys.Help)
+		help = append(help, m.k().TasksTab, m.k().Refresh, m.k().Quit, m.k().Help)
+	case m.tab == TabMeal:
+		// It moves in months and nothing else: the calendar is read only for now, so there
+		// is no key here that changes a booking.
+		// No tab key here: the bar across the top already picks the letter out of every tab's
+		// own label, so repeating `t tasks` in the footer spends a slot saying it twice.
+		help = []key.Binding{m.mealMoveHelp(), m.k().PrevMonth, m.mealDropHelp(),
+			m.mealRefreshHelp(), m.k().Quit, m.k().Help}
 	default:
-		help = append(keys.help(m.mode), keys.Help)
+		help = append(keys.help(m.mode), m.k().Help)
 	}
 
 	parts := []string{theme.Mode.Render(label)}
@@ -2129,4 +2153,459 @@ func trunc(s string, n int) string {
 		return "…"
 	}
 	return string([]rune(s)[:n-1]) + "…"
+}
+
+// --- the meal calendar -------------------------------------------------------
+
+const (
+	// A bar is two cells, one per meal, with a space between them — so a day's content is
+	// `━━ ━━ ━━` at three meals — and the gap after it is what stops a week of booked days
+	// from reading as one long stripe. The design's own proportion: a weekday column is
+	// eleven cells at three meals.
+	mealBar    = 2
+	mealGap    = 3
+	mealMinGap = 1
+	// A closed day holds no bars, so the weekend columns need only their date. Two of them
+	// at seven cells is what buys the five weekday columns their width on an 80-cell
+	// terminal.
+	mealQuietCol = 7
+)
+
+// mealCell is how wide one weekday column is: the bars, the spaces between them, and the
+// gap to the next day. It shrinks by the gap alone — the bars are the data and never lose a
+// cell, or a booked meal and an open one would measure the same.
+func (m Model) mealCell(gap int) int {
+	n := max(len(m.mealTypes), 1)
+	return n*mealBar + (n - 1) + gap
+}
+
+// mealGapFor is the widest gap the terminal can hold, down to one cell. Below that the
+// month is as narrow as it goes and the days run to the edge.
+func (m Model) mealGapFor() int {
+	// The menu column takes its cells before the gap does: the panel is decided at the
+	// narrowest grid there is (mealMinGap), so this can shrink to fit around it without the
+	// two of them chasing each other.
+	room := m.cols()
+	if p := m.mealPanelCells(); p > 0 {
+		room -= p + 3
+	}
+	for gap := mealGap; gap > mealMinGap; gap-- {
+		if gutter+5*m.mealCell(gap)+2*mealQuietCol <= room {
+			return gap
+		}
+	}
+	return mealMinGap
+}
+
+// mealHead is the month, the keys that step it, and the legend: one swatch per meal type in
+// the type's own colour, straight off the answer, so an office that starts serving a fourth
+// meal gets a fourth swatch with nothing to edit here.
+func (m Model) mealHead() []string {
+	if m.mealMonth == 0 && !m.mealLoading {
+		return nil
+	}
+	at := m.mealViewed()
+	title := theme.HintKey.Render("< ") +
+		theme.Title.Render(strings.ToUpper(at.Format("January 2006")))
+	if m.mealOffset < 0 {
+		// > only past this month: the canteen has nothing to say about one that has not
+		// happened, so a key that does nothing does not appear.
+		title += theme.HintKey.Render(" >")
+	}
+	if m.mealLoading {
+		// The month on screen is the last one answered, so the loader sits beside its title
+		// rather than replacing it. The empty case has its own spinner in mealLines.
+		title += " " + m.spin.View()
+	}
+
+	swatches := make([]string, 0, len(m.mealTypes))
+	named := make([]string, 0, len(m.mealTypes))
+	for _, t := range m.mealTypes {
+		sw := theme.MealBooked(theme.MealColor(t.Name)).Render("━━")
+		swatches = append(swatches, sw)
+		named = append(named, sw+theme.Dim.Render(" "+strings.ToLower(firstWord(t.Name))))
+	}
+	count := ""
+	if booked, open := m.mealDaysBooked(); open > 0 {
+		count = theme.Dim.Render(fmt.Sprintf("%d of %d days", booked, open))
+	}
+	// The legend gives up its parts from the tail in — first the count, then the meals' names,
+	// leaving the swatches, which the bars below are read by. A line wider than the terminal
+	// wraps and takes a row off the month.
+	line := ""
+	for _, try := range []string{
+		strings.Join(named, "  ") + "  " + count,
+		strings.Join(named, "  "),
+		strings.Join(swatches, " ") + "  " + count,
+		strings.Join(swatches, " "),
+		"",
+	} {
+		// Measured on the line as it will be drawn, not by adding up its parts: the padding,
+		// the gutter and the trailing space are each a cell that arithmetic forgot.
+		line = spread(theme.Blur.Render(title), try+" ", m.cols())
+		if lipgloss.Width(line) <= m.cols() {
+			break
+		}
+	}
+	out := []string{line, ""}
+	// The weekday row is as wide as the grid, so it goes when the grid does — the body says
+	// what is wrong there rather than both of them overflowing.
+	if heads := m.mealHeads(); heads != "" {
+		out = append(out, heads, "")
+	}
+	return out
+}
+
+// mealHeads is the weekday row over the columns. The two days the canteen never serves on
+// are dimmer than the five it does, which is the same thing the dates below them say.
+func (m Model) mealHeads() string {
+	if m.cols() < gutter+5*m.mealCell(mealMinGap)+2*mealQuietCol {
+		return ""
+	}
+	gap := m.mealGapFor()
+	var b strings.Builder
+	for i, d := range []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"} {
+		style, w := theme.Dim, m.mealCell(gap)
+		if i >= 5 {
+			style, w = theme.MealQuietInk, mealQuietCol
+		}
+		b.WriteString(style.Render(pad(d, w)))
+	}
+	return theme.Blur.Render(strings.TrimRight(b.String(), " "))
+}
+
+// mealLines is the month itself: one block per week — the dates, then their bars, then a
+// blank line — Monday first, the way the canteen's own week runs.
+//
+// Every figure is derived here and none of it is stored: the day-to-booking map, the counts,
+// which days are past. A month is a picture of an answer, so it is drawn from that answer.
+func (m Model) mealLines() ([]string, int) {
+	if m.mealMonth == 0 {
+		if m.mealLoading {
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading this month's meals…"))}, -1
+		}
+		return []string{theme.Blur.Render(
+			theme.Dim.Render("no meals yet — r to read this month"))}, -1
+	}
+
+	// Seven columns is what a week is, so below the narrowest grid there is the month cannot
+	// be drawn at all — and a grid wider than the terminal wraps, which costs the screen a row
+	// per week and reads as the dates printing twice.
+	if m.cols() < gutter+5*m.mealCell(mealMinGap)+2*mealQuietCol {
+		return []string{theme.Blur.Render(theme.Dim.Render(
+			trunc("a week needs 61 cells — widen the terminal", m.cols()-gutter)))}, -1
+	}
+
+	at := m.mealViewed()
+	gap := m.mealGapFor()
+	first := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.Local)
+	days := first.AddDate(0, 1, -1).Day()
+	// Monday is column 0, which is what the ERP's own working week starts on.
+	lead := (int(first.Weekday()) + 6) % 7
+	today, cursor := time.Now().Format("2006-01-02"), m.mealCursor()
+
+	var lines []string
+	focus := -1
+	for start := 1 - lead; start <= days; start += 7 {
+		dates, bars, served := make([]string, 0, 7), make([]string, 0, 7), false
+		for i := range 7 {
+			d := start + i
+			w := m.mealCell(gap)
+			if i >= 5 {
+				w = mealQuietCol
+			}
+			if d < 1 || d > days {
+				dates = append(dates, strings.Repeat(" ", w))
+				bars = append(bars, strings.Repeat(" ", w))
+				continue
+			}
+			day := time.Date(at.Year(), at.Month(), d, 0, 0, 0, 0, time.Local)
+			iso := day.Format("2006-01-02")
+			date, bar := m.mealDay(d, iso, w, gap, iso == today, iso < today, d == cursor)
+			if d == cursor {
+				focus = len(lines)
+			}
+			if !m.mealClosed[iso] {
+				served = true
+			}
+			dates = append(dates, date)
+			bars = append(bars, bar)
+		}
+		lines = append(lines, theme.Blur.Render(strings.TrimRight(strings.Join(dates, ""), " ")))
+		// A week the canteen served nothing in — the weekend tail of a month — costs no row
+		// for bars that would all be blank.
+		if served {
+			lines = append(lines,
+				theme.Blur.Render(strings.TrimRight(strings.Join(bars, ""), " ")))
+		}
+		lines = append(lines, "")
+	}
+	return lines, focus
+}
+
+// mealDay draws one day: its date, and the bars under it.
+//
+// The states are the design's own vocabulary. A booked meal is a solid bar in its type's
+// colour; an open slot is a thin hueless one, so the colour on a day is only ever what is
+// booked. A day that cannot be acted on — past, or past its cutoff — keeps the solid bar and
+// loses the hue, since it is a fact rather than a choice. A day the canteen is shut carries
+// no bars at all: the empty row is what says "nothing was on offer", the same way the hour
+// chart's band does.
+func (m Model) mealDay(d int, iso string, w, gap int, today, past, cursor bool) (string, string) {
+	// The band the design puts behind a day marks the **cursor**, since that is what x acts
+	// on; today says itself with a bright underlined date. A background has to be on every
+	// span or it dies at the first one that sets its own colour — the same rule the month
+	// panels on the time off calendar follow.
+	band := func(st lipgloss.Style) lipgloss.Style {
+		if cursor {
+			return st.Background(theme.MealBand)
+		}
+		return st
+	}
+	// The gap after the cell is not part of the day, so the band stops with the content.
+	fill := func(n int) string {
+		if n <= 0 {
+			return ""
+		}
+		return band(lipgloss.NewStyle()).Render(strings.Repeat(" ", min(n, w-gap))) +
+			strings.Repeat(" ", max(n-(w-gap), 0))
+	}
+
+	label, ink := strconv.Itoa(d), theme.MealDate
+	switch {
+	case today:
+		ink = theme.MealToday
+	case cursor:
+		ink = theme.MealDate.Bold(true)
+	case past, m.mealClosed[iso]:
+		ink = theme.MealQuietInk
+	}
+	date := band(ink).Render(label) + fill(w-lipgloss.Width(label))
+
+	if m.mealClosed[iso] {
+		// No bars at all: the empty row is what says nothing was on offer, the same way the
+		// hour chart's band does for a day nothing was expected of.
+		return date, fill(w)
+	}
+	booked := m.mealsOn(iso)
+	cells := make([]string, 0, len(m.mealTypes))
+	for _, t := range m.mealTypes {
+		_, ok := booked[t.ID]
+		switch {
+		case ok && past:
+			// A day already eaten keeps its meal's hue, dimmed. is_locked_for_user is not
+			// what decides this: locked means the booking can no longer be changed, which is
+			// true of tomorrow's lunch after this morning's cutoff — and greying that read
+			// as a meal that had already happened.
+			cells = append(cells, band(theme.MealBooked(theme.MealPastColor(t.Name))).Render("━━"))
+		case ok:
+			cells = append(cells, band(theme.MealBooked(theme.MealColor(t.Name))).Render("━━"))
+		default:
+			cells = append(cells, band(theme.MealSlot).Render("──"))
+		}
+	}
+	bar := strings.Join(cells, band(lipgloss.NewStyle()).Render(" "))
+	return date, bar + fill(w-lipgloss.Width(bar))
+}
+
+// mealMoveHelp is the footer's entry for the four motions, named after what they move here —
+// days, not months — with the keys read off the bindings so a rebind follows.
+func (m Model) mealMoveHelp() key.Binding {
+	keysOf := []string{m.k().Collapse.Help().Key, m.k().Down.Help().Key,
+		m.k().Up.Help().Key, m.k().Expand.Help().Key}
+	return key.NewBinding(key.WithHelp(strings.Join(keysOf, "/"), "day"))
+}
+
+// mealDropHelp is the footer's entry for x on this screen. The key comes off the binding, as
+// everywhere else, but the description is this tab's: it cancels the day's meals, not a
+// timesheet row — and it says "meal", since that is the thing being cancelled.
+func (m Model) mealDropHelp() key.Binding {
+	return key.NewBinding(key.WithHelp(m.k().Delete.Help().Key, "cancel meal"))
+}
+
+// mealRefreshHelp is r on this screen: it re-reads the month, not the task list, so the
+// footer says so rather than repeating the list's own label.
+func (m Model) mealRefreshHelp() key.Binding {
+	return key.NewBinding(key.WithHelp(m.k().Refresh.Help().Key, "reload month"))
+}
+
+const (
+	// The menu panel gets whatever is left beside the grid, between these: below
+	// mealPanelMin a dish name is not a dish name any more, and above mealPanelMax the
+	// column is just wide.
+	mealPanelMin = 28
+	mealPanelMax = 44
+)
+
+// mealPanelCells is how wide the menu column can be: what is left once the grid has its
+// own cells and the rule between them, and 0 when that is not enough to read a dish on.
+// The grid never gives up a cell for it — the bars are what the screen is about.
+func (m Model) mealPanelCells() int {
+	if m.mealMonth == 0 {
+		return 0
+	}
+	// Measured against a grid at gap 2, not at the narrowest one: at a single cell between
+	// days a week of bars runs together into one stripe, which is the thing the gap exists to
+	// stop. The panel gives its cells back before that happens.
+	room := m.cols() - gutter - (5*m.mealCell(mealMinGap+1) + 2*mealQuietCol) - 3
+	if room < mealPanelMin {
+		return 0
+	}
+	return min(room, mealPanelMax)
+}
+
+// withMealPanel pins the week's menu flush to the right edge, exactly as the holiday panel
+// does on the year calendar: it is a column of the screen, not of the month, so it stays put
+// while the weeks scroll under it. Composed after the window for the same reason — zipped in
+// first, its header would scroll away with the first week.
+func (m Model) withMealPanel(body []string) []string {
+	panel := m.mealMenuPanel()
+	if len(panel) == 0 {
+		return body
+	}
+	rule := theme.Sep.Render("│")
+	grid := m.cols() - m.mealPanelCells() - 3
+
+	out := make([]string, len(body))
+	for i, l := range body {
+		out[i] = pad(l, grid) + " " + rule + " "
+		if i < len(panel) {
+			out[i] += panel[i]
+		}
+		out[i] = strings.TrimRight(out[i], " ")
+	}
+	// A menu taller than the body says so rather than stopping mid-week.
+	if hidden := len(panel) - len(body); hidden > 0 && len(out) > 0 {
+		out[len(out)-1] = strings.Repeat(" ", grid) + " " + rule + " " +
+			theme.Dim.Render(fmt.Sprintf("… %d more", hidden+1))
+	}
+	return out
+}
+
+// mealMenuPanel is what the canteen is serving this week: one block per day, in the order the
+// week runs, with the meals in the order the bars are drawn in.
+//
+// Today's heading takes the **accent** and nothing else on the panel does — the same rule the
+// tab bar follows, where the accent marks the one thing you are on. A day with no menu rows
+// is left out: that is the weekend, and an empty heading says nothing the grid has not said.
+func (m Model) mealMenuPanel() []string {
+	w := m.mealPanelCells()
+	if w == 0 {
+		return nil
+	}
+	mon := m.mealWeekStart()
+	today := time.Now().Format("2006-01-02")
+
+	out := []string{
+		theme.Header.Render(truncShaped("MENU · week of "+mon.Format("2 Jan"), w)),
+		"",
+	}
+	for i := range 7 {
+		day := mon.AddDate(0, 0, i)
+		iso := day.Format("2006-01-02")
+		on := m.menusOn(iso)
+		if len(on) == 0 {
+			continue
+		}
+		head, label := theme.DayLabel, day.Format("Mon 2")
+		if iso == today {
+			// The one accented thing here: which day of the week you are actually on.
+			head, label = theme.HintKey, label+" · today"
+		} else if m.mealClosed[iso] {
+			// The ERP has a menu on a day it says it is shut. Dimmed rather than dropped:
+			// hiding the odd one out hides a fact.
+			head = theme.Dim
+		}
+		out = append(out, head.Render(truncShaped(label, w)))
+		for _, t := range m.mealTypes {
+			mn, ok := on[t.ID]
+			if !ok {
+				continue
+			}
+			out = append(out, m.menuLine(t, mn, w, iso == today))
+		}
+	}
+	if len(out) == 2 {
+		return append(out, theme.Dim.Render(trunc("no menu for this week", w)))
+	}
+	return out
+}
+
+// menuLine is one meal on the panel: its swatch, in the type's own colour so it reads against
+// that meal's bar on the grid, then the dish.
+//
+// One line each, cut rather than wrapped: three meals a day for five days has to fit beside a
+// month, and a wrapped panel ran twice the height of the body. The swatch carries which meal
+// it is — the legend above the grid already says which colour is which, so repeating the word
+// here would spend a third of the column saying it twice.
+func (m Model) menuLine(t api.MealType, mn api.MealMenu, w int, today bool) string {
+	dish := strings.TrimSpace(mn.Options)
+	if c := strings.TrimSpace(mn.Common); dish == "" {
+		dish = c
+	} else if c != "" {
+		// The choice first: it is the part of a menu worth reading, and what everyone gets
+		// follows it when the column has room.
+		dish += " · " + c
+	}
+	// Today's whole block takes the accent, dishes included, not just its heading: what is
+	// being served today is the one thing on this panel you act on, and a day marked only by
+	// its heading still reads as four lines of the same weight as every other day.
+	ink := theme.MealDate
+	if today {
+		ink = theme.HintKey
+	}
+	return theme.MealBooked(theme.MealColor(t.Name)).Render("━━") + " " +
+		ink.Render(truncShaped(dish, w-3))
+}
+
+// truncShaped cuts text the terminal may not measure the way we do, to n cells **and** n
+// runes.
+//
+// The menus are written in Bangla, and lipgloss counts its combining marks — the matras and
+// the hasanta — as zero cells: "পরোটা, অমলেট, মুগ ডাল" measures 18 while being 21 runes. A
+// terminal without Bengali shaping draws one cell per rune, so a line cut to the measured
+// width came out wider than the column, wrapped, and pushed the grid's own last columns onto
+// the next screen row — which read as the calendar printing its dates twice.
+//
+// Cutting to whichever is smaller is safe under either rendering: no shaping and it is n
+// cells, shaping and it is fewer.
+func truncShaped(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n && lipgloss.Width(s) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	if len(r) > n-1 {
+		r = r[:n-1]
+	}
+	for len(r) > 0 && lipgloss.Width(string(r)) > n-1 {
+		r = r[:len(r)-1]
+	}
+	return string(r) + "…"
+}
+
+// mealWeekStart is the Monday of the week the cursor is in — the panel follows the cursor,
+// so walking to next week's Thursday brings next week's menu with it.
+func (m Model) mealWeekStart() time.Time {
+	at := m.mealViewed()
+	day := time.Date(at.Year(), at.Month(), m.mealCursor(), 0, 0, 0, 0, time.Local)
+	return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+}
+
+// menusOn is what is on offer on one day, keyed by meal type id. Derived on every render from
+// the answer, like every other figure on this screen.
+func (m Model) menusOn(day string) map[int]api.MealMenu {
+	out := make(map[int]api.MealMenu, len(m.mealTypes))
+	for _, mn := range m.mealMenus {
+		if mn.Date == day {
+			out[mn.TypeID] = mn
+		}
+	}
+	return out
 }

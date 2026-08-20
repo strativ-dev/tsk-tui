@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meal booking TUI — states, save &amp; delete</title>
+<style>
+  :root{
+    --breakfast:#E8A33D; --lunch:#DD5F45; --snack:#93C572;
+    --breakfast-dim:#8A6428; --lunch-dim:#85392A; --snack-dim:#587643;
+    --open:#3E3E47; --weekend:#55555F; --date:#C8C8D0; --bright:#E4E4E8;
+    --band:#262633; --term-bg:#16161D; --page-bg:#0E0E12; --muted:#6B6B78;
+    --danger:#E05252; --hint:#6FA8D4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:24px 16px 48px;background:var(--page-bg);color:var(--date);
+    font-family:"JetBrains Mono","Iosevka","Fira Code",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:900px;margin:0 auto}
+  .eyebrow{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+  h1{font-size:17px;font-weight:500;margin:0 0 4px;color:var(--bright)}
+  .sub{font-size:12px;color:var(--muted);margin:0 0 28px;line-height:1.6}
+  h2{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);
+    margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid #23232B}
+  .term{background:var(--term-bg);border:1px solid #24242D;border-radius:6px;padding:20px 18px;overflow-x:auto;margin-bottom:6px}
+  pre{margin:0;font:inherit;font-size:13px;line-height:1.5;white-space:pre}
+  @media (max-width:640px){pre{font-size:9px}}
+
+  .b{color:var(--breakfast)} .l{color:var(--lunch)} .s{color:var(--snack)}
+  .bd{color:var(--breakfast-dim)} .ld{color:var(--lunch-dim)} .sd{color:var(--snack-dim)}
+  .o{color:var(--open)} .wk{color:var(--weekend)} .d{color:var(--date)}
+  .hi{color:var(--bright)} .dim{color:var(--muted)} .dg{color:var(--danger)}
+  .sel{background:var(--band)}
+  .today{color:var(--bright);font-weight:700;text-decoration:underline;text-underline-offset:3px}
+  .pill{background:var(--bright);color:#16161D;font-weight:700}
+  .dpill{background:var(--danger);color:#16161D;font-weight:700}
+  .mon{color:var(--bright);letter-spacing:.05em}
+  .mark{color:var(--bright)}
+  .k{color:var(--hint);font-weight:700}
+  .ki{color:#16161D;font-weight:700;text-decoration:underline;text-underline-offset:2px}
+
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+  th{text-align:left;font-weight:500;font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--muted);padding:0 10px 8px 0;border-bottom:1px solid #23232B}
+  td{padding:9px 10px 9px 0;border-bottom:1px solid #1B1B22;vertical-align:middle}
+  td.gl{font-size:15px;white-space:nowrap}
+  .chip{display:inline-block;width:34px;height:15px;border-radius:2px;vertical-align:-3px;margin-right:9px}
+  code{font:inherit;color:var(--bright)}
+  .note{font-size:12px;color:var(--muted);line-height:1.65;margin:10px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Bubble Tea · Lip Gloss</p>
+  <h1>Meal booking — fixed menu, staged edits, save &amp; delete</h1>
+  <p class="sub">Menus are fixed per weekday, so they're reference data shown once. Dates carry only on/off. Today is <span class="hi">Thu 13 Aug</span>.</p>
+
+  <h2>Fixed weekly menu — shown once, not per date</h2>
+  <div class="term">
+<pre>     <span class="dim">mon           tue           wed           thu           fri</span>
+
+  <span class="b">━━</span> <span class="d">banana·bread  khichuri·egg  ruti·sabji    paratha·egg   nan·dal</span>
+  <span class="l">━━</span> <span class="d">fried rice    murgi·bhat    mach·dal      beef tehari   biriyani</span>
+  <span class="s">━━</span> <span class="d">fruits        biscuit·cha   piyaju·cha    shingara·cha  jilapi·cha</span>
+</pre>
+  </div>
+  <p class="note">Because Monday is always banana and bread, the calendar cells never need menu text — the column position already tells you what the meal is. This is the single biggest simplification available to you: the grid holds fifteen booleans a week, nothing more.</p>
+
+  <h2>Month grid — staged changes marked</h2>
+  <div class="term">
+<pre><span class="mon">AUGUST 2026</span>                     <span class="b">━━</span> <span class="dim">breakfast</span>  <span class="l">━━</span> <span class="dim">lunch</span>  <span class="s">━━</span> <span class="dim">snacks</span>  <span class="mark">•</span> <span class="dim">unsaved</span>
+
+  <span class="dim">scope</span>   <span class="pill"> <span class="ki">t</span>oday </span>  <span class="dim">to<span class="k">m</span>orrow</span>  <span class="dim"> <span class="k">w</span>eek </span>
+
+  <span class="dim">mon        tue        wed        thu        fri</span>        <span class="wk">sat    sun</span>
+
+  <span class="wk">3          4          5          6          7          8      9</span>
+  <span class="wk">━━ ━━ ━━   ━━ ━━ ──   ── ━━ ──   ━━ ━━ ━━   ━━ ── ──</span>
+
+  <span class="d">10         11         12        </span><span class="mark">▎</span><span class="sel"><span class="today">13</span><span class="d">        </span></span> <span class="d">14</span>         <span class="wk">15     16</span>
+  <span class="wk">━━ ━━ ──   ━━ ── ──</span>   <span class="o">──</span> <span class="l">━━</span> <span class="o">──</span>  <span class="mark">▎</span><span class="sel"><span class="b">━━</span> <span class="ld">┄┄</span> <span class="sd">╌╌</span> </span><span class="mark">•</span> <span class="o">──</span> <span class="o">──</span> <span class="o">──</span>
+
+  <span class="d">17         18         19         20         21</span>         <span class="wk">22     23</span>
+  <span class="b">━━</span> <span class="l">━━</span> <span class="s">━━</span>   <span class="b">━━</span> <span class="l">━━</span> <span class="o">──</span>   <span class="b">━━</span> <span class="l">━━</span> <span class="s">━━</span>   <span class="o">──</span> <span class="o">──</span> <span class="o">──</span>   <span class="b">━━</span> <span class="l">━━</span> <span class="o">──</span>
+
+  <span class="d">24         25         26         27         28</span>         <span class="wk">29     30</span>
+  <span class="b">━━</span> <span class="o">──</span> <span class="o">──</span>   <span class="b">━━</span> <span class="l">━━</span> <span class="s">━━</span>   <span class="b">━━</span> <span class="l">━━</span> <span class="o">──</span>   <span class="o">──</span> <span class="o">──</span> <span class="o">──</span>   <span class="b">━━</span> <span class="l">━━</span> <span class="s">━━</span>
+
+
+  <span class="hi">TODAY · thu 13 aug</span>
+
+  <span class="b">━━</span>  <span class="k">b</span><span class="d">reakfast</span>   <span class="d">paratha·egg     </span>  <span class="d">booked</span>
+  <span class="ld">┄┄</span>  <span class="k">l</span><span class="d">unch</span>       <span class="d">beef tehari     </span>  <span class="hi">will add</span>      <span class="mark">•</span>
+  <span class="sd">╌╌</span>  <span class="k">s</span><span class="d">nacks</span>      <span class="d">shingara·cha    </span>  <span class="dg">will remove</span>   <span class="mark">•</span>
+
+  <span class="hi">2 unsaved</span>   <span class="k">enter</span> <span class="dim">save</span>   <span class="k">esc</span> <span class="dim">discard</span>   <span class="k">d</span><span class="dim">elete day</span>   <span class="k">q</span><span class="dim">uit</span>
+</pre>
+  </div>
+  <p class="note">Past days go fully grey — dates and bars — because they're history, not choices. Staged edits use a dashed bar and a bright <code>•</code> on the cell, so an unsaved calendar is visibly unsaved from across the room. Nothing writes to the backend until <code>enter</code>.</p>
+
+  <h2>Save confirmation</h2>
+  <div class="term">
+<pre>  <span class="dim">mon        tue        wed        thu        fri</span>        <span class="wk">sat    sun</span>
+
+  <span class="d">10   </span><span class="dim">┌</span> <span class="hi">confirm save</span> <span class="dim">──────────────────────────┐</span><span class="d">    </span>   <span class="wk">15     16</span>
+  <span class="wk">━━ ━</span><span class="dim">│</span>                                        <span class="dim">│</span><span class="o">─</span> <span class="o">──</span>
+       <span class="dim">│</span>  <span class="d">thu 13 aug</span>  <span class="dim">·  cutoff 21:00, 6h 12m left</span>  <span class="dim">│</span>
+  <span class="d">17   </span><span class="dim">│</span>                                        <span class="dim">│</span><span class="d">    </span>   <span class="wk">22     23</span>
+  <span class="b">━━</span> <span class="l">━</span><span class="dim">│</span>  <span class="hi">+</span>  <span class="l">━━</span>  <span class="d">lunch      beef tehari</span>          <span class="dim">│</span><span class="o">─</span> <span class="o">──</span>
+       <span class="dim">│</span>  <span class="dg">−</span>  <span class="s">━━</span>  <span class="d">snacks     shingara·cha</span>         <span class="dim">│</span>
+  <span class="d">24   </span><span class="dim">│</span>                                        <span class="dim">│</span><span class="d">    </span>   <span class="wk">29     30</span>
+  <span class="b">━━</span> <span class="o">─</span><span class="dim">│</span>     <span class="k">enter</span> <span class="dim">save</span>        <span class="k">esc</span> <span class="dim">cancel</span>         <span class="dim">│</span><span class="s">━</span>
+       <span class="dim">└────────────────────────────────────────┘</span>
+</pre>
+  </div>
+  <p class="note">The modal is the one place a drawn border earns its keep — it has to visibly float above a grid that's still partly visible behind it. It shows a diff, not a restatement: only what changes, signed <code>+</code> and <code>−</code>, with the cutoff time right there because that's the fact that makes the decision urgent. <code>enter</code> commits, <code>esc</code> returns you to the staged state without losing it.</p>
+
+  <h2>Delete</h2>
+  <p class="note">Two different operations, and they deserve different weight. Turning one meal off is an ordinary staged edit — the <code>╌╌</code> state above, reversible, folded into the same save. Clearing a whole day is destructive and immediate, so it gets its own confirm and its own key.</p>
+  <div class="term">
+<pre>  <span class="dim">┌</span> <span class="dg">delete all meals</span> <span class="dim">──────────────────────┐</span>
+  <span class="dim">│</span>                                       <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="d">thu 13 aug</span> <span class="dim">— 3 booked meals</span>          <span class="dim">│</span>
+  <span class="dim">│</span>                                       <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="b">━━</span> <span class="d">breakfast</span>   <span class="l">━━</span> <span class="d">lunch</span>   <span class="s">━━</span> <span class="d">snacks</span>  <span class="dim">│</span>
+  <span class="dim">│</span>                                       <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim">after 21:00 this cannot be undone</span>    <span class="dim">│</span>
+  <span class="dim">│</span>                                       <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="dpill"> y </span> <span class="dim">delete</span>        <span class="k">esc</span> <span class="dim">keep</span>        <span class="dim">│</span>
+  <span class="dim">└───────────────────────────────────────┘</span>
+</pre>
+  </div>
+  <p class="note">Destructive confirm takes <code>y</code>, not <code>enter</code> — so muscle memory from the save dialog can't wipe a day. Red appears here and nowhere else in the app, which is what makes it mean something. It shows what will be lost rather than asking "are you sure": three named meals is information, a yes/no question isn't.</p>
+
+  <h2>Key hints</h2>
+  <div class="term">
+<pre>  <span class="dim">scope</span>   <span class="pill"> <span class="ki">t</span>oday </span>  <span class="dim">to<span class="k">m</span>orrow</span>  <span class="dim"> <span class="k">w</span>eek </span>
+
+  <span class="b">━━</span>  <span class="k">b</span><span class="d">reakfast</span>      <span class="ld">┄┄</span>  <span class="k">l</span><span class="d">unch</span>      <span class="sd">╌╌</span>  <span class="k">s</span><span class="d">nacks</span>
+
+  <span class="k">d</span><span class="dim">elete day</span>   <span class="k">q</span><span class="dim">uit</span>   <span class="k">enter</span> <span class="dim">save</span>   <span class="k">esc</span> <span class="dim">discard</span>
+</pre>
+  </div>
+  <p class="note">
+    The hint character sits inside the word itself in cool blue — the one hue no meal claimed, so it reads instantly as interface chrome rather than food. No brackets, no separate keybinding legend to maintain.<br><br>
+    <span class="hi">The collision is the interesting part.</span> <em>today</em> and <em>tomorrow</em> both start with <code>t</code>. btop's answer is to highlight whichever character is unique, so tomorrow becomes to<span class="k">m</span>orrow. Don't pick <code>o</code> — the second letter of both words is also the same, and a hint that requires the user to count characters isn't a hint. Reach for the first consonant that's actually free.<br><br>
+    On the active item, blue-on-bright-background would fail contrast, so the hint switches channel: dark text, underlined. Same information, no unreadable pairing.<br><br>
+    Full map, all free of each other: <code>t</code> today · <code>m</code> tomorrow · <code>w</code> week · <code>b l s</code> toggle one meal · <code>B L S</code> toggle a meal across the whole week · <code>d</code> delete day · <code>enter</code> save · <code>esc</code> discard · <code>q</code> quit. Note this retires the earlier <code>g</code>-for-today binding — with <code>t</code> jumping to today's scope, a second "go to today" key is redundant.
+  </p>
+
+  <h2>State vocabulary</h2>
+  <table>
+    <tr><th>State</th><th>Glyph</th><th>Channel</th><th>Meaning</th></tr>
+    <tr><td>Booked, saved</td><td class="gl"><span class="b">━━</span></td><td class="dim">solid, full hue</td><td class="dim">committed to the backend</td></tr>
+    <tr><td>Will add</td><td class="gl"><span class="ld">┄┄</span></td><td class="dim">dashed, dimmed hue</td><td class="dim">staged, not saved</td></tr>
+    <tr><td>Will remove</td><td class="gl"><span class="sd">╌╌</span></td><td class="dim">coarse dash, dimmed hue</td><td class="dim">staged removal, not saved</td></tr>
+    <tr><td>Open</td><td class="gl"><span class="o">──</span></td><td class="dim">thin, hueless</td><td class="dim">bookable, not taken</td></tr>
+    <tr><td>Locked / past</td><td class="gl"><span class="wk">━━</span></td><td class="dim">grey, hue removed</td><td class="dim">past cutoff or past date</td></tr>
+    <tr><td>Weekend</td><td class="gl"><span class="wk">·</span></td><td class="dim">no bars at all</td><td class="dim">no service</td></tr>
+    <tr><td>Unsaved on this day</td><td class="gl"><span class="mark">•</span></td><td class="dim">bright dot</td><td class="dim">day has staged edits</td></tr>
+  </table>
+  <p class="note">Note the collision to watch: the team-density variant also used dash weights (<code>┈┈ ── ══ ━━</code>). Dash weight is now spoken for by save state, so if you build the team view, express headcount with a trailing digit or a separate row instead.</p>
+
+  <h2>Palette</h2>
+  <table>
+    <tr><th>Element</th><th>Truecolor</th><th>256</th><th>Reasoning</th></tr>
+    <tr><td><span class="chip" style="background:#E8A33D"></span>Breakfast</td><td><code>#E8A33D</code></td><td>179</td><td class="dim">warm amber — morning</td></tr>
+    <tr><td><span class="chip" style="background:#DD5F45"></span>Lunch</td><td><code>#DD5F45</code></td><td>167</td><td class="dim">paprika — the hot main meal</td></tr>
+    <tr><td><span class="chip" style="background:#93C572"></span>Snacks</td><td><code>#93C572</code></td><td>149</td><td class="dim">pistachio — nuts, matcha, green tea</td></tr>
+    <tr><td><span class="chip" style="background:#8A6428"></span>Breakfast staged</td><td><code>#8A6428</code></td><td>136</td><td class="dim">same hue at ~45% toward bg</td></tr>
+    <tr><td><span class="chip" style="background:#85392A"></span>Lunch staged</td><td><code>#85392A</code></td><td>130</td><td class="dim">same hue at ~45% toward bg</td></tr>
+    <tr><td><span class="chip" style="background:#587643"></span>Snacks staged</td><td><code>#587643</code></td><td>65</td><td class="dim">same hue at ~45% toward bg</td></tr>
+    <tr><td><span class="chip" style="background:#3E3E47"></span>Open slot</td><td><code>#3E3E47</code></td><td>238</td><td class="dim">faint, deliberately hueless</td></tr>
+    <tr><td><span class="chip" style="background:#262633"></span>Selection band</td><td><code>#262633</code></td><td>236</td><td class="dim">background only, no hue</td></tr>
+    <tr><td><span class="chip" style="background:#55555F"></span>Weekend / locked</td><td><code>#55555F</code></td><td>240</td><td class="dim">present but unbookable</td></tr>
+    <tr><td><span class="chip" style="background:#C8C8D0"></span>Date / text</td><td><code>#C8C8D0</code></td><td>252</td><td class="dim">default foreground</td></tr>
+    <tr><td><span class="chip" style="background:#E4E4E8"></span>Today / rail / pill</td><td><code>#E4E4E8</code></td><td>255</td><td class="dim">brightest, used sparingly</td></tr>
+    <tr><td><span class="chip" style="background:#6FA8D4"></span>Key hint</td><td><code>#6FA8D4</code></td><td>110</td><td class="dim">cool blue — the one hue no meal uses</td></tr>
+    <tr><td><span class="chip" style="background:#E05252"></span>Destructive</td><td><code>#E05252</code></td><td>203</td><td class="dim">delete confirm only, nowhere else</td></tr>
+  </table>
+
+</div>
+</body>
+</html>

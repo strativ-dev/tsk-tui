@@ -50,6 +50,28 @@ const (
 	// in muted ink on a dim band is exactly what a weekend looks like.
 	LeaveOther = lipgloss.Color("#FFFFFF")
 
+	// The meal calendar's palette, from docs/meal-calendar-palette.html. One hue per meal,
+	// warmest first: morning amber, the hot main meal, then something green.
+	MealBreakfast = lipgloss.Color("#E8A33D")
+	MealLunch     = lipgloss.Color("#DD5F45")
+	MealSnacks    = lipgloss.Color("#93C572")
+	// The same three hues at ~45% toward the background, from the palette. A day already
+	// eaten keeps its meal's colour and loses the brightness: history reads as history, but
+	// a month of past days still says which meals were on. The palette earmarks these for
+	// staged edits, which are told apart by their dashed glyphs rather than by hue.
+	MealBreakfastPast = lipgloss.Color("#8A6428")
+	MealLunchPast     = lipgloss.Color("#85392A")
+	MealSnacksPast    = lipgloss.Color("#587643")
+
+	// MealOpen is a slot nobody has taken: faint and deliberately hueless, so the booked
+	// bars beside it are the only coloured thing on the day.
+	MealOpen = lipgloss.Color("#3E3E47")
+	// MealQuiet is a day that cannot be acted on — a weekend, a holiday, anything past.
+	// Present, but with the hue taken out.
+	MealQuiet = lipgloss.Color("#55555F")
+	// MealBand is the band behind today's cell: background only, no hue of its own.
+	MealBand = lipgloss.Color("#262633")
+
 	// The time off screen's surfaces, from docs/timeoff-styles.md. The calendar body is one
 	// surface with a hairline between the month cells; the month in view is tinted with the
 	// accent at 4.5%, which is the only thing that colour is doing there.
@@ -70,6 +92,44 @@ const (
 	UnitInk  = lipgloss.Color("#6C717C") // DAYS AVAILABLE, the mode indicator
 	WeekInk  = lipgloss.Color("#3E424B") // week numbers
 )
+
+// MealColor is the colour of a meal type, matched on its name for the same reason
+// LeaveColor is: the ERP's ids are per database and the palette is per meaning. An unknown
+// type gets white — it is a meal, whatever the office calls it.
+func MealColor(name string) lipgloss.Color {
+	name = strings.ToLower(name)
+	switch {
+	case strings.Contains(name, "break"):
+		return MealBreakfast
+	case strings.Contains(name, "lunch"):
+		return MealLunch
+	case strings.Contains(name, "snack"):
+		return MealSnacks
+	case strings.Contains(name, "iftar"), strings.Contains(name, "dinner"):
+		return LeaveAnnual // the violet, the one hue no other meal claims
+	}
+	return White
+}
+
+// MealPastColor is a meal already eaten: the same hue, dimmed. An unknown type falls back
+// to the quiet grey, since there is no dim version of a colour we do not have.
+func MealPastColor(name string) lipgloss.Color {
+	switch MealColor(name) {
+	case MealBreakfast:
+		return MealBreakfastPast
+	case MealLunch:
+		return MealLunchPast
+	case MealSnacks:
+		return MealSnacksPast
+	}
+	return MealQuiet
+}
+
+// MealBooked is a meal that is on: a solid bar in its own colour, the one coloured thing on
+// a day.
+func MealBooked(c lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(c).Bold(true)
+}
 
 // OnPanel is anything drawn on a month's panel: the panel's own colour behind it, since a
 // background wrapped around a whole line does not survive the first span that sets its own.
@@ -196,6 +256,14 @@ var (
 	// set on an inner span resets the background the box put behind it.
 	OnOk   = lipgloss.NewStyle().Foreground(White).Background(Complete).Bold(true)
 	OnDrop = lipgloss.NewStyle().Foreground(White).Background(Destructive).Bold(true)
+
+	// The meal calendar's text and its empty slots. A date is the default ink, today the
+	// brightest thing on the screen, and a day nobody can act on — a weekend, a holiday, a
+	// day already gone — keeps its number in the quiet grey.
+	MealDate     = lipgloss.NewStyle().Foreground(lipgloss.Color("#C8C8D0"))
+	MealToday    = lipgloss.NewStyle().Foreground(lipgloss.Color("#E4E4E8")).Bold(true).Underline(true)
+	MealQuietInk = lipgloss.NewStyle().Foreground(MealQuiet)
+	MealSlot     = lipgloss.NewStyle().Foreground(MealOpen)
 
 	// Off is a day the ERP expected nothing of — weekend, holiday, leave. The band
 	// spans the whole track on purpose: width itself says "nothing was expected".

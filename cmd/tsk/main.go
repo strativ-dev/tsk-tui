@@ -20,9 +20,18 @@ func main() {
 	// test must not depend on whatever is in the developer's config file. A bad file
 	// stops the program — dropping into an alt screen you cannot drive is worse than a
 	// message on stderr.
-	binds, err := config.LoadKeys()
+	binds, perTab, err := config.LoadKeys()
 	if err == nil {
 		err = model.ApplyKeys(binds)
+	}
+	if err == nil {
+		// Per-tab last: each screen's map is the global one with its own overrides on top.
+		err = model.ApplyTabKeys(perTab)
+	}
+	if err == nil {
+		// A key the tab bar already owns can never reach the action bound to it, so the
+		// keymap is refused rather than left half working.
+		err = model.CheckKeys()
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

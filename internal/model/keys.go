@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // keyMap is the single source of truth for keys. Update matches against these
@@ -23,6 +24,7 @@ type keyMap struct {
 	Refresh, SetKey, ClearSearch   key.Binding
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab, TimeTab     key.Binding
+	MealTab                        key.Binding
 	Help, Clock, NewLeave          key.Binding
 	PrevMonth, NextMonth           key.Binding
 	Cycle                          key.Binding
@@ -84,6 +86,8 @@ func defaultKeys() keyMap {
 		// every screen, and a tab key that means one thing everywhere is worth more than a
 		// motion the calendar can do without, since it opens on today anyway.
 		TimeTab: key.NewBinding(key.WithKeys("o", "3"), key.WithHelp("o", "timeoff")),
+		// m, the initial of the word, free of every other tab key.
+		MealTab: key.NewBinding(key.WithKeys("m", "4"), key.WithHelp("m", "meal")),
 
 		// The footer's key list, off by default and toggled from anywhere that is not
 		// typing. ? is the one key the closed footer still advertises, so the rest are
@@ -119,7 +123,89 @@ func defaultKeys() keyMap {
 // key given, so the footer follows a rebind without a second place to edit. An empty
 // list unbinds the action.
 func ApplyKeys(overrides map[string][]string) error {
-	v := reflect.ValueOf(&keys).Elem()
+	return applyTo(&keys, overrides)
+}
+
+// tabKeys is the per-tab keymaps: the global one with that tab's own overrides on top.
+// tabClaimed remembers which actions a tab set explicitly, which is what lets one of them
+// beat a tab key on that screen and nowhere else.
+var (
+	tabKeys    = map[Tab]keyMap{}
+	tabClaimed = map[Tab]map[string]bool{}
+)
+
+// TabNames is the name each tab answers to in the config file, in bar order.
+func TabNames() []string { return []string{"tasks", "dash", "time", "meal"} }
+
+func tabByName(name string) (Tab, bool) {
+	switch name {
+	case "tasks":
+		return TabTasks, true
+	case "dash":
+		return TabDash, true
+	case "time":
+		return TabTime, true
+	case "meal":
+		return TabMeal, true
+	}
+	return 0, false
+}
+
+// ApplyTabKeys rebinds actions for one screen only, from a `[keys.<tab>]` table.
+//
+// A tab's own binding is what that screen reads, and everything it does not name falls
+// through to the global keymap — so `[keys.meal] delete = ["d"]` puts cancel on d there while
+// x still deletes a timesheet row. It is called once from main, after ApplyKeys, since the
+// per-tab maps are built on top of the global one.
+func ApplyTabKeys(per map[string]map[string][]string) error {
+	tabKeys, tabClaimed = map[Tab]keyMap{}, map[Tab]map[string]bool{}
+	for name, overrides := range per {
+		tab, ok := tabByName(name)
+		if !ok {
+			return fmt.Errorf("keys.%s is not a screen — try one of: %s",
+				name, strings.Join(TabNames(), ", "))
+		}
+		k := keys // a copy: keyMap is all values, so this cannot write the global one
+		if err := applyTo(&k, overrides); err != nil {
+			return err
+		}
+		tabKeys[tab] = k
+		claimed := map[string]bool{}
+		for action := range overrides {
+			claimed[action] = true
+		}
+		tabClaimed[tab] = claimed
+	}
+	return nil
+}
+
+// keysFor is the keymap a screen reads: its own, or the global one when it has no overrides.
+func keysFor(t Tab) keyMap {
+	if k, ok := tabKeys[t]; ok {
+		return k
+	}
+	return keys
+}
+
+// claims says whether this tab bound one of its own keys to msg. Those are matched before the
+// tab keys, so a screen that deliberately takes `d` for its own action keeps it — and loses
+// the dashboard shortcut there, which is what asking for it means.
+func claims(t Tab, msg tea.KeyMsg) bool {
+	v := reflect.ValueOf(keysFor(t))
+	for action := range tabClaimed[t] {
+		f := v.FieldByName(fieldName(action))
+		if !f.IsValid() {
+			continue
+		}
+		if key.Matches(msg, f.Interface().(key.Binding)) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyTo(dst *keyMap, overrides map[string][]string) error {
+	v := reflect.ValueOf(dst).Elem()
 	for action, binds := range overrides {
 		field := v.FieldByName(fieldName(action))
 		if !field.IsValid() {
@@ -142,6 +228,56 @@ func ApplyKeys(overrides map[string][]string) error {
 		field.Set(reflect.ValueOf(key.NewBinding(opts...)))
 	}
 	return nil
+}
+
+// CheckKeys refuses a keymap whose actions are shadowed by the tab keys.
+//
+// The tab keys and `?` are matched **before** the per-tab handlers, so an action bound to one
+// of them can never fire: `delete = ["d"]` puts the dashboard on the key and leaves x-deletes
+// -a-row — and cancel-a-meal — unreachable, while the footer honestly advertises `d` for
+// them. That is worse than a message on stderr, which is why a misspelled key is refused here
+// too: a keymap you cannot drive should not reach the alt screen.
+//
+// Rebinding the tab keys themselves is fine, and so is anything the typing modes protect —
+// only the actions those handlers reach are checked.
+func CheckKeys() error {
+	tabs := map[string]string{}
+	for _, t := range []struct {
+		name string
+		b    key.Binding
+	}{
+		{"tasks_tab", keys.TasksTab}, {"dash_tab", keys.DashTab},
+		{"time_tab", keys.TimeTab}, {"meal_tab", keys.MealTab}, {"help", keys.Help},
+	} {
+		for _, k := range t.b.Keys() {
+			tabs[k] = t.name
+		}
+	}
+
+	// Only the global map is checked: a per-tab override that takes a tab key does so on
+	// purpose, and only on that one screen.
+	v := reflect.ValueOf(keys)
+	tt := v.Type()
+	var clashes []string
+	for i := range tt.NumField() {
+		name := actionName(tt.Field(i).Name)
+		if _, isTab := map[string]bool{"tasks_tab": true, "dash_tab": true,
+			"time_tab": true, "meal_tab": true, "help": true}[name]; isTab {
+			continue
+		}
+		for _, k := range v.Field(i).Interface().(key.Binding).Keys() {
+			if owner, taken := tabs[k]; taken {
+				clashes = append(clashes, fmt.Sprintf("keys.%s = %q is already %s",
+					name, k, owner))
+			}
+		}
+	}
+	if len(clashes) == 0 {
+		return nil
+	}
+	sort.Strings(clashes)
+	return fmt.Errorf("%s\nthe tab keys are matched first, so those actions could never fire",
+		strings.Join(clashes, "\n"))
 }
 
 // Actions is every name the [keys] table accepts, sorted.
@@ -172,7 +308,29 @@ const keysTOMLHeader = `# tsk keymap — every default, so this file changes not
 # bubbletea's way: one character, ctrl+/alt+/shift+ and one, or enter esc tab
 # shift+tab space backspace delete up down left right home end pgup pgdown. A
 # misspelling is refused at startup rather than silently never matching.
+#
+# Per screen: a [keys.<tab>] table rebinds an action on that screen only, and leaves it
+# alone everywhere else. The screens are tasks, dash, time and meal.
+#
+#     [keys.meal]
+#     delete = ["d"]        # d cancels the day's meals here; x still deletes a row
+#
+# A screen's own binding is matched before the tab keys, so a table like that trades the
+# dashboard shortcut for it on that screen — and nowhere else. Globally the tab keys win,
+# and a global binding that collides with one is refused at startup.
 [keys]
+`
+
+// tabKeysTOMLFooter shows the per-screen tables the same way, commented, so the file that
+// --print-keys writes documents them without changing any binding.
+const tabKeysTOMLFooter = `
+# Per-screen overrides. Uncomment a table and the actions you want it to change.
+#
+# [keys.tasks]
+# [keys.dash]
+# [keys.time]
+# [keys.meal]
+# delete = ["d"]
 `
 
 // KeysTOML is the live keymap as a [keys] table, so `tsk --print-keys` can seed the
@@ -199,6 +357,7 @@ func KeysTOML() string {
 		}
 		fmt.Fprintf(&b, "%-*s = [%s]\n", width, names[i], strings.Join(quoted, ", "))
 	}
+	b.WriteString(tabKeysTOMLFooter)
 	return b.String()
 }
 
