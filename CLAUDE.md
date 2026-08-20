@@ -354,7 +354,9 @@ for the request form, which is not built.
   leave it
   (`view.go: withHolidayPanel`), on its own raised surface (`theme.Raised`), with a dim rule
   between it and the months and the dates in their own column before a `:`, as the design
-  draws it. The rows of the **month in view** are marked down the panel's own edge — a `▎` in
+  draws it. A one-day holiday **says which weekday it takes** — `Aug 5 (Wed)` — which is the
+  question a holiday raises; a run of days (`Mar 18-23`, `Mar 30-Apr 2`) answers it by being
+  a run, and `holidaySpan` stays inside `spanCells` either way. The rows of the **month in view** are marked down the panel's own edge — a `▎` in
   the accent, the date in the accent, the name in white — so the list answers the part of the
   calendar you are looking at. Its header gives up the year and then the count itself rather
   than pushing the column wider than the one it was handed. It is a column of the screen, not of
@@ -381,6 +383,13 @@ One row between the balances and the calendar, and the whole request is on it:
   middle one, so revealing the fields moves nothing (`leaveBand`). The parts are joined with
   `lipgloss.JoinHorizontal(lipgloss.Center, …)`, which is what puts the one-line label beside
   the three-line boxes rather than on their top rule.
+- **The ✓ and ✕ fill when the keys are on them** — green and red, the mark reversed out in
+  white (`theme.FieldOkOn`/`FieldDropOn`, `OnOk`/`OnDrop`) — rather than taking the accent
+  frame the fields take: these two are pressed, not typed into, so a fill says what a
+  hovered button says everywhere else. The fill stops **inside** the frame — on the border
+  cells too it spread a cell past the box on every side — and the mark carries the fill on
+  its own span,
+  since a foreground set inside resets the background the box put behind it.
 - **Two marks, two meanings.** The accent **frame** says which field has the keys; the accent
   **fill** says the value is selected and the next keystroke replaces it, which is only ever a
   date field just tabbed into (`leaveDate`, `theme.Match`). The selected value is rendered
@@ -395,6 +404,12 @@ One row between the balances and the calendar, and the whole request is on it:
   day replaces the range's end with the **morning/afternoon** dropdown, since a half day is
   one day and has no end to give. `j`/`k`/`space` change whichever dropdown has the keys;
   they are letters everywhere else, so they only do that on a dropdown.
+- **A leave type's own initial picks it** on the type dropdown — `s`, `c`, `a`, `p` here,
+  the same letters the filter chips take, matched on the type's name
+  (`Model.kindByLetter`) rather than hardcoded. It is matched **after** the bound keys, so
+  `j`/`k` keep stepping and a type named `Kayak` cannot shadow them. `filterKind` returns
+  the type's id, which is what a filter holds; this returns its index, which is what the
+  form holds.
 - **The description sizes itself from the row that is actually drawn** (`leaveSkeleton`
   renders the line with an empty description and measures it), so it cannot disagree with
   what surrounds it by a cell. It measures **both durations and takes the wider**, or
@@ -428,8 +443,10 @@ One row between the balances and the calendar, and the whole request is on it:
   lines puts its `y / n` hint on a line of its own, or "Coast trip  y / n" reads as the
   description.
 - **`esc` asks too** (`confirmDropLeave`): everything typed goes with the line. `✕` does not
-  ask — nothing has been filed, and it leaves the line open on its first field, which is
-  where starting over starts.
+  ask — nothing has been filed, so there is nothing to lose — and it **closes the line**,
+  back to the `new timeoff` label the tab opened on; `n` opens a fresh one. It reset in
+  place first, which left you on a form you had just said you were done with, and `esc` was
+  then the only way off the row.
 - **The line stays exactly as typed until the ERP answers.** A refusal keeps it on screen to
   fix; only `LeaveRequestedMsg` with an id closes it, and that re-reads the year so the days
   appear where the calendar says they are rather than where this screen guessed.
@@ -661,7 +678,9 @@ quit      = []           # an empty list unbinds; ctrl+c always quits
   `model.New`: `New` runs in every test, and a test must not read the developer's
   config. Tests that rebind restore `keys = defaultKeys()` in `t.Cleanup`.
 - The modal's `y / n` hint is read off `confirmKeys().Help()`, not spelled out, or a
-  rebind would leave a destructive prompt advertising a key that no longer accepts it.
+  rebind would leave a destructive prompt advertising a key that no longer accepts it. The
+  **keys take the accent** and the slash between them stays dim: accent means "this is what
+  to press" everywhere else, and the punctuation is not a key.
 
 ## Credentials and sync
 

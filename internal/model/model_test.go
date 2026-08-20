@@ -15,6 +15,7 @@ import (
 	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/parse"
 	"github.com/tasnimAlam/tsk/internal/store"
+	"github.com/tasnimAlam/tsk/internal/theme"
 )
 
 func send(t *testing.T, m Model, msgs ...tea.Msg) Model {
@@ -567,9 +568,19 @@ func TestQuitConfirm(t *testing.T) {
 	if still.mode != ModeConfirm {
 		t.Errorf("mode after enter = %v, want the prompt still open", still.mode)
 	}
-	if !strings.Contains(m.View(), "y / n") {
+	if !strings.Contains(plain(m.View()), "y / n") {
 		t.Errorf("quit prompt should advertise y, not enter:\n%s", m.View())
 	}
+	// And the keys are in the accent, which is what that colour means everywhere else.
+	func() {
+		restore := lipgloss.ColorProfile()
+		lipgloss.SetColorProfile(termenv.TrueColor)
+		defer lipgloss.SetColorProfile(restore)
+		want := lipgloss.NewStyle().Foreground(theme.Accent).Bold(true).Render("y")
+		if !strings.Contains(m.View(), want) {
+			t.Errorf("the prompt's keys are not in the accent:\n%q", m.View())
+		}
+	}()
 	// ctrl+c bypasses the prompt entirely.
 	if _, cmd := sendCmd(t, back, special(tea.KeyCtrlC)); !quits(cmd) {
 		t.Error("ctrl+c did not quit immediately")

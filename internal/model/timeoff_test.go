@@ -225,6 +225,38 @@ func TestCalendarColorsTheDays(t *testing.T) {
 	}
 }
 
+// The button the keys are on fills with what it does — green for ✓, red for ✕ — with the
+// mark reversed out in white, since these two are pressed rather than typed into.
+func TestLeaveButtonsFillWhenFocused(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const white = "38;2;255;255;255"
+	for _, tc := range []struct {
+		field int
+		mark  string
+		fill  string
+	}{
+		{leaveOKField, "✓", "48;2;18;204;99"}, // Complete
+		{leaveXField, "✕", "48;2;225;52;0"},   // Destructive
+	} {
+		m := send(t, timeModel(t, 158, 46), runes("n"))
+		for m.form.field != tc.field {
+			m = send(t, m, special(tea.KeyTab))
+		}
+		row := lineWith(t, m.View(), tc.mark)
+		if !strings.Contains(row, tc.fill) || !strings.Contains(row, white) {
+			t.Errorf("%s focused is not filled with white on its own colour:\n%q", tc.mark, row)
+		}
+		// Unfocused it is a frame, not a fill.
+		away := send(t, m, special(tea.KeyTab), special(tea.KeyTab))
+		if got := lineWith(t, away.View(), tc.mark); strings.Contains(got, tc.fill) {
+			t.Errorf("%s stayed filled with the keys elsewhere:\n%q", tc.mark, got)
+		}
+	}
+}
+
 // A half day bands one of the date's two cells and leaves the other faint, which says both
 // that it is half a day and which half.
 func TestHalfDayBandsOneCell(t *testing.T) {
@@ -367,8 +399,9 @@ func TestHolidayPanelNeedsRoom(t *testing.T) {
 	if !strings.Contains(wide, "PUBLIC HOLIDAYS") || !strings.Contains(wide, "Victory day") {
 		t.Errorf("no holiday panel on a wide terminal:\n%s", wide)
 	}
-	// Mar 30-Apr 2 crosses a month, so both names stay; a run inside one collapses.
-	for _, want := range []string{"Mar 18-23", "Mar 30-Apr 2", "Aug 5"} {
+	// Mar 30-Apr 2 crosses a month, so both names stay; a run inside one collapses, and one
+	// day says which day of the week it takes.
+	for _, want := range []string{"Mar 18-23", "Mar 30-Apr 2", "Aug 5 (Wed)"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("the panel is missing the span %q:\n%s", want, wide)
 		}
@@ -555,6 +588,17 @@ func TestLeaveFormTabsAndDropdowns(t *testing.T) {
 	}
 	if back := send(t, m, runes("k")); back.form.kind != len(m.timeKinds)-1 {
 		t.Errorf("k left the type at %d, want the last one", back.form.kind)
+	}
+
+	// And a type's own initial picks it outright — s/c/a/p, the filter chips' letters.
+	for _, tc := range []struct {
+		key  string
+		want int
+	}{{"a", 2}, {"p", 3}, {"s", 0}, {"c", 1}} {
+		if got := send(t, m, runes(tc.key)); got.form.kind != tc.want {
+			t.Errorf("%q chose type %d (%s), want %d", tc.key, got.form.kind,
+				got.timeKinds[got.form.kind].Name, tc.want)
+		}
 	}
 
 	// Duration is a dropdown, not a checkbox: full day / half day.
@@ -924,17 +968,25 @@ func TestLeaveDiscardAndReset(t *testing.T) {
 		}
 	}
 
-	// ✕ resets in place: the line stays open, on its first field, with the dates back to today.
-	reset := m
-	for reset.form.field != leaveXField {
-		reset = send(t, reset, special(tea.KeyTab))
+	// ✕ closes the line without asking, back to the label the tab opened on.
+	closed := m
+	for closed.form.field != leaveXField {
+		closed = send(t, closed, special(tea.KeyTab))
 	}
-	reset = send(t, reset, special(tea.KeyEnter))
-	if !reset.form.open || reset.form.field != leaveKindField {
-		t.Fatalf("✕ left the line open = %v on field %d", reset.form.open, reset.form.field)
+	closed = send(t, closed, special(tea.KeyEnter))
+	if closed.form.open || closed.mode != ModeList {
+		t.Fatalf("✕ left the line open = %v in mode %v", closed.form.open, closed.mode)
 	}
-	if reset.form.from.Value() != parse.Today() {
-		t.Errorf("✕ left the start date at %q", reset.form.from.Value())
+	if line := lineWith(t, plain(closed.View()), "new timeoff"); !strings.Contains(line, "new timeoff") {
+		t.Errorf("the row does not read as the closed label:\n%s", line)
+	}
+	// And n opens it again, on its first field with the dates back to today.
+	again := send(t, closed, runes("n"))
+	if !again.form.open || again.form.field != leaveKindField {
+		t.Fatalf("n after ✕ left the line open = %v on field %d", again.form.open, again.form.field)
+	}
+	if again.form.from.Value() != parse.Today() {
+		t.Errorf("reopening left the start date at %q", again.form.from.Value())
 	}
 }
 

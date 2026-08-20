@@ -1790,9 +1790,12 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case leaveOKField:
 			return m.askApplyLeave()
 		case leaveXField:
-			// A reset is not a discard: nothing has been filed, and the line stays open on
-			// its first field, which is where starting over starts.
-			return m.openLeaveForm()
+			// ✕ closes the line and does not ask: nothing has been filed, so there is
+			// nothing to lose, and the row goes back to the `new timeoff` label the tab
+			// opened on. esc is the one that asks, since it is pressed by accident.
+			m.form = leaveForm{}
+			m.mode, m.err = ModeList, nil
+			return m, nil
 		default:
 			return m.moveLeaveField(1), nil
 		}
@@ -1822,6 +1825,14 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The dropdowns take j/k and space; the text fields must keep those letters.
 	if m.leaveFieldIsDropdown() && key.Matches(msg, keys.Cycle) {
 		return m.cycleLeaveField(msg.String()), nil
+	}
+	// On the leave type, a type's own initial picks it — the same letters the filter chips
+	// use, so s/c/a/p mean one thing on this screen. Matched after Cycle, so j/k still step.
+	if m.form.field == leaveKindField && msg.Type == tea.KeyRunes {
+		if i, ok := m.kindByLetter(msg.String()); ok {
+			m.form.kind = i
+			return m.followLeaveDates(), nil
+		}
 	}
 
 	in := m.leaveInput()
@@ -2162,6 +2173,20 @@ func (m Model) filterKind(s string) (int, bool) {
 	for _, k := range m.timeKinds {
 		if strings.HasPrefix(strings.ToLower(k.Name), strings.ToLower(s)) {
 			return k.ID, true
+		}
+	}
+	return 0, false
+}
+
+// kindByLetter is the index of the first leave type whose name starts with s, the same
+// match the filter chips make — the form needs the index, the filter needs the id.
+func (m Model) kindByLetter(s string) (int, bool) {
+	if len([]rune(s)) != 1 {
+		return 0, false
+	}
+	for i, k := range m.timeKinds {
+		if strings.HasPrefix(strings.ToLower(k.Name), strings.ToLower(s)) {
+			return i, true
 		}
 	}
 	return 0, false

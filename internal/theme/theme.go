@@ -16,6 +16,9 @@ const (
 	Muted       = lipgloss.Color("#8A8F99")
 	// Rule draws the boxes and separators: visible on black, quieter than text.
 	Rule = lipgloss.Color("#2B2B3A")
+	// White is the strongest ink there is: a button's label, and a mark reversed out of a
+	// filled one.
+	White = lipgloss.Color("#FFFFFF")
 
 	// Dashboard palette, from the design spec. The three hour colors are thresholds:
 	// under 4h, under 8h, on target. The spec draws one-colour bars and tints only the
@@ -183,6 +186,16 @@ var (
 	// clock's button does: green commits, red throws away.
 	FieldOk   = Field.BorderForeground(Complete)
 	FieldDrop = Field.BorderForeground(Destructive)
+	// And they fill with that colour while the keys are on them, which is what a button
+	// under the pointer does everywhere else. The fill stops **inside** the frame: painted
+	// onto the border cells as well it spread a cell past the box on every side and read as
+	// a green blob rather than as a pressed button.
+	FieldOkOn   = FieldOk.Background(Complete)
+	FieldDropOn = FieldDrop.Background(Destructive)
+	// The mark inside a filled button: white, and carrying the fill itself — a foreground
+	// set on an inner span resets the background the box put behind it.
+	OnOk   = lipgloss.NewStyle().Foreground(White).Background(Complete).Bold(true)
+	OnDrop = lipgloss.NewStyle().Foreground(White).Background(Destructive).Bold(true)
 
 	// Off is a day the ERP expected nothing of — weekend, holiday, leave. The band
 	// spans the whole track on purpose: width itself says "nothing was expected".

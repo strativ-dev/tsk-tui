@@ -109,7 +109,7 @@ const (
 	// names stop being readable, and above panelMax the list is just wide.
 	panelMin  = 24
 	panelMax  = 34
-	spanCells = 12 // "Mar 30-Apr 2", the longest a span gets
+	spanCells = 12 // "Sep 10 (Wed)" and "Mar 30-Apr 2", the longest a span gets
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -139,12 +139,16 @@ func (m Model) View() string {
 	case ModeConfirm:
 		// Read off the bindings themselves. Spelling the keys out here meant a rebind
 		// could leave a destructive prompt advertising a key that no longer accepts it.
-		hint := m.confirmKeys().Help().Key + " / " + keys.No.Help().Key
+		// The keys themselves take the accent, which is what that colour means everywhere
+		// else: this is what to press. The slash between them stays dim — it is punctuation,
+		// not a key.
+		hint := theme.HintKey.Render(m.confirmKeys().Help().Key) +
+			theme.Dim.Render(" / ") + theme.HintKey.Render(keys.No.Help().Key)
 		// A prompt of several lines puts its keys on a line of their own: appended to the
 		// last one they read as part of it, and "Coast trip  y / n" is not a description.
-		prompt := m.cPrompt + "  " + theme.Dim.Render(hint)
+		prompt := m.cPrompt + "  " + hint
 		if strings.Contains(m.cPrompt, "\n") {
-			prompt = m.cPrompt + "\n\n" + theme.Dim.Render(hint)
+			prompt = m.cPrompt + "\n\n" + hint
 		}
 		tail = append(tail, strings.Split(theme.Modal.Render(prompt), "\n")...)
 	case ModeAuth:
@@ -1026,22 +1030,24 @@ func (m Model) leaveRow(label, compact bool, desc string) string {
 			m.leaveField(m.leaveDate(1), leaveToField, compact))
 	}
 
-	// The two buttons frame themselves in what they do — green commits, red starts over —
-	// and take the accent only while the keys are on them.
+	// The two buttons frame themselves in what they do — green commits, red throws away —
+	// and the one the keys are on **fills** with that colour, its mark reversed out in
+	// white: these two are pressed, not typed into, so a fill says more than a frame.
 	ok, drop := theme.FieldOk, theme.FieldDrop
+	tick, cross := theme.Ok, theme.Err
 	if m.form.field == leaveOKField {
-		ok = theme.FieldFocus
+		ok, tick = theme.FieldOkOn, theme.OnOk
 	}
 	if m.form.field == leaveXField {
-		drop = theme.FieldFocus
+		drop, cross = theme.FieldDropOn, theme.OnDrop
 	}
 	if compact {
 		ok, drop = ok.Padding(0), drop.Padding(0)
 	}
 	parts = append(parts,
 		m.leaveField(desc, leaveDescField, compact),
-		ok.Render(theme.Ok.Render("✓")),
-		drop.Render(theme.Err.Render("✕")))
+		ok.Render(tick.Render("✓")),
+		drop.Render(cross.Render("✕")))
 
 	// Joined as a block, with the gaps as parts of their own: the boxes are three lines and
 	// the label is one, so it is centred against them rather than sitting on the top rule.
@@ -1591,9 +1597,12 @@ func (m Model) holidayPanel(year int) []string {
 	return out
 }
 
-// holidaySpan is a holiday's dates, as short as they can be said: one day is "Aug 5", a
-// run inside one month collapses to "Mar 18-23", and one that crosses a month keeps both
+// holidaySpan is a holiday's dates, as short as they can be said: one day is "Aug 5 (Wed)",
+// a run inside one month collapses to "Mar 18-23", and one that crosses a month keeps both
 // names.
+//
+// The weekday rides along on a single day only, since that is the question a holiday raises
+// — which day of the week it takes — and a run of days already answers it by being a run.
 func holidaySpan(h api.Holiday) string {
 	from, err := time.Parse("2006-01-02", h.From)
 	if err != nil {
@@ -1601,7 +1610,7 @@ func holidaySpan(h api.Holiday) string {
 	}
 	to, err := time.Parse("2006-01-02", h.To)
 	if err != nil || !to.After(from) {
-		return from.Format("Jan 2")
+		return from.Format("Jan 2 (Mon)")
 	}
 	if to.Month() == from.Month() {
 		return from.Format("Jan 2") + "-" + to.Format("2")
