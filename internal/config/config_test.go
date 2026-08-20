@@ -70,7 +70,7 @@ func TestLoadKeys(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := loadKeys(write(t, c.body))
+			got, _, err := loadKeys(write(t, c.body))
 			switch {
 			case c.err != "" && err == nil:
 				t.Fatalf("loadKeys(%q) = %v, want an error mentioning %q", c.body, got, c.err)
@@ -97,9 +97,9 @@ func TestLoadKeys(t *testing.T) {
 
 // A config file nobody wrote is the normal case, not a failure.
 func TestMissingFileIsNotAnError(t *testing.T) {
-	got, err := loadKeys(filepath.Join(t.TempDir(), "absent.toml"))
-	if err != nil || got != nil {
-		t.Errorf("loadKeys(absent) = %v, %v, want nil, nil", got, err)
+	got, perTab, err := loadKeys(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil || got != nil || perTab != nil {
+		t.Errorf("loadKeys(absent) = %v, %v, %v, want nil, nil, nil", got, perTab, err)
 	}
 }
 
