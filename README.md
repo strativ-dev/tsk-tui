@@ -294,7 +294,8 @@ a screenful at a time. The month, its totals and the axis stay put while the day
 A calendar of the whole year — three months a row from about 120 columns, divided by
 hairlines with the month you are looking at tinted, ISO week numbers down the left — with
 your leave balances boxed above it and, from about 88 columns, the public holidays pinned in a
-column down the right, which stays put while the months scroll under it. A day off is a filled badge in its leave type's colour, a **half day** fills half of it, and a
+column down the right, which stays put while the months scroll under it. A one-day holiday
+says which weekday it takes — `Aug 5 (Wed)`. A day off is a filled badge in its leave type's colour, a **half day** fills half of it, and a
 request still waiting on approval is **underlined**. The days you are typing on the request
 line are reversed out in the accent. Weekends and holidays are filled badges, so the
 days nobody works read as days rather than as gaps; the month in view carries the caret.
@@ -323,13 +324,16 @@ new timeoff  │ Annual ▾ │ │ full day ▾ │ │ 21/01/26 │  →  │ 
 ```
 
 The field with the keys has an accent frame; a date you have just tabbed onto is shown
-reversed out, because the next keystroke replaces the whole value.
+reversed out, because the next keystroke replaces the whole value. ✓ and ✕ are buttons
+rather than fields, so the one the keys are on fills — green and red, with its mark in
+white — and ✕ closes the line without asking, since nothing has been filed yet.
 
 | Key | Does |
 |---|---|
 | `tab` / `shift+tab` | next / previous field |
 | `j` / `k` / `space` | change the focused dropdown (leave type, full or half day, morning or afternoon) |
-| `enter` | next field; on ✓ it asks before filing, on ✕ it starts over |
+| `s` `c` `a` `p` | on the leave type, pick it outright — the same initials the boxes and the filters use |
+| `enter` | next field; on ✓ it asks before filing, on ✕ it closes the line |
 | `ctrl+u` | clear the focused field |
 | `esc` | discard the request (asks first) |
 
