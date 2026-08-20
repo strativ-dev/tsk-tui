@@ -234,7 +234,8 @@ what the keys actually do.
 
 ### Keymap
 
-These are the defaults — see [Custom keybindings](#custom-keybindings) to change them.
+The defaults — see [Custom keybindings](#custom-keybindings) to change them, and `?` in the app
+for the keys the current screen takes.
 
 **Task list** (where it starts)
 
@@ -246,16 +247,13 @@ These are the defaults — see [Custom keybindings](#custom-keybindings) to chan
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
-| `d` / `o` / `m` / `t` | dashboard / time off / meals / back to the tasks (`2` / `3` / `4` / `1` too) |
+| `d` / `o` / `m` / `t` | dashboard / time off / meals / tasks (`2` / `3` / `4` / `1` too) |
 | `r` | re-fetch tasks from the ERP |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
 | `ctrl+u` | clear the search and focus it |
 | `?` | show or hide the key list |
 | `q` | quit (asks first; `ctrl+c` quits at once) |
-
-`d` / `o` / `m` / `t` and `?` work from anywhere that is not typing into a field, so they
-reach the tabs and the key list from inside a task too.
 
 **Inside a task**
 
@@ -272,139 +270,6 @@ reach the tabs and the key list from inside a task too.
 | `ctrl+u` | collapse, clear the search, focus it |
 | `q` | quit (asks first; `n` returns to these rows) |
 
-**Dashboard** (`d` or `2`)
-
-One chart: hours logged per day for the whole month, weekends and holidays labelled
-instead of drawn. The days are laid out in columns so the whole month fits one screen —
-four columns on an 80×24 terminal, one on a tall one — and every day keeps its hours
-printed beside its bar. Top right is the ERP's own clock — where you are
-working, when you checked in, how long ago that was, and the button `c` presses.
-
-| Key | Does |
-|---|---|
-| `g` / `G` | start / end of the month |
-| `ctrl+f` / `ctrl+b` | half a screen of days, down / up |
-| `<` / `>` | previous / next month — `>` stops at the current one |
-| `c` | check in, or check out (asks first, `y` only) — the boxed button says which |
-| `r` | re-read the month from the ERP |
-| `t` | back to the tasks (`1` too) |
-| `i` / `ctrl+u` | back to the tasks, in the search field |
-| `?` | show or hide the key list |
-| `q` | quit (asks first) |
-
-There is no `j` / `k` here: the chart is one picture of the month, not a list, so it moves
-a screenful at a time. The month, its totals and the axis stay put while the days move.
-
-**Time off** (`o` or `3`)
-
-A calendar of the whole year — three months a row from about 120 columns, divided by
-hairlines with the month you are looking at tinted, ISO week numbers down the left — with
-your leave balances boxed above it and, from about 88 columns, the public holidays pinned in a
-column down the right, which stays put while the months scroll under it. A one-day holiday
-says which weekday it takes — `Aug 5 (Wed)`. A day off is a filled badge in its leave type's colour, a **half day** fills half of it, and a
-request still waiting on approval is **underlined**. The days you are typing on the request
-line are reversed out in the accent. Weekends and holidays are filled badges, so the
-days nobody works read as days rather than as gaps; the month in view carries the caret.
-
-| Key | Does |
-|---|---|
-| `h` / `l` | previous / next month |
-| `j` / `k` | a row of months down / up |
-| `g` / `G` | January / December |
-| `ctrl+f` / `ctrl+b` | a row of months down / up, as `j` / `k` |
-| `enter` | list this month's time off — `19 Aug (Wed)  casual : Baby got sick`; `esc` closes |
-| `n` | new time off request — the form opens on the line above the calendar |
-| `s` `c` `a` `p` | show only sick / casual / annual / paternity — the initials of your own leave types, as shown on the boxes |
-| `esc` | clear the filter (the same letter again does too) |
-| `r` | re-read the year from the ERP |
-| `t` / `d` | back to the tasks / the dashboard (`1` / `2` too) |
-| `i` / `ctrl+u` | back to the tasks, in the search field |
-| `?` | show or hide the key list |
-| `q` | quit (asks first) |
-
-**Asking for time off** — `n` reveals the request line and focuses the leave type:
-
-```
-             ╭──────────╮ ╭────────────╮ ╭──────────╮     ╭──────────╮ ╭──────────────╮ ╭───╮ ╭───╮
-new timeoff  │ Annual ▾ │ │ full day ▾ │ │ 21/01/26 │  →  │ 23/01/26 │ │ Coast trip   │ │ ✓ │ │ ✕ │
-             ╰──────────╯ ╰────────────╯ ╰──────────╯     ╰──────────╯ ╰──────────────╯ ╰───╯ ╰───╯
-```
-
-The field with the keys has an accent frame; a date you have just tabbed onto is shown
-reversed out, because the next keystroke replaces the whole value. ✓ and ✕ are buttons
-rather than fields, so the one the keys are on fills — green and red, with its mark in
-white — and ✕ closes the line without asking, since nothing has been filed yet.
-
-| Key | Does |
-|---|---|
-| `tab` / `shift+tab` | next / previous field |
-| `j` / `k` / `space` | change the focused dropdown (leave type, full or half day, morning or afternoon) |
-| `s` `c` `a` `p` | on the leave type, pick it outright — the same initials the boxes and the filters use |
-| `enter` | next field; on ✓ it asks before filing, on ✕ it closes the line |
-| `ctrl+u` | clear the focused field |
-| `esc` | discard the request (asks first) |
-
-Dates are `dd/mm/yy` and fill themselves in: type `21`, press `tab`, and it becomes the 21st
-of this month. The first keystroke on a date replaces it whole, so you never delete what is
-already there, and moving the start date past the end drags the end along so a range never
-quietly covers days you did not ask for. Every day the request covers lights up on the calendar as you type, and the
-month it lands in scrolls into view.
-
-✓ shows what it is about to send — type, dates, duration, what it costs against your balance,
-description — and takes `y` only. The request goes to the ERP exactly as the web UI's own form
-would file it, already submitted, and waits for your manager's approval there.
-
-Two things it checks before sending: a day you already have time off on is refused outright
-(the ERP takes one leave per day), and a request for more days than you have left is flagged in
-the confirmation rather than blocked — some leave types are allowed to run negative, and the
-ERP is the one that decides.
-
-**Meals** (`m` or `4`)
-
-This month's canteen bookings: a Monday-first grid with one short bar per meal per day —
-solid and coloured for a meal you have booked, thin and grey for a slot still open, nothing
-at all on a weekend or an office holiday. A meal already eaten keeps its colour, dimmed. The
-cursor carries a band; today's date is underlined.
-
-From about 92 columns the week's menu is pinned down the right: one block per weekday with a
-line per meal — what the canteen is serving, the choice first — with **today's whole block in
-amber**, heading and dishes. It follows the cursor, so `j` brings next week's menu with it.
-
-`b` opens a booking line under the calendar: when — today, tomorrow, the week ahead, or a
-custom range with two dates, stepped with `j`/`k` — then a tick per meal, `b` breakfast, `l` lunch,
-`s` snacks, all on to start with — one to a line, so `tab` runs scope → dates → ✓ → ✕ and
-skips them. The days it would book light up on the calendar as you type, and a range that
-crosses into the next month puts that month on screen beside this one. `enter` on ✓ shows what
-it is about to book and takes `y`; ✕ or `esc` closes the line with nothing filed. Days the
-canteen is shut, days already gone and meals you already have are dropped before the request,
-and whatever the ERP refuses is reported in its own words.
-
-`c` opens the same line with the opposite verb — it cancels what `b` books, over the same
-scopes and ticks, and takes `y` only. The calendar shows the day **as it will be**: tick lunch
-and the lunch bar comes off it. A meal with nothing booked in the chosen days is disabled and
-says `none`. Whichever line is open, the other's label stays but goes dim: its key does nothing
-until `esc` closes the row.
-
-`x` clears the cursor day — every meal on it — after a prompt that names them, and takes `y`
-only; `c` is the key for cancelling chosen meals over chosen days. Days
-past their booking cutoff are refused before the request goes out — the ERP will not change
-them.
-
-| Key | Does |
-|---|---|
-| `h` / `l` | previous / next day |
-| `j` / `k` | a week down / up |
-| `g` / `G` | first / last day of the month |
-| `b` | book meals — the line opens under the calendar |
-| `c` | cancel meals — the same line, the opposite verb |
-| `x` | clear this day — every meal on it (asks; `y` only) |
-| `<` / `>` | previous / next month — `>` stops at the current one |
-| `r` | re-read the month from the ERP |
-| `t` / `d` / `o` | back to the tasks / the dashboard / time off (`1` / `2` / `3` too) |
-| `i` / `ctrl+u` | back to the tasks, in the search field |
-| `?` | show or hide the key list |
-| `q` | quit (asks first) |
-
 **Editing an entry**
 
 | Key | Does |
@@ -412,7 +277,7 @@ them.
 | `tab` / `shift+tab` | date → description → hours → ✓ → ✕ |
 | `enter` | next field, or commit on ✓ |
 | `ctrl+u` | clear the current field |
-| `esc` | cancel — immediately when editing, after a prompt for a new entry |
+| `esc` | cancel — at once when editing, after a prompt for a new entry |
 
 **Search field**
 
@@ -422,8 +287,87 @@ them.
 | `esc` / `enter` | back to the task list |
 | `ctrl+u` | clear the query and collapse everything |
 
-Destructive prompts — quitting and deleting a line — take **`y` only**, so a reflexive
-`enter` cannot fire them.
+**Dashboard** (`d` or `2`)
+
+| Key | Does |
+|---|---|
+| `g` / `G` | start / end of the month |
+| `ctrl+f` / `ctrl+b` | half a screen of days, down / up |
+| `<` / `>` | previous / next month — `>` stops at the current one |
+| `c` | check in, or check out (asks; `y` only) |
+| `r` | re-read the month from the ERP |
+| `t` | back to the tasks (`1` too) |
+| `i` / `ctrl+u` | back to the tasks, in the search field |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
+**Time off** (`o` or `3`)
+
+| Key | Does |
+|---|---|
+| `h` / `l` | previous / next month |
+| `j` / `k` | a row of months down / up |
+| `ctrl+f` / `ctrl+b` | a row of months down / up |
+| `g` / `G` | January / December |
+| `enter` | list this month's time off; `esc` closes |
+| `n` | new time off request |
+| `s` `c` `a` `p` | show only sick / casual / annual / paternity |
+| `esc` | clear the filter (the same letter again does too) |
+| `r` | re-read the year from the ERP |
+| `t` / `d` / `m` | tasks / dashboard / meals (`1` / `2` / `4` too) |
+| `i` / `ctrl+u` | back to the tasks, in the search field |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
+**The time off request line** (`n`)
+
+| Key | Does |
+|---|---|
+| `tab` / `shift+tab` | next / previous field |
+| `j` / `k` / `space` | change the focused dropdown |
+| `s` `c` `a` `p` | on the leave type, pick it outright |
+| `enter` | next field; on ✓ it asks before filing, on ✕ it closes the line |
+| `ctrl+u` | clear the focused field |
+| `esc` | discard the request (asks first) |
+
+**Meals** (`m` or `4`)
+
+| Key | Does |
+|---|---|
+| `h` / `l` | previous / next day |
+| `j` / `k` | a week down / up |
+| `g` / `G` | first / last day of the month |
+| `b` | book meals — the line opens under the calendar |
+| `c` | cancel meals — the same line, the opposite verb |
+| `x` | clear this day, every meal on it (asks; `y` only) |
+| `<` / `>` | previous / next month — `>` stops at the current one |
+| `r` | re-read the month from the ERP |
+| `t` / `d` / `o` | tasks / dashboard / time off (`1` / `2` / `3` too) |
+| `i` / `ctrl+u` | back to the tasks, in the search field |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
+**The book / cancel meal line** (`b`, `c`)
+
+| Key | Does |
+|---|---|
+| `tab` / `shift+tab` | scope → the two dates on a custom range → ✓ → ✕ |
+| `j` / `k` / `space` | today · tomorrow · week · custom |
+| `b` `l` `s` | tick breakfast / lunch / snacks |
+| `enter` | on ✓ it asks, then books or cancels; on ✕ it closes the line |
+| `ctrl+u` | clear the focused date |
+| `esc` | close the line, nothing filed |
+
+**Confirm prompts**
+
+| Key | Does |
+|---|---|
+| `y` | go ahead |
+| `n` / `esc` | back out |
+
+Destructive prompts — quitting, deleting a line, cancelling meals — take **`y` only**, so a
+reflexive `enter` cannot fire them.
+
 
 ### Typing hours and dates
 
