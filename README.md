@@ -501,6 +501,20 @@ A screen's own binding is matched before the tab keys, so the example above give
 the dashboard **on the meal tab only**. In the global table a key the tab bar owns is refused
 at startup instead, since the tab keys are matched first and the action could never fire.
 
+Which actions a screen actually reads — anything else in its table is accepted and simply
+never fires there:
+
+| Screen | Actions it uses |
+|---|---|
+| `[keys.tasks]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `edit` `add` `delete` `refresh` `set_key` `search` `clear_search` `clear_query` `focus` `next` `prev` `clear_field` `accept` `cancel` `quit` |
+| `[keys.dash]` | `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `clock` `refresh` `search` `clear_search` `quit` |
+| `[keys.time]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `accept` `new_leave` `back` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` on the request line |
+| `[keys.meal]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `book_meal` `drop_meal` `delete` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the booking line |
+
+`help` (`?`), the four tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab`) and the confirm
+keys (`yes` `yes_only` `no`) work on every screen, so they belong in the global `[keys]` table
+rather than in one screen's.
+
 Keep only the lines you want to change — anything absent keeps its default, and **no
 config file at all is perfectly fine**. Action names are listed by `--print-keys`.
 Keys are spelled the way Bubble Tea spells them: a single character, a `ctrl+` /
