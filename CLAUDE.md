@@ -1041,10 +1041,87 @@ and `l` opens a row into the fields its own category asked for. `r` to open, `t`
   because a name does not move; this is not.
 - **`esc` shuts every open row** and sends the cursor back to the top, the same as it does on the
   directory. There is no filter here — five rows do not need one.
+- **`n` files a new one**, on the line below the count; see the section below.
 - A note runs to paragraphs, so `oneLine` flattens it on the way in (everything the ERP wrote
   does) and `wrapCells` breaks it on spaces to the width when it is drawn.
 - Opening it needs the key owner's **email**, exactly as every other RPC screen: `reqWanted` is
   set, the day total is fetched, and the table continues when `DayHoursMsg.UserEmail` lands.
+
+### The new-requisition line (`n`)
+
+One row between the count and the table's own heads, and the whole request is on it:
+`new requisition  │Software ▾│ │software name│ │purpose/reason│ │deadline│ │☐ urgent│ │note│ │✓│ │✕│`.
+
+- **It sits under the table** (`reqBand`, appended to the body the way the book-meal line is under
+  the calendar): it is about what goes into the table, and a form a screen away from it reads as
+  belonging to nothing. Its rows come out of the table's own budget, so the rows window into what
+  is left rather than the form being pushed off the bottom. Closed it is the label alone with `n`
+  in the accent, so opening it moves nothing above it.
+- **Nothing is on it until a category is chosen.** The fields **are** the category's, read from
+  `requisition_properties_definition` on `serp.general.requisition.category`
+  (`api.FetchReqCategories`) — a properties field keeps its definition on the parent and its
+  values on the child. So the form is built from one read, a category nobody has taught this app
+  about asks the right questions, and choosing another category **throws the typed values away**:
+  they belonged to fields that no longer exist.
+- **A field is drawn by its kind**: a `date`, `char`, `integer` or `float` gets an input, a
+  `boolean` a checkbox, a `many2one` a dropdown of whatever the caller may read from its comodel
+  (`api.FetchReqOptions`, read when the category is chosen rather than with the categories — a
+  form nobody opened should not cost a call per field). `maintenance.equipment` answers with the
+  five devices that are yours, because a record rule on that model already decides that.
+- **The ERP's own three come after the category's**: `is_urgent` as a tick, `urgency_cause` as a
+  field that **only exists while it is ticked** — a cause for something not urgent is noise — and
+  `note`. `submission_date`, `deadline` and `is_submitted` are computed on the record, so none of
+  them is sent; the deadline is a *property* on the categories that have one.
+- **One field a line** (`reqLine`), its own name in a `reqFormLabel` column and its value **in the
+  same rounded frame the time off line's fields have** (`theme.ReqBox`), with the **accent frame**
+  on the one holding the keys, exactly as it means there. The frame is left and right rules only:
+  stacked fields with a four-sided box each would cost two rows apiece, which is a screen of
+  borders for a category that asks six things. The label takes the accent too, and a **chooser's
+  own value** does — stepping a dropdown has to say so where it happened. Each field carries a `*`
+  where the category calls it required, and the frames line up down the page, which is what makes
+  it read as a form rather than as a stack of rows. It was a single row of boxes first: a
+  replacement asks six things, and eleven boxes across one row left every field four cells wide
+  and every label cut to a syllable. Stacked, each keeps its own words — and the line the keys are
+  on takes the accent and the focus border, which is what a task row does and costs a cell where a
+  frame per field would cost two rows each.
+- **The two buttons keep their boxes, indented under the values** — the label column's width
+  past the edge, so they line up with the fields they commit; against the right edge instead they
+  belonged to nothing on the form. They are pressed rather than typed into, which is what a box
+  says everywhere else here, and the fields above them are lines. The values are capped at `reqValueMax` — a note
+  stretched across a 200-cell terminal reads as a banner — and the inputs scroll, so a narrow
+  terminal costs visible characters and nothing else.
+- **No placeholders on the fields**: the label column already says what each one is, and a value
+  repeating it reads as a value already filled in.
+- **`j`/`k`/`space` step whatever the keys are on**: the category, a checkbox, or a many2one's own
+  options — and **only on a chooser** (`reqFieldIsChooser`, which the footer reads as well).
+  Matched before the input, they swallowed the space bar in every text field on the form, and a
+  purpose is a sentence.
+- **A date field takes what every other date on every other screen takes** — `30` is the 30th of
+  this month, `30/9` the 30th of September — normalized as the field is **left**, never per
+  keystroke (`normalizeReqDate`), with `dd/mm/yy` as the placeholder since there is nothing in it
+  to copy the shape from.
+- **The table gives up its accent while the form is open**: the window still follows the held row,
+  but a highlighted row would say the keys are somewhere they are not.
+- The fields are **sized where they are made** and again on a resize, never from `View`: a
+  textinput works out which slice of its value to show when it is updated, so one sized after the
+  fact went on showing the twelve characters it was built for.
+- **A tick's label loses its leading "is"** (`reqTickLabel`): every one of them is phrased as a
+  question — *Is Data Backed Up* — and "is" is not what the box is for.
+- **`✓` asks first** (`confirmFileReq`, `y`/`n`): it asks the office for something, so the
+  category and every value are read back first. What the ERP would refuse is refused **here**:
+  every field the category calls required, an unreadable date, a number that is not one. `n`
+  comes back to the line with everything on it; the line stays as typed until the ERP answers, and
+  only an id closes it — which then **re-reads the table**, so the new row appears where the ERP
+  says it is.
+- **`✕` and `esc` close it outright** — nothing has been filed, so there is nothing to lose.
+- **`n` is the same binding the time off request opens with** (`keys.NewLeave`), so a rebind moves
+  both: `n` means "file a new one" on whichever screen files something.
+- The write is one `create` (`api.FileRequisition`), with the properties sent as the **whole
+  list** — name, type, string and value per field — which is how Odoo writes a properties field
+  and what its own web client sends. There is **no submit action** on this model: `is_submitted`
+  is computed, and a created record is already in its first approval stage, which is what the
+  stage column then says. **Nothing retries** — a timed-out create that landed would ask the
+  office for the same thing twice.
 
 ## Modes
 
@@ -1063,6 +1140,7 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeForm` | the new-timeoff line on `TabTime`; owns every key, so a description can hold `t` |
 | `ModeWFH` | the WFH request line on `TabDash`, opened by the ERP refusing a check in |
 | `ModeEmpSearch` | the employee tab's own query field; its own input, so it cannot filter tasks |
+| `ModeReqForm` | the new-requisition line on `TabReq`; owns every key, so a purpose can hold a `t` |
 
 ## Keymap
 

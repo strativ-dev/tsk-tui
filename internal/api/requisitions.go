@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -169,4 +170,183 @@ func isoToDate(s string) string {
 		return ""
 	}
 	return t.Format("02/01/06")
+}
+
+// ReqCategoriesMsg is the kinds of requisition you can file, each with the fields it asks for.
+type ReqCategoriesMsg struct {
+	Categories []store.ReqCategory
+	Err        error
+}
+
+// FetchReqCategories is a tea.Cmd: the categories, and what each one asks for.
+//
+// The fields come from `requisition_properties_definition` on the **category** — a properties
+// field keeps its definition on the parent record and its values on the child, which is why the
+// form can be built from this one read and why a category nobody has taught this app about still
+// asks the right questions.
+//
+// A many2one field's options are **not** read here: which comodel it points at is in the
+// definition, and reading every one of them for a category nobody opened would be several calls
+// for a form nobody is filling. FetchReqOptions does it when a category is chosen.
+func FetchReqCategories(key, login, db string) tea.Cmd {
+	return func() tea.Msg {
+		uid, err := connect(strings.TrimSpace(db), strings.TrimSpace(login), strings.TrimSpace(key))
+		if err != nil {
+			return ReqCategoriesMsg{Err: err}
+		}
+
+		raw, err := rpc("object", "execute_kw", []any{
+			db, uid, key, "serp.general.requisition.category", "search_read",
+			[]any{[]any{[]any{"active", "=", true}}},
+			map[string]any{
+				"fields":  []string{"name", "requisition_properties_definition"},
+				"order":   "name asc",
+				"limit":   reqLimit,
+				"context": map[string]any{"lang": "en_US", "tz": "Asia/Dhaka"},
+			},
+		})
+		if err != nil {
+			return ReqCategoriesMsg{Err: err}
+		}
+
+		var rows []struct {
+			ID     int      `json:"id"`
+			Name   odooText `json:"name"`
+			Fields []struct {
+				Name     string `json:"name"`
+				Type     string `json:"type"`
+				String   string `json:"string"`
+				Required bool   `json:"is_required"`
+				Comodel  string `json:"comodel"`
+			} `json:"requisition_properties_definition"`
+		}
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return ReqCategoriesMsg{Err: fmt.Errorf("bad category result: %w", err)}
+		}
+
+		out := make([]store.ReqCategory, 0, len(rows))
+		for _, r := range rows {
+			cat := store.ReqCategory{ID: r.ID, Name: oneLine(string(r.Name))}
+			for _, f := range r.Fields {
+				cat.Fields = append(cat.Fields, store.ReqField{
+					Name: f.Name, Kind: f.Type, Label: oneLine(f.String),
+					Required: f.Required, Comodel: f.Comodel,
+				})
+			}
+			out = append(out, cat)
+		}
+		return ReqCategoriesMsg{Categories: out}
+	}
+}
+
+// ReqOptionsMsg is what one many2one field on the form can be set to.
+type ReqOptionsMsg struct {
+	Field   string // the property's own name, so a late answer lands on the right field
+	Options []store.Opt
+	Err     error
+}
+
+// FetchReqOptions is a tea.Cmd: the records a many2one field on the form points at.
+//
+// Whatever the caller may read, which is the point — maintenance.equipment answers with the
+// five devices that are yours, not the office's inventory, because that is what a record rule
+// on that model already decides.
+func FetchReqOptions(key, login, db, field, model string) tea.Cmd {
+	return func() tea.Msg {
+		uid, err := connect(strings.TrimSpace(db), strings.TrimSpace(login), strings.TrimSpace(key))
+		if err != nil {
+			return ReqOptionsMsg{Field: field, Err: err}
+		}
+		raw, err := rpc("object", "execute_kw", []any{
+			db, uid, key, model, "search_read",
+			[]any{[]any{}},
+			map[string]any{
+				"fields":  []string{"id", "name"},
+				"order":   "name asc",
+				"limit":   reqLimit,
+				"context": map[string]any{"lang": "en_US"},
+			},
+		})
+		if err != nil {
+			return ReqOptionsMsg{Field: field, Err: err}
+		}
+		var rows []struct {
+			ID   int      `json:"id"`
+			Name odooText `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return ReqOptionsMsg{Field: field, Err: fmt.Errorf("bad %s result: %w", model, err)}
+		}
+		opts := make([]store.Opt, 0, len(rows))
+		for _, r := range rows {
+			opts = append(opts, store.Opt{ID: r.ID, Name: oneLine(string(r.Name))})
+		}
+		return ReqOptionsMsg{Field: field, Options: opts}
+	}
+}
+
+// RequisitionFiledMsg answers the create.
+type RequisitionFiledMsg struct {
+	ID  int
+	Err error
+}
+
+// FileRequisition is a tea.Cmd: file one requisition.
+//
+// One create, and no submit after it: this model has no action_submit — `is_submitted` is
+// computed, and a created record is already in the first approval stage, which is what the
+// stage column then says. **Nothing retries**: a timed-out create that in fact landed would ask
+// the office for the same thing twice, and a duplicate requisition is a conversation with HR.
+//
+// The properties go in as the whole list, definition and value together, which is how Odoo
+// writes a properties field and what its own web client sends: name and type are what tell the
+// server which definition a value belongs to.
+func FileRequisition(key, login, db string, employee, category int,
+	props []store.PropValue, urgent bool, urgency, note string) tea.Cmd {
+	return func() tea.Msg {
+		fail := func(err error) tea.Msg { return RequisitionFiledMsg{Err: err} }
+		if category == 0 {
+			return fail(errors.New("pick a category first"))
+		}
+		uid, err := connect(strings.TrimSpace(db), strings.TrimSpace(login), strings.TrimSpace(key))
+		if err != nil {
+			return fail(err)
+		}
+
+		values := make([]map[string]any, 0, len(props))
+		for _, p := range props {
+			values = append(values, map[string]any{
+				"name": p.Name, "type": p.Kind, "string": p.Label, "value": p.Value,
+			})
+		}
+		vals := map[string]any{
+			"requisition_category_id": category,
+			"requisition_properties":  values,
+			"is_urgent":               urgent,
+		}
+		if employee != 0 {
+			// The same hr.employee the rest of the app read for this key; the field defaults to
+			// it anyway, so this only saves the default a lookup.
+			vals["employee_id"] = employee
+		}
+		if note = strings.TrimSpace(note); note != "" {
+			vals["note"] = note
+		}
+		if urgency = strings.TrimSpace(urgency); urgent && urgency != "" {
+			vals["urgency_cause"] = urgency
+		}
+
+		raw, err := rpc("object", "execute_kw", []any{
+			db, uid, key, "serp.general.requisition", "create", []any{vals},
+			map[string]any{"context": map[string]any{"lang": "en_US", "tz": "Asia/Dhaka"}},
+		})
+		if err != nil {
+			return fail(err)
+		}
+		var id int
+		if err := json.Unmarshal(raw, &id); err != nil || id == 0 {
+			return fail(errors.New("the ERP refused the requisition"))
+		}
+		return RequisitionFiledMsg{ID: id}
+	}
 }

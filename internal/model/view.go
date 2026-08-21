@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/tasnimAlam/tsk/internal/api"
@@ -135,6 +136,11 @@ const (
 	// The same idea on a requisition, where the labels are the ERP's own and longer:
 	// "purpose of replacement".
 	reqLabelCells = 24
+	// The new-requisition line: the category dropdown's own width, a many2one pick's, and the
+	// narrowest a text field is worth drawing.
+	// The form under the table: its label column, and the widest a value is worth drawing.
+	reqFormLabel = 26 // "purpose of replacement *" whole, which is the longest of them here
+	reqValueMax  = 52
 	// A row is two fixed columns: the name, then the job title in a chip. Fixed, so the chips
 	// start on the same cell down the whole list — pushed to the right edge instead, every
 	// title began somewhere else and the column read as ragged. 30 holds all but the longest
@@ -304,6 +310,14 @@ func (m Model) View() string {
 		band = m.bookBand()
 		budget = max(budget-len(band)-1, 1)
 	}
+	if m.tab == TabReq {
+		// Under the table, the way the book-meal line sits under the calendar: it is about what
+		// goes into the table, and a form a screen away from it reads as belonging to nothing.
+		// Its rows come out of the table's budget, so the rows window into what is left rather
+		// than the form being pushed off the bottom.
+		band = m.reqBand()
+		budget = max(budget-len(band), 1)
+	}
 	body = window(body, focus, budget)
 	if m.tab == TabMeal {
 		// Directly under the last week, before the padding rather than after it: padded first,
@@ -311,6 +325,10 @@ func (m Model) View() string {
 		body = append(body, "")
 		body = append(body, band...)
 		budget += len(band) + 1
+	}
+	if m.tab == TabReq {
+		body = append(body, band...)
+		budget += len(band)
 	}
 	for len(body) < budget {
 		body = append(body, "")
@@ -1193,6 +1211,212 @@ func reqCategory(s string) string {
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "Requisition"))
 }
 
+// reqBand is the new-requisition form, under the table: the label alone until `n` opens it, then
+// **one field a line** — the category, everything that category asks for, urgent, its cause while
+// it is ticked, and a note — with the two buttons boxed on the right edge under them.
+//
+// A line each rather than a row of boxes: a replacement asks six things, and eleven boxes across
+// one row left every field four cells wide and every label cut to a syllable. Down the page each
+// one keeps its own words and its value has room to be read.
+func (m Model) reqBand() []string {
+	if !m.req.open {
+		return []string{"",
+			theme.Blur.Render(hinted("new requisition", m.k().NewLeave, theme.Dim, theme.HintKey))}
+	}
+
+	out := []string{"", m.reqLine("new requisition", m.reqCatBox(), reqCatField)}
+	cat, chosen := m.reqCat()
+	if !chosen {
+		// Nothing until a category is chosen: the fields **are** the category's, so there is
+		// nothing to draw and nothing to fill in.
+		hint := theme.Dim.Render("  pick one")
+		if m.reqLoading {
+			hint = "  " + m.spin.View() + theme.Dim.Render(" reading the categories…")
+		}
+		return append(out, theme.Blur.Render(hint))
+	}
+
+	for i, f := range cat.Fields {
+		// A field the category calls required says so, since ✓ refuses without it — and it says
+		// it the way every form does, with a star.
+		label := strings.ToLower(oneLine(f.Label))
+		if f.Required {
+			label += " *"
+		}
+		out = append(out, m.reqLine(label, m.reqFieldBox(i, f), 1+i))
+	}
+	out = append(out, m.reqLine("urgent", m.reqTick(m.req.urgent, m.reqUrgentField()),
+		m.reqUrgentField()))
+	if m.req.urgent {
+		out = append(out, m.reqLine("why it cannot wait", m.req.urgency.View(),
+			m.reqUrgencyField()))
+	}
+	out = append(out, m.reqLine("note", m.req.noteBox.View(), m.reqNoteField()))
+
+	// The two buttons keep their boxes and sit **under the values**, indented past the label
+	// column so they line up with what they commit: they are pressed rather than typed into,
+	// which is what a box says everywhere else here, and the fields above them are lines. Pushed
+	// to the right edge instead they belonged to nothing on the form.
+	ok, drop := theme.FieldOk, theme.FieldDrop
+	tick, cross := theme.Ok, theme.Err
+	if m.req.field == m.reqOKField() {
+		ok, tick = theme.FieldOkOn, theme.OnOk
+	}
+	if m.req.field == m.reqXField() {
+		drop, cross = theme.FieldDropOn, theme.OnDrop
+	}
+	buttons := lipgloss.JoinHorizontal(lipgloss.Center,
+		ok.Render(tick.Render("✓")), " ", drop.Render(cross.Render("✕")))
+	for _, l := range strings.Split(buttons, "\n") {
+		out = append(out, theme.Blur.Render(strings.Repeat(" ", reqFormLabel)+l))
+	}
+	return out
+}
+
+// reqLine is one field of the form: its own name in a column, then the value **in its own frame**,
+// the same rounded field the time off line has — and the accent says which one has the keys, as it
+// does there. The frame is left and right rules only: stacked fields with a four-sided box each
+// would cost two rows apiece, which is a screen of borders for a category that asks six things.
+func (m Model) reqLine(label, value string, field int) string {
+	focused := m.req.field == field
+	ink, box := theme.Dim, theme.ReqBox
+	if focused {
+		ink, box = theme.TitleFocus, theme.ReqBoxFocus
+	}
+	return theme.Blur.Render(ink.Render(pad(trunc(label, reqFormLabel-1), reqFormLabel)) +
+		box.Render(pad(value, m.reqValueCells()-4)))
+}
+
+// reqValueCells is what a field's value gets: the width less its label column, capped — a note
+// stretched across a 200-cell terminal reads as a banner, and the inputs scroll anyway.
+func (m Model) reqValueCells() int {
+	return min(max(m.cols()-gutter-reqFormLabel-4, 8), reqValueMax)
+}
+
+// reqSizeInputs sizes every text field to the same width, so the values line up down the page.
+// Its frame and padding are four of the value's cells, and one more is the cursor an input always
+// draws after its text.
+//
+// Called where the fields are **made** and when the terminal resizes, not from View: a textinput
+// works out which slice of its value to show when it is updated, so one sized after the fact went
+// on showing the twelve characters it was built for.
+func (m Model) reqSizeInputs() Model {
+	if _, ok := m.reqCat(); !ok {
+		return m
+	}
+	return m.reqTextWidths(m.reqValueCells() - 5)
+}
+
+// reqCatBox is the category dropdown. Nothing in it is picked out: it is stepped with j/k or
+// space like every other dropdown here.
+func (m Model) reqCatBox() string {
+	name := "pick a category"
+	if cat, ok := m.reqCat(); ok {
+		name = cat.Name
+	}
+	return m.reqChooserInk(reqCatField).Render(trunc(oneLine(name), m.reqValueCells()-8)) +
+		theme.Dim.Render(" ▾")
+}
+
+// reqChooserInk is the ink a dropdown's or a checkbox's own value reads in: the accent while it
+// holds the keys, so stepping one says so where it happened rather than only in the frame around
+// it. A text field needs none of this — its cursor is already there.
+func (m Model) reqChooserInk(field int) lipgloss.Style {
+	if m.req.field == field {
+		return theme.TitleFocus
+	}
+	return theme.DayLabel
+}
+
+// reqFieldBox is one of the category's own fields, drawn by its kind: a tick for a boolean, a
+// dropdown for a many2one, and its own input for everything else.
+func (m Model) reqFieldBox(i int, f store.ReqField) string {
+	switch f.Kind {
+	case "boolean":
+		return m.reqTick(m.req.on[f.Name], 1+i)
+	case "many2one":
+		name := "…"
+		switch {
+		case len(f.Opts) > 0:
+			name = f.Opts[min(m.req.picks[f.Name], len(f.Opts)-1)].Name
+		case m.busy():
+			name = "reading…"
+		case f.Comodel != "":
+			name = "none"
+		}
+		return m.reqChooserInk(1+i).Render(trunc(oneLine(name), m.reqValueCells()-8)) +
+			theme.Dim.Render(" ▾")
+	}
+	if i < len(m.req.inputs) {
+		return m.req.inputs[i].View()
+	}
+	return ""
+}
+
+// reqTick is a checkbox: the field's own name is already in the column beside it, so this is the
+// box and its answer and nothing else. Ticked it is green — the colour "yes" is everywhere else
+// here — and the word takes the accent while the keys are on it.
+func (m Model) reqTick(on bool, field int) string {
+	box, word := theme.Dim.Render("☐"), "no"
+	if on {
+		box, word = theme.Ok.Render("☑"), "yes"
+	}
+	return box + m.reqChooserInk(field).Render(" "+word)
+}
+
+// reqTextCount is how many text fields the line has: the category's own, plus the cause while
+// urgent is ticked, plus the note.
+func (m Model) reqTextCount() int {
+	cat, ok := m.reqCat()
+	if !ok {
+		return 0
+	}
+	n := 1 // the note
+	if m.req.urgent {
+		n++
+	}
+	for i, f := range cat.Fields {
+		switch f.Kind {
+		case "boolean", "many2one":
+		default:
+			if i < len(m.req.inputs) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// reqTextWidths sets every text field on the line to w.
+func (m Model) reqTextWidths(w int) Model {
+	cat, ok := m.reqCat()
+	if !ok {
+		return m
+	}
+	// SetValue after the width, or the input keeps the window it worked out for the old one and
+	// shows the tail of what is in it.
+	resize := func(in textinput.Model) textinput.Model {
+		in.Width = w
+		in.SetValue(in.Value())
+		return in
+	}
+	ins := make([]textinput.Model, len(m.req.inputs))
+	copy(ins, m.req.inputs)
+	for i, f := range cat.Fields {
+		switch f.Kind {
+		case "boolean", "many2one":
+		default:
+			if i < len(ins) {
+				ins[i] = resize(ins[i])
+			}
+		}
+	}
+	m.req.inputs = ins
+	m.req.urgency = resize(m.req.urgency)
+	m.req.noteBox = resize(m.req.noteBox)
+	return m
+}
+
 // reqLines is the body: one row per requisition, and the row under the cursor opening into the
 // properties its own category asked for.
 func (m Model) reqLines() ([]string, int) {
@@ -1212,7 +1436,9 @@ func (m Model) reqLines() ([]string, int) {
 		if i == held {
 			focus = len(out)
 		}
-		out = append(out, m.reqRow(r, i == held))
+		// The row keeps the window on it, but not the accent: while the form below has the
+		// keyboard, a highlighted row says the keys are somewhere they are not.
+		out = append(out, m.reqRow(r, i == held && !m.req.open))
 		if m.reqOpen[r.ID] {
 			out = append(out, m.reqDetail(r)...)
 			out = append(out, "")
@@ -2822,7 +3048,7 @@ func (m Model) footer() string {
 	}
 	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
 		m.mode != ModeLeaves && m.mode != ModeBook && m.mode != ModeWFH &&
-		m.mode != ModeEmpSearch {
+		m.mode != ModeEmpSearch && m.mode != ModeReqForm {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -2876,12 +3102,20 @@ func (m Model) footer() string {
 				key.WithHelp(m.k().Back.Help().Key, "clear filter")))
 		}
 		help = append(help, m.k().Refresh, m.k().Quit, m.k().Help)
+	case m.mode == ModeReqForm:
+		// Its own keys, whichever tab is behind it: the line holds the keyboard, and only the
+		// ones the focused field takes — j/k belong to a dropdown or a checkbox and are letters
+		// everywhere else.
+		help = []key.Binding{m.k().Next, m.k().Accept, m.k().ClearField, m.k().Cancel}
+		if m.reqFieldIsChooser() {
+			help = []key.Binding{m.k().Next, m.k().Cycle, m.k().Accept, m.k().Cancel}
+		}
 	case m.tab == TabReq:
-		// A cursor and a row that opens; nothing here writes, and filing one is a form this
-		// screen does not have.
+		// A cursor and a row that opens, and `n` to file a new one.
 		help = []key.Binding{m.k().Down, m.k().Up, m.k().Top, m.k().HalfDown,
 			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "details")),
 			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
+			key.NewBinding(key.WithHelp(m.k().NewLeave.Help().Key, "new requisition")),
 			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabEmp:
 		// A filter and a window over it, and nothing that writes: r is the only key here that

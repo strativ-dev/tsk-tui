@@ -17,7 +17,8 @@ browser and no mouse:
   tomorrow, the week ahead or a range, and cancel the same way.
 - **Requisitions** — what you have asked the office for, as a table: category, the two dates,
   the stage in green, red or amber by what it means, and a tick where it was urgent. `l` opens a
-  row into what its category asked for.
+  row into what its category asked for, and `n` files a new one — the fields come from the
+  category you choose.
 
 ![tsk filtering 22 tasks down to three by typing "discuss" in the search field](screenshot.png)
 
@@ -91,6 +92,9 @@ binary, no CGO.
   its own category asked: the purpose, the specification, the device it replaces, your note. The
   fields come from the ERP with their own labels, so a category nobody taught this app about
   still reads correctly.
+- **File one without the web UI.** `n` opens a form under the table: pick a category and it
+  becomes that category's own questions, one a line — a software name, a device to replace, a
+  deadline, a box to tick — plus urgent and a note. ✓ shows you exactly what it is about to send.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
@@ -419,10 +423,25 @@ for the keys the current screen takes.
 | `g` / `G` | first / last |
 | `ctrl+f` / `ctrl+b` | half a screen |
 | `l` | open what its category asked for; `h` closes |
+| `n` | file a new requisition — the form opens under the table |
 | `esc` | close everything |
 | `R` | re-read them from the ERP |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
+
+**The new-requisition line** (`n`)
+
+| Key | Does |
+|---|---|
+| `j` / `k` / `space` | change the focused dropdown or tick the focused checkbox |
+| `tab` / `shift+tab` | next / previous field |
+| `enter` | next field; on ✓ it asks before filing, on ✕ it closes the line |
+| `ctrl+u` | clear the focused field |
+| `esc` | close the line, nothing filed |
+
+The fields are the category's own, so the form is empty until you pick one and changes when you
+pick another. It sits under the table, one field a line in the same boxed style as the time off
+form, with ✓ and ✕ lined up under the values.
 
 **Confirm prompts**
 
@@ -521,7 +540,7 @@ never fires there:
 | `[keys.time]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `accept` `new_leave` `back` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` on the request line |
 | `[keys.meal]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `book_meal` `drop_meal` `delete` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the booking line |
 | `[keys.emp]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
-| `[keys.req]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `back` `refresh` `quit` |
+| `[keys.req]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `back` `new_leave` `refresh` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the new-requisition line |
 
 `help` (`?`), the six tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab` `emp_tab` `req_tab`)
 and the confirm
@@ -568,7 +587,8 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `serp_attendance.wfh_request` | filing a work-from-home request when a check in is refused |
 | JSON-RPC `confirm_hour_logs` | telling the ERP a month's hour logs are done |
 | JSON-RPC `hr.employee.public` | the office directory, and one person's own detail |
-| JSON-RPC `serp.general.requisition` | your requisitions, their stage, and the properties each category asked for |
+| JSON-RPC `serp.general.requisition` | your requisitions, their stage, the properties each category asked for, and filing one |
+| JSON-RPC `serp.general.requisition.category` | the categories you can file under, and the fields each one asks |
 
 Worth knowing:
 

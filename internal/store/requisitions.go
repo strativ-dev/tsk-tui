@@ -28,3 +28,41 @@ type Requisition struct {
 	Note        string `json:"note"`
 	Props       []Prop `json:"props"`
 }
+
+// ReqField is one field a requisition category asks for, as the category itself defines it:
+// Odoo keeps the definition on the parent record and the values on the requisition, so this is
+// half of a properties field.
+//
+// Comodel is set on a many2one — the model its options come from — and Opts are those options
+// once they have been read.
+type ReqField struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"` // char, text, date, boolean, integer, float, many2one, selection
+	Label    string `json:"label"`
+	Required bool   `json:"required"`
+	Comodel  string `json:"comodel"`
+	Opts     []Opt  `json:"opts"`
+}
+
+// Opt is one choice of a many2one or selection field: what to send, and what to show.
+type Opt struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// ReqCategory is a kind of requisition you can file, and the fields it asks for.
+type ReqCategory struct {
+	ID     int        `json:"id"`
+	Name   string     `json:"name"`
+	Fields []ReqField `json:"fields"`
+}
+
+// PropValue is one field of a filed requisition: the definition Odoo wants echoed back, and
+// the value. Odoo writes a properties field as the whole list, definition included, which is
+// what its own web client sends.
+type PropValue struct {
+	Name  string
+	Kind  string
+	Label string
+	Value any
+}

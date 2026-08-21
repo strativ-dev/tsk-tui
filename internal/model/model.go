@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ const (
 	// ModeWFH is the work-from-home request line, opened by the ERP refusing a check in for
 	// want of one. It owns every key while it is open, so its reason can hold a t or a d.
 	ModeWFH
+	// ModeReqForm is the new-requisition line. It owns every key while it is open, the way the
+	// new-timeoff line does: its fields take letters.
+	ModeReqForm
 	// ModeEmpSearch is the employee tab's own query field. Its own mode, and its own input:
 	// the task list's query filters tasks, and carrying one across would filter the other
 	// screen by whatever was typed here.
@@ -86,6 +90,7 @@ const (
 	confirmBookMeals
 	confirmDropForm
 	confirmHourLogs
+	confirmFileReq
 )
 
 // The new-timeoff line's fields, in tab order. leaveTo is the range's end on a full day and
@@ -127,6 +132,36 @@ const (
 	scopeCustom
 	scopeCount
 )
+
+// reqForm is the new-requisition line. The fields are not fixed: the category says what it
+// asks for, so the inputs are built when one is chosen and thrown away when it changes.
+//
+// vals is keyed by the property's own name rather than by index, since a late options answer or
+// a re-chosen category must not land on the field that happens to sit in that slot. inputs is
+// parallel to the chosen category's Fields, which is the one place the order lives.
+type reqForm struct {
+	open  bool
+	field int
+	cat   int // index into Model.reqCats, -1 until one is chosen
+	// inputs is one per field the category asks for, in its order; a boolean or a many2one
+	// field has no input and its slot is left zero.
+	inputs []textinput.Model
+	// on is the ticked booleans and picks, by property name: a boolean's value, or the index
+	// into a many2one field's own options.
+	on    map[string]bool
+	picks map[string]int
+	// urgent is the ERP's own is_urgent, and urgency its cause — one field on the line, the
+	// other appearing only when it is ticked, since a cause for something not urgent is noise.
+	urgent           bool
+	urgency, noteBox textinput.Model
+	// How much of the row's furniture the width can hold, decided by reqSizeInputs — the only
+	// place that knows how wide the row came out. tight drops the space inside the boxes; the
+	// three counts are how many cells the dropdown, a pick and a tick's own words get; label
+	// keeps "new requisition" in front of it all.
+	tight                      bool
+	label                      bool
+	catCells, pickCells, ticks int
+}
 
 // mealForm is the book-meal line: which days, which meals, and the two buttons. One struct,
 // so closing it is one assignment and nothing half-typed outlives the line.
@@ -330,6 +365,14 @@ type Model struct {
 	reqWanted  bool
 	reqHold    int
 	reqOpen    map[int]bool
+	// The categories a requisition can be filed under, and what each asks for: read once when
+	// the line is first opened, since the office's own list of them does not move in a session.
+	reqCats     []store.ReqCategory
+	reqCatsRead bool
+	// req is the new-requisition line. Closed, it is a label and nothing else.
+	req reqForm
+	// filing is a create in flight.
+	filing bool
 	// form is the new-timeoff line. Closed, it is a label and nothing else.
 	form leaveForm
 	// applying is a request for time off in flight.
@@ -416,6 +459,7 @@ func New() Model {
 	m.empDetail = map[int]store.EmployeeDetail{}
 	m.empPulling = map[int]bool{}
 	m.reqOpen = map[int]bool{}
+	m.req.cat = -1
 	// Field widths mirror the table columns, so the insert row sits in them.
 	for i, ph := range []string{"dd/mm/yy", "what you did", "h:mm"} {
 		f := textinput.New()
@@ -467,7 +511,8 @@ func clockTick() tea.Cmd {
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
 		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || m.confirming ||
-		m.empLoading || m.reqLoading || len(m.empPulling) > 0 || len(m.pulling) > 0
+		m.empLoading || m.reqLoading || m.filing ||
+		len(m.empPulling) > 0 || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -503,6 +548,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.wfh.open {
 			m.wfh.reason.Width = m.wfhReasonWidth()
+		}
+		if m.req.open {
+			// Its fields are sized where they are made, so a resize has to size them again.
+			m = m.reqSizeInputs()
 		}
 		return m, nil
 
@@ -820,6 +869,48 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			len(msg.Employees), plural(len(msg.Employees), "employee", "employees"))
 		return m, store.SaveEmployees(msg.Employees)
 
+	case api.ReqCategoriesMsg:
+		m.reqLoading = false
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.status = "could not read the categories: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		m.reqCats, m.reqCatsRead, m.err = msg.Categories, true, nil
+		return m, nil
+
+	case api.ReqOptionsMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.status = "could not read the choices: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// Landed on the field it was read for, by name: a re-chosen category renumbers the
+		// fields, so an index would put the office's devices in somebody else's slot.
+		for i := range m.reqCats {
+			for j := range m.reqCats[i].Fields {
+				if m.reqCats[i].Fields[j].Name == msg.Field {
+					m.reqCats[i].Fields[j].Opts = msg.Options
+				}
+			}
+		}
+		return m, nil
+
+	case api.RequisitionFiledMsg:
+		m.filing = false
+		if msg.Err != nil {
+			// The line stays exactly as typed: a refusal has to have something to come back to.
+			m.err = msg.Err
+			m.status = "the ERP refused it: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// Filed: the line closes and the table is re-read, so the new row shows up where the
+		// ERP says it is rather than where this screen guessed.
+		m.req = reqForm{cat: -1}
+		m.mode, m.err = ModeList, nil
+		m.status = "requisition filed — waiting on approval"
+		return m.loadReq()
+
 	case api.RequisitionsMsg:
 		m.reqLoading = false
 		if msg.Err != nil {
@@ -1013,7 +1104,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the key is still the tab it always was.
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
 			m.mode != ModeAuth && m.mode != ModeForm && m.mode != ModeBook &&
-			m.mode != ModeWFH && m.mode != ModeEmpSearch && !claims(m.tab, msg) {
+			m.mode != ModeWFH && m.mode != ModeEmpSearch && m.mode != ModeReqForm &&
+			!claims(m.tab, msg) {
 			switch {
 			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
@@ -1055,6 +1147,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reason that says "at the dentist" must not step the month while it is typed.
 		if m.mode == ModeWFH {
 			return m.updateWFH(msg)
+		}
+		// And the new-requisition line, for the same reason: a purpose can hold a t and a d.
+		if m.mode == ModeReqForm {
+			return m.updateReqForm(msg)
 		}
 		if m.mode != ModeAuth {
 			switch m.tab {
@@ -2168,6 +2264,11 @@ func (m Model) updateReq(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			delete(m.reqOpen, r.ID)
 		}
 		return m, nil
+	case key.Matches(msg, m.k().NewLeave):
+		// The same key the time off request opens with: `n` is "file a new one" on whichever
+		// screen files something.
+		return m.openReqForm()
+
 	case key.Matches(msg, m.k().Back):
 		// esc shuts everything, the same as it does on the directory.
 		m.reqOpen, m.reqHold = map[int]bool{}, 0
@@ -2196,6 +2297,449 @@ func (m Model) reqAt(i int) (store.Requisition, bool) {
 	}
 	return m.reqs[i], true
 }
+
+// --- the new-requisition line ------------------------------------------------
+
+// openReqForm reveals the line and reads the categories the first time. Nothing is on it until
+// a category is chosen: the fields **are** the category's, so there is nothing to draw before
+// one is picked.
+func (m Model) openReqForm() (tea.Model, tea.Cmd) {
+	m.req = reqForm{open: true, field: reqCatField, cat: -1,
+		on: map[string]bool{}, picks: map[string]int{}}
+	m.req.urgency = reqInput()
+	m.req.noteBox = reqInput()
+	m.mode = ModeReqForm
+
+	if m.reqCatsRead || m.reqLoading {
+		return m, textinput.Blink
+	}
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	if strings.TrimSpace(m.login) == "" {
+		m.status = "sync first — the ERP login comes with today's total"
+		return m, nil
+	}
+	m.reqLoading = true
+	return m, tea.Batch(textinput.Blink, api.FetchReqCategories(m.key, m.login, m.db))
+}
+
+// reqInput is a text field on the form, sized by the view once the rows are laid out. No
+// placeholder: the field's own name is in the column beside it, and repeating it inside the
+// value is a value that reads as filled in.
+func reqInput() textinput.Model {
+	in := textinput.New()
+	in.Prompt = ""
+	in.Width = 12
+	return in
+}
+
+// closeReqForm takes the line back to its label. Nothing has been filed, so nothing asks.
+func (m Model) closeReqForm() (tea.Model, tea.Cmd) {
+	m.req = reqForm{cat: -1}
+	m.mode, m.err = ModeList, nil
+	return m, nil
+}
+
+// reqCat is the chosen category, if one has been.
+func (m Model) reqCat() (store.ReqCategory, bool) {
+	if m.req.cat < 0 || m.req.cat >= len(m.reqCats) {
+		return store.ReqCategory{}, false
+	}
+	return m.reqCats[m.req.cat], true
+}
+
+// The line's fixed fields: the category dropdown first, and the two buttons last. Everything
+// between them is the category's own, so their positions are counted rather than named.
+const reqCatField = 0
+
+// reqFieldCount is the whole line: the category, the fields it asks for, urgent, the cause when
+// it is ticked, the note, and the two buttons.
+func (m Model) reqFieldCount() int {
+	cat, ok := m.reqCat()
+	if !ok {
+		return 1 // the dropdown alone: there is nothing else to fill in yet
+	}
+	n := 1 + len(cat.Fields) + 1 + 1 + 2 // category, its fields, urgent, note, ✓ and ✕
+	if m.req.urgent {
+		n++ // the cause, which only exists while it is
+	}
+	return n
+}
+
+func (m Model) reqOKField() int { return m.reqFieldCount() - 2 }
+func (m Model) reqXField() int  { return m.reqFieldCount() - 1 }
+
+// reqPropField is which of the category's own fields a position is, or -1 for the rest of them.
+func (m Model) reqPropField(field int) int {
+	cat, ok := m.reqCat()
+	if !ok || field < 1 || field > len(cat.Fields) {
+		return -1
+	}
+	return field - 1
+}
+
+// reqUrgentField, reqUrgencyField and reqNoteField are where the ERP's own three sit, after the
+// category's. The cause is between them and only while urgent is ticked.
+func (m Model) reqUrgentField() int {
+	cat, _ := m.reqCat()
+	return 1 + len(cat.Fields)
+}
+
+func (m Model) reqUrgencyField() int {
+	if !m.req.urgent {
+		return -1
+	}
+	return m.reqUrgentField() + 1
+}
+
+func (m Model) reqNoteField() int {
+	n := m.reqUrgentField() + 1
+	if m.req.urgent {
+		n++
+	}
+	return n
+}
+
+// updateReqForm is the new-requisition line: tab through the fields, j/k on a dropdown, space
+// on a checkbox, enter on ✓ to file it and on ✕ to close.
+func (m Model) updateReqForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Next):
+		return m.moveReqField(1), nil
+	case key.Matches(msg, m.k().Prev):
+		return m.moveReqField(-1), nil
+
+	case key.Matches(msg, m.k().Accept):
+		switch m.req.field {
+		case m.reqOKField():
+			return m.askFileReq()
+		case m.reqXField():
+			return m.closeReqForm()
+		default:
+			return m.moveReqField(1), nil
+		}
+
+	case key.Matches(msg, m.k().Cancel):
+		return m.closeReqForm()
+
+	case key.Matches(msg, m.k().ClearField):
+		if in := m.reqInput(); in != nil {
+			in.SetValue("")
+		}
+		return m, nil
+	}
+
+	// The dropdowns and the checkboxes: j/k and space, which are letters everywhere else — so
+	// they only mean this **on a chooser**. Matched before the input, they swallowed the space
+	// bar in every text field on the line, and a purpose is a sentence.
+	if key.Matches(msg, m.k().Cycle) && m.reqFieldIsChooser() {
+		back := msg.String() == "k" || msg.String() == "up"
+		switch {
+		case m.req.field == reqCatField && len(m.reqCats) > 0:
+			return m.pickReqCat(back)
+		case m.req.field == m.reqUrgentField():
+			m.req.urgent = !m.req.urgent
+			return m.clampReqField(), nil
+		}
+		if i := m.reqPropField(m.req.field); i >= 0 {
+			return m.stepReqProp(i, back), nil
+		}
+		return m, nil
+	}
+
+	in := m.reqInput()
+	if in == nil {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	*in, cmd = in.Update(msg)
+	return m, cmd
+}
+
+// pickReqCat steps the category dropdown and rebuilds the line: the fields **are** the
+// category's, so choosing another one is a different form. Whatever was typed goes with it,
+// which is the honest thing — the values belonged to fields that no longer exist.
+func (m Model) pickReqCat(back bool) (tea.Model, tea.Cmd) {
+	n := len(m.reqCats)
+	switch {
+	case m.req.cat < 0 && back:
+		m.req.cat = n - 1
+	case m.req.cat < 0:
+		m.req.cat = 0
+	case back:
+		m.req.cat = (m.req.cat - 1 + n) % n
+	default:
+		m.req.cat = (m.req.cat + 1) % n
+	}
+
+	cat, _ := m.reqCat()
+	m.req.inputs = make([]textinput.Model, len(cat.Fields))
+	m.req.on, m.req.picks = map[string]bool{}, map[string]int{}
+	var cmds []tea.Cmd
+	for i, f := range cat.Fields {
+		switch f.Kind {
+		case "boolean":
+		case "many2one":
+			// The options are read when the category is chosen rather than with the categories
+			// themselves: a form nobody opened should not cost a call per field.
+			if f.Comodel != "" && len(f.Opts) == 0 && m.key != "" && m.login != "" {
+				cmds = append(cmds, api.FetchReqOptions(m.key, m.login, m.db, f.Name, f.Comodel))
+			}
+		case "date":
+			// The one field with a shape: the placeholder is the shape, as it is on the insert
+			// row, and what is typed into it is normalized on the way out.
+			in := reqInput()
+			in.Placeholder = "dd/mm/yy"
+			in.CharLimit = 8
+			m.req.inputs[i] = in
+		default:
+			m.req.inputs[i] = reqInput()
+		}
+	}
+	return m.clampReqField(), tea.Batch(cmds...)
+}
+
+// stepReqProp steps whichever kind of chooser this field is: a boolean's tick, or a many2one's
+// own options. A text field is typed into instead and this does nothing to it.
+func (m Model) stepReqProp(i int, back bool) Model {
+	cat, ok := m.reqCat()
+	if !ok || i >= len(cat.Fields) {
+		return m
+	}
+	f := cat.Fields[i]
+	switch f.Kind {
+	case "boolean":
+		// Copied on write, the same rule ticksWith follows for the meal line's ids: the model
+		// is a value and a map inside it is a reference. Keyed by the property's own name,
+		// since a re-chosen category renumbers the fields.
+		next := make(map[string]bool, len(m.req.on)+1)
+		for k, v := range m.req.on {
+			next[k] = v
+		}
+		next[f.Name] = !next[f.Name]
+		m.req.on = next
+	case "many2one":
+		if len(f.Opts) == 0 {
+			return m
+		}
+		next := map[string]int{}
+		for k, v := range m.req.picks {
+			next[k] = v
+		}
+		at := next[f.Name]
+		if back {
+			at = (at - 1 + len(f.Opts)) % len(f.Opts)
+		} else {
+			at = (at + 1) % len(f.Opts)
+		}
+		next[f.Name] = at
+		m.req.picks = next
+	}
+	return m
+}
+
+// moveReqField normalizes the date being left — dates are rewritten on exit, never per
+// keystroke, the same as the insert row's — then focuses the next field, wrapping.
+func (m Model) moveReqField(by int) Model {
+	m.normalizeReqDate()
+	n := m.reqFieldCount()
+	m.req.field = (m.req.field + by + n) % n
+	for i := range m.req.inputs {
+		m.req.inputs[i].Blur()
+	}
+	m.req.urgency.Blur()
+	m.req.noteBox.Blur()
+	if in := m.reqInput(); in != nil {
+		in.Focus()
+	}
+	return m
+}
+
+// normalizeReqDate rewrites the date field being left: `30` is the 30th of this month, `30/9`
+// the 30th of September, exactly as the insert row and every other date on every other screen
+// read what is typed into them.
+func (m *Model) normalizeReqDate() {
+	cat, ok := m.reqCat()
+	if !ok {
+		return
+	}
+	i := m.reqPropField(m.req.field)
+	if i < 0 || i >= len(m.req.inputs) || cat.Fields[i].Kind != "date" {
+		return
+	}
+	raw := strings.TrimSpace(m.req.inputs[i].Value())
+	if raw == "" {
+		return
+	}
+	if d, err := parse.Date(raw, parse.Today()); err == nil {
+		m.req.inputs[i].SetValue(d)
+		m.err = nil
+	} else {
+		m.err = err
+	}
+}
+
+// clampReqField keeps the cursor on a field that still exists: choosing a category with fewer
+// fields, or unticking urgent, takes one away.
+func (m Model) clampReqField() Model {
+	if n := m.reqFieldCount(); m.req.field >= n {
+		m.req.field = n - 1
+	}
+	return m
+}
+
+// reqInput is the text field the cursor is in, or nil on a dropdown, a checkbox or a button.
+func (m *Model) reqInput() *textinput.Model {
+	if i := m.reqPropField(m.req.field); i >= 0 && i < len(m.req.inputs) {
+		cat, _ := m.reqCat()
+		switch cat.Fields[i].Kind {
+		case "boolean", "many2one":
+			return nil
+		}
+		return &m.req.inputs[i]
+	}
+	switch m.req.field {
+	case m.reqUrgencyField():
+		return &m.req.urgency
+	case m.reqNoteField():
+		return &m.req.noteBox
+	}
+	return nil
+}
+
+// reqValues is what the line would file, and the first field it cannot: every field the
+// category calls required has to have something in it, which the ERP would otherwise refuse one
+// round trip later.
+func (m Model) reqValues() ([]store.PropValue, string) {
+	cat, ok := m.reqCat()
+	if !ok {
+		return nil, "pick a category first"
+	}
+	var out []store.PropValue
+	for i, f := range cat.Fields {
+		p := store.PropValue{Name: f.Name, Kind: f.Kind, Label: f.Label}
+		switch f.Kind {
+		case "boolean":
+			p.Value = m.req.on[f.Name]
+		case "many2one":
+			if len(f.Opts) == 0 {
+				if f.Required {
+					return nil, "no " + strings.ToLower(f.Label) + " to choose from"
+				}
+				continue
+			}
+			p.Value = f.Opts[min(m.req.picks[f.Name], len(f.Opts)-1)].ID
+		case "date":
+			raw := strings.TrimSpace(m.req.inputs[i].Value())
+			if raw == "" {
+				if f.Required {
+					return nil, strings.ToLower(f.Label) + " is required"
+				}
+				continue
+			}
+			d, err := parse.Date(raw, parse.Today())
+			if err != nil {
+				return nil, "unreadable " + strings.ToLower(f.Label)
+			}
+			t, err := time.Parse(parse.DateLayout, d)
+			if err != nil {
+				return nil, "unreadable " + strings.ToLower(f.Label)
+			}
+			p.Value = t.Format("2006-01-02")
+		case "integer", "float":
+			raw := strings.TrimSpace(m.req.inputs[i].Value())
+			if raw == "" {
+				if f.Required {
+					return nil, strings.ToLower(f.Label) + " is required"
+				}
+				continue
+			}
+			n, err := strconv.ParseFloat(raw, 64)
+			if err != nil {
+				return nil, strings.ToLower(f.Label) + " has to be a number"
+			}
+			p.Value = n
+		default:
+			raw := strings.TrimSpace(oneLine(m.req.inputs[i].Value()))
+			if raw == "" {
+				if f.Required {
+					return nil, strings.ToLower(f.Label) + " is required"
+				}
+				continue
+			}
+			p.Value = raw
+		}
+		out = append(out, p)
+	}
+	return out, ""
+}
+
+// askFileReq states what is about to be filed and waits for a y or an n: it asks the office for
+// something, and the category and its fields are worth reading back before that goes.
+func (m Model) askFileReq() (tea.Model, tea.Cmd) {
+	if m.filing {
+		m.status = "still waiting on the ERP…"
+		return m, nil
+	}
+	props, refuse := m.reqValues()
+	if refuse != "" {
+		m.status = refuse
+		return m, nil
+	}
+	cat, _ := m.reqCat()
+
+	lines := make([]string, 0, len(props)+1)
+	for _, p := range props {
+		lines = append(lines, fmt.Sprintf("%s: %v", strings.ToLower(p.Label), p.Value))
+	}
+	if m.req.urgent {
+		lines = append(lines, "urgent")
+	}
+	m.prev, m.mode = m.mode, ModeConfirm
+	m.cKind = confirmFileReq
+	m.cPrompt = fmt.Sprintf("File a %s?\n\n%s", cat.Name, strings.Join(lines, "\n"))
+	return m, nil
+}
+
+// fileReq sends the create, once the modal has been answered.
+func (m Model) fileReq() (Model, tea.Cmd) {
+	props, refuse := m.reqValues()
+	if refuse != "" {
+		m.status = refuse
+		return m, nil
+	}
+	cat, _ := m.reqCat()
+	m.filing, m.err = true, nil
+	m.status = "filing the " + strings.ToLower(cat.Name) + "…"
+	return m, api.FileRequisition(m.key, m.login, m.db, m.reqEmployee(), cat.ID,
+		props, m.req.urgent, m.req.urgency.Value(), m.req.noteBox.Value())
+}
+
+// reqFieldIsChooser says whether the focused field is stepped rather than typed into: the
+// category dropdown, a boolean, or a many2one's own options. The footer reads it, so it only
+// offers j/k where they do something.
+func (m Model) reqFieldIsChooser() bool {
+	if !m.req.open {
+		return false
+	}
+	if m.req.field == reqCatField || m.req.field == m.reqUrgentField() {
+		return true
+	}
+	if i := m.reqPropField(m.req.field); i >= 0 {
+		cat, _ := m.reqCat()
+		switch cat.Fields[i].Kind {
+		case "boolean", "many2one":
+			return true
+		}
+	}
+	return false
+}
+
+// reqEmployee is the hr.employee this key files as, when the app already knows it: the clock
+// reads it, and the field defaults to the same record anyway.
+func (m Model) reqEmployee() int { return m.attEmp }
 
 // needsWFH says whether a refusal is the one a work-from-home request answers. The ERP's own
 // sentence is "You have exceeded the number of days available for WFH. Please submit a WFH
@@ -4043,6 +4587,11 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ModeTable
 			return m, nil
 
+		case confirmFileReq:
+			// Back to the line, which stays as typed until the ERP answers.
+			m.mode = ModeReqForm
+			return m.fileReq()
+
 		case confirmHourLogs:
 			m.mode = m.prev
 			return m.confirmHours()
@@ -4117,6 +4666,8 @@ func modeLabel(m Mode) string {
 		return "-- WFH REQUEST --"
 	case ModeEmpSearch:
 		return "-- SEARCH --"
+	case ModeReqForm:
+		return "-- NEW REQUISITION --"
 	}
 	return ""
 }

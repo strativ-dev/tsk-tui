@@ -269,3 +269,386 @@ func TestReqTabKeyAndRefresh(t *testing.T) {
 		t.Error("R does not fetch on the task list")
 	}
 }
+
+func sampleCats() []store.ReqCategory {
+	return []store.ReqCategory{
+		{ID: 14, Name: "Team Outing", Fields: []store.ReqField{
+			{Name: "num_people", Kind: "integer", Label: "No. of People", Required: true},
+			{Name: "maximum_limit", Kind: "float", Label: "Maximum Limit", Required: true},
+		}},
+		{ID: 17, Name: "Software Requisition", Fields: []store.ReqField{
+			{Name: "software_name", Kind: "char", Label: "Software Name", Required: true},
+			{Name: "reason", Kind: "char", Label: "Purpose/Reason", Required: true},
+			{Name: "deadline", Kind: "date", Label: "Deadline", Required: true},
+		}},
+		{ID: 5, Name: "Accessories Replacement Requisition", Fields: []store.ReqField{
+			{Name: "existing_device_id", Kind: "many2one", Label: "Existing Device",
+				Required: true, Comodel: "maintenance.equipment",
+				Opts: []store.Opt{{ID: 12, Name: "Mackbook Pro"}, {ID: 22, Name: "Headphone"}}},
+			{Name: "purpose_of_replacement", Kind: "char", Label: "Purpose of Replacement",
+				Required: true},
+			{Name: "is_data_backed_up", Kind: "boolean", Label: "Is Data Backed Up",
+				Required: true},
+		}},
+	}
+}
+
+// formModel is the tab with the categories in hand and the line open on the given one.
+func formModel(t *testing.T, cat string) Model {
+	t.Helper()
+	m := send(t, reqModel(t, 200, 34), api.ReqCategoriesMsg{Categories: sampleCats()}, runes("n"))
+	for range len(sampleCats()) + 1 {
+		if got, ok := m.reqCat(); ok && got.Name == cat {
+			return m
+		}
+		m = send(t, m, runes("j"))
+	}
+	t.Fatalf("never reached %q", cat)
+	return m
+}
+
+// n opens the line, and nothing is on it until a category is chosen: the fields **are** the
+// category's, so there is nothing to draw before one is picked.
+func TestNewReqLineOpensOnTheCategory(t *testing.T) {
+	m := reqModel(t, 200, 34)
+	closed := m.View()
+	if !strings.Contains(plain(closed), "new requisition") {
+		t.Fatalf("the label is not on screen closed:\n%s", plain(closed))
+	}
+
+	open, cmd := sendCmd(t, m, runes("n"))
+	if open.mode != ModeReqForm || !open.req.open {
+		t.Fatalf("mode = %v, open = %v", open.mode, open.req.open)
+	}
+	if cmd == nil || !open.reqLoading {
+		t.Fatal("n did not read the categories")
+	}
+	if v := plain(open.View()); !strings.Contains(v, "reading the categories…") {
+		t.Errorf("the line does not say it is reading:\n%s", v)
+	}
+	// Opening it moves nothing: the row is there either way.
+	landed := send(t, open, api.ReqCategoriesMsg{Categories: sampleCats()})
+	if a, b := len(strings.Split(closed, "\n")), len(strings.Split(landed.View(), "\n")); a != b {
+		t.Errorf("opening the line changed the height: %d → %d", a, b)
+	}
+	if rowOf(t, plain(closed), "CATEGORY  ") != rowOf(t, plain(landed.View()), "CATEGORY  ") {
+		t.Error("opening the line moved the table")
+	}
+	// Nothing but the dropdown until one is chosen.
+	v := plain(landed.View())
+	if !strings.Contains(v, "pick a category ▾") || !strings.Contains(v, "pick one") {
+		t.Errorf("the closed dropdown does not ask for one:\n%s", v)
+	}
+	if strings.Contains(v, "✓") && landed.reqFieldCount() != 1 {
+		t.Errorf("the line drew its buttons before a category was chosen:\n%s", v)
+	}
+
+	// The categories are read once: closing and reopening asks nothing.
+	shut := send(t, landed, special(tea.KeyEsc))
+	if shut.req.open || shut.mode == ModeReqForm {
+		t.Error("esc did not close the line")
+	}
+	if _, cmd := sendCmd(t, shut, runes("n")); cmd != nil && shut.reqCatsRead {
+		if again := send(t, shut, runes("n")); again.reqLoading {
+			t.Error("the categories were read a second time")
+		}
+	}
+}
+
+// The category says what the line asks for: choosing one builds its fields, and choosing
+// another throws them away — they belonged to fields that no longer exist.
+func TestNewReqFieldsFollowTheCategory(t *testing.T) {
+	soft := formModel(t, "Software Requisition")
+	v := plain(soft.View())
+	for _, want := range []string{"Software Requisition ▾", "software name *",
+		"purpose/reason *", "deadline *", "urgent", "note", "✓", "✕"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the line is missing %q:\n%s", want, v)
+		}
+	}
+	// Its own count: the dropdown, three fields, urgent, the note and the two buttons.
+	if got := soft.reqFieldCount(); got != 8 {
+		t.Errorf("the line has %d fields, want 8", got)
+	}
+
+	// Typed, then the category changes: the values go with the fields they belonged to.
+	typed := send(t, soft, special(tea.KeyTab), runes("Figma"))
+	if typed.req.inputs[0].Value() != "Figma" {
+		t.Fatalf("the field did not take the text: %q", typed.req.inputs[0].Value())
+	}
+	moved := send(t, typed, special(tea.KeyShiftTab), runes("j"))
+	if got, _ := moved.reqCat(); got.Name == "Software Requisition" {
+		t.Fatal("j did not step the category")
+	}
+	for _, in := range moved.req.inputs {
+		if in.Value() != "" {
+			t.Errorf("a value survived the category change: %q", in.Value())
+		}
+	}
+
+	// A replacement asks different things, including a device to pick and a box to tick.
+	repl := formModel(t, "Accessories Replacement Requisition")
+	rv := plain(repl.View())
+	for _, want := range []string{"Mackbook Pro ▾", "purpose of replacement *",
+		"is data backed up *", "☐ no"} {
+		if !strings.Contains(rv, want) {
+			t.Errorf("the replacement line is missing %q:\n%s", want, rv)
+		}
+	}
+	// The device dropdown steps its own options.
+	picked := send(t, repl, special(tea.KeyTab), runes("j"))
+	if !strings.Contains(plain(picked.View()), "Headphone ▾") {
+		t.Errorf("j did not step the device:\n%s", plain(picked.View()))
+	}
+	// The tick is toggled with space, and urgent reveals its cause.
+	ticked := send(t, picked, special(tea.KeyTab), special(tea.KeyTab), runes(" "))
+	if !ticked.req.on["is_data_backed_up"] {
+		t.Error("space did not tick the box")
+	}
+	urgent := send(t, ticked, special(tea.KeyTab), runes(" "))
+	if !urgent.req.urgent || urgent.reqUrgencyField() < 0 {
+		t.Error("urgent did not reveal its cause")
+	}
+	if !strings.Contains(plain(urgent.View()), "why it cannot wait") {
+		t.Errorf("the cause has no line:\n%s", plain(urgent.View()))
+	}
+}
+
+// The keyboard is on the form, so the table gives up its accent while it is open — a highlighted
+// row says the keys are somewhere they are not. Every field reads as a field, and the one holding
+// the keys is the accent one.
+func TestNewReqFormMarksItsOwnFields(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const (
+		accent = "255;192;0" // the frame and the label of the field with the keys
+		frame  = "43;43;58"  // theme.Rule, the frame every other field has
+	)
+	shut := reqModel(t, 120, 34)
+	if !strings.Contains(lineWith(t, shut.View(), "New Accessories"), accent) {
+		t.Fatal("the table's own row is not accented with the form closed")
+	}
+
+	m := formModel(t, "Software Requisition")
+	if line := lineWith(t, m.View(), "New Accessories"); strings.Contains(line, accent) {
+		t.Errorf("the table keeps its accent while the form has the keys:\n%q", line)
+	}
+	// Every value is framed, the same rounded field the time off line has, so an empty one is
+	// still visibly somewhere to type.
+	for _, needle := range []string{"software name", "purpose/reason", "deadline", "note"} {
+		line := lineWith(t, m.View(), needle)
+		if !strings.Contains(line, frame) && !strings.Contains(line, accent) {
+			t.Errorf("%q has no field to type in:\n%q", needle, line)
+		}
+		if !strings.Contains(plain(line), "│") {
+			t.Errorf("%q is not a field:\n%q", needle, plain(line))
+		}
+	}
+	// The frame with the keys is the accent one, and it moves with tab.
+	if line := lineWith(t, m.View(), "new requisition"); !strings.Contains(line, accent) {
+		t.Errorf("the focused field is not framed in the accent:\n%q", line)
+	}
+	next := send(t, m, special(tea.KeyTab))
+	if line := lineWith(t, next.View(), "new requisition"); strings.Contains(line, accent) {
+		t.Errorf("the accent frame stayed on the category:\n%q", line)
+	}
+	if line := lineWith(t, next.View(), "software name"); !strings.Contains(line, accent) {
+		t.Errorf("the accent frame did not move with tab:\n%q", line)
+	}
+	// A chooser reads in the accent while it holds the keys, so stepping one says so where it
+	// happened rather than only in the label beside it.
+	if line := lineWith(t, m.View(), "new requisition"); !strings.Contains(line, accent) {
+		t.Errorf("the dropdown's own value is not accented:\n%q", line)
+	}
+}
+
+// A date field reads what is typed into it the way every other date in this app does, and
+// normalizes on the way out rather than per keystroke.
+func TestNewReqDateNormalizesOnTab(t *testing.T) {
+	m := formModel(t, "Software Requisition")
+	at := func(m Model, field int) Model {
+		for m.req.field != field {
+			m = send(t, m, special(tea.KeyTab))
+		}
+		return m
+	}
+	// The deadline is the category's fourth field; dd/mm/yy is what it says it takes.
+	deadline := at(m, 3)
+	if !strings.Contains(plain(deadline.View()), "dd/mm/yy") {
+		t.Errorf("the date field does not say its shape:\n%s", plain(deadline.View()))
+	}
+	typed := send(t, deadline, runes("30"))
+	if got := typed.req.inputs[2].Value(); got != "30" {
+		t.Fatalf("the field holds %q", got)
+	}
+	left := send(t, typed, special(tea.KeyTab))
+	// dd/mm/yy, with the month and the year filled in from today — the insert row's own grammar.
+	if got := left.req.inputs[2].Value(); len(got) != 8 || !strings.HasPrefix(got, "30/") {
+		t.Errorf("the date was not normalized on the way out: %q", got)
+	}
+}
+
+// Space types where a field takes letters: j/k/space step a chooser, and matched before the
+// input they swallowed the space bar in every text field on the form.
+func TestNewReqFieldsTakeSpace(t *testing.T) {
+	m := formModel(t, "Software Requisition")
+	typed := send(t, m, special(tea.KeyTab), runes("Adobe Creative Cloud"))
+	if got := typed.req.inputs[0].Value(); got != "Adobe Creative Cloud" {
+		t.Errorf("the field holds %q — the space bar went somewhere else", got)
+	}
+	// And on the chooser it still steps: the category, not a space.
+	stepped := send(t, m, runes(" "))
+	if got, _ := stepped.reqCat(); got.Name == "Software Requisition" {
+		t.Error("space did not step the category")
+	}
+}
+
+// ✓ asks first, and refuses what the ERP would: every field the category calls required.
+func TestNewReqTickAsksAndRefuses(t *testing.T) {
+	m := formModel(t, "Software Requisition")
+	at := func(m Model, field int) Model {
+		for m.req.field != field {
+			m = send(t, m, special(tea.KeyTab))
+		}
+		return m
+	}
+
+	blank, cmd := sendCmd(t, at(m, m.reqOKField()), special(tea.KeyEnter))
+	if cmd != nil || blank.mode == ModeConfirm {
+		t.Error("a requisition with nothing in it was sent")
+	}
+	if !strings.Contains(blank.status, "required") {
+		t.Errorf("status = %q", blank.status)
+	}
+
+	// Filled in, and the prompt states what is about to be filed.
+	filled := m
+	for i, text := range []string{"Figma", "design handoff", "30/09/26"} {
+		filled = at(filled, 1+i)
+		filled = send(t, filled, runes(text))
+	}
+	asked := send(t, at(filled, filled.reqOKField()), special(tea.KeyEnter))
+	if asked.mode != ModeConfirm || asked.cKind != confirmFileReq {
+		t.Fatalf("mode = %v, kind = %v", asked.mode, asked.cKind)
+	}
+	for _, want := range []string{"Software Requisition", "software name: Figma",
+		"deadline: 2026-09-30"} {
+		if !strings.Contains(asked.cPrompt, want) {
+			t.Errorf("the prompt is missing %q:\n%s", want, asked.cPrompt)
+		}
+	}
+	// n comes back to the line with everything on it.
+	back := send(t, asked, runes("n"))
+	if back.mode != ModeReqForm || back.req.inputs[0].Value() != "Figma" {
+		t.Errorf("n lost the line: mode = %v", back.mode)
+	}
+	// y files it, and the line stays up until the ERP answers.
+	filed, cmd := sendCmd(t, asked, runes("y"))
+	if cmd == nil || !filed.filing || filed.mode != ModeReqForm {
+		t.Fatalf("y did not file it: filing = %v, mode = %v", filed.filing, filed.mode)
+	}
+	if !filed.busy() {
+		t.Error("the spinner will not animate while the create is out")
+	}
+
+	// The answer closes the line and re-reads the table; a refusal keeps it as typed.
+	done, cmd := sendCmd(t, filed, api.RequisitionFiledMsg{ID: 902})
+	if done.req.open || cmd == nil {
+		t.Errorf("open = %v after it was filed", done.req.open)
+	}
+	if !strings.Contains(done.status, "waiting on approval") {
+		t.Errorf("status = %q", done.status)
+	}
+	refused := send(t, filed, api.RequisitionFiledMsg{Err: errors.New("odoo: no")})
+	if !refused.req.open || refused.req.inputs[0].Value() != "Figma" {
+		t.Error("a refusal closed the line")
+	}
+}
+
+// ✕ and esc close the line outright — nothing has been filed — and the label comes back.
+func TestNewReqLineClosesWithoutAsking(t *testing.T) {
+	m := formModel(t, "Software Requisition")
+	x := m
+	for x.req.field != x.reqXField() {
+		x = send(t, x, special(tea.KeyTab))
+	}
+	for _, shut := range []Model{
+		send(t, x, special(tea.KeyEnter)),
+		send(t, m, special(tea.KeyEsc)),
+	} {
+		if shut.req.open || shut.mode == ModeConfirm {
+			t.Errorf("the line is still open: mode = %v", shut.mode)
+		}
+		if !strings.Contains(plain(shut.View()), "new requisition") {
+			t.Error("the label did not come back")
+		}
+	}
+}
+
+// The line owns the keyboard while it is open: a purpose can hold the letters the tabs are.
+func TestNewReqLineOwnsTheKeyboard(t *testing.T) {
+	m := send(t, formModel(t, "Software Requisition"), special(tea.KeyTab), runes("meeting notes"))
+	if m.tab != TabReq {
+		t.Errorf("typing changed the tab to %v", m.tab)
+	}
+	if got := m.req.inputs[0].Value(); got != "meeting notes" {
+		t.Errorf("the field holds %q", got)
+	}
+}
+
+// The form is one field a line under the table, with the buttons against the right edge: nothing
+// on it may exceed the width, and its rows come out of the table's own budget rather than off the
+// bottom of the screen.
+func TestNewReqLineFits(t *testing.T) {
+	// The buttons line up under the values, past the label column: pushed to the right edge they
+	// belonged to nothing on the form.
+	wide := formModel(t, "Software Requisition")
+	lines := strings.Split(plain(wide.View()), "\n")
+	// The button row, not the table's own urgent tick: the boxed mark is what tells them apart.
+	btn := rowOf(t, plain(wide.View()), "│ ✓ │")
+	before, _, _ := strings.Cut(lines[btn], "│")
+	// The label column plus the two cells every blurred line starts with: the same cell a value
+	// starts on.
+	if at, want := lipgloss.Width(before), gutter+reqFormLabel; at != want {
+		t.Errorf("the buttons start at cell %d, want %d:\n%q", at, want, lines[btn])
+	}
+	// And under the table, not above it.
+	if rowOf(t, plain(wide.View()), "CATEGORY  ") > btn {
+		t.Error("the form is above the table")
+	}
+	if rowOf(t, plain(wide.View()), "new requisition ") > btn {
+		t.Error("the buttons are above the fields they commit")
+	}
+
+	for _, size := range [][2]int{{200, 34}, {166, 30}, {120, 24}, {100, 20}, {80, 24}} {
+		w, h := size[0], size[1]
+		for _, cat := range []string{"Software Requisition", "Accessories Replacement Requisition"} {
+			m := send(t, reqModel(t, w, h), api.ReqCategoriesMsg{Categories: sampleCats()},
+				runes("n"))
+			for i := 0; i < len(sampleCats()); i++ {
+				if got, ok := m.reqCat(); ok && got.Name == cat {
+					break
+				}
+				m = send(t, m, runes("j"))
+			}
+			urgent := m
+			for urgent.req.field != urgent.reqUrgentField() {
+				urgent = send(t, urgent, special(tea.KeyTab))
+			}
+			urgent = send(t, urgent, runes(" "))
+			for _, v := range []Model{m, urgent} {
+				lines := strings.Split(v.View(), "\n")
+				if len(lines) > h {
+					t.Errorf("%s at %dx%d: %d lines", cat, w, h, len(lines))
+				}
+				for i, l := range lines {
+					if got := lipgloss.Width(l); got > w {
+						t.Errorf("%s at %d cells: line %d is %d wide: %q", cat, w, i, got, l)
+					}
+				}
+			}
+		}
+	}
+}

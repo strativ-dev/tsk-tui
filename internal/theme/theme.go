@@ -224,6 +224,19 @@ var (
 		BorderForeground(Link).
 		Foreground(Link).
 		Padding(0, 1)
+	// A field on the new-requisition form: the value sits on its own surface, so an empty one
+	// still reads as somewhere to type where a bare gap read as nothing at all. The one holding
+	// the keys is lighter, which is the same "this is where you are" the focus border says in a
+	// cell — and it is a fill rather than a frame because the fields are stacked, and a frame
+	// around each would cost two rows a field.
+	// The same rounded frame the time off line's fields have, on **one row**: the requisition
+	// form stacks its fields, and a four-sided box per field would cost two rows each — six
+	// fields and the ERP's own three would be a screen of borders. Left and right rules only, so
+	// the frame is a frame and the row is a row, and the accent says which one has the keys,
+	// exactly as it does there.
+	ReqBox      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder(), false, true).BorderForeground(Rule).Padding(0, 1)
+	ReqBoxFocus = ReqBox.BorderForeground(Accent)
+
 	// A requisition's stage, by what it means rather than by its name: done is settled, rejected
 	// is not happening, and anything else is waiting on somebody — the same three readings the
 	// hour chart's thresholds have, in the same three colours.

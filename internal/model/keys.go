@@ -442,6 +442,8 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{key.NewBinding(key.WithHelp("esc", "close"))}
 	case ModeLeaves:
 		return []key.Binding{key.NewBinding(key.WithHelp(k.Back.Help().Key, "close"))}
+	case ModeReqForm:
+		return []key.Binding{k.Next, k.Prev, k.Cycle, k.ClearField, k.Accept, k.Cancel}
 	case ModeEmpSearch:
 		return []key.Binding{
 			key.NewBinding(key.WithHelp("any key", "filter the list")),
