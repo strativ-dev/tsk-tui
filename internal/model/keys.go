@@ -25,6 +25,7 @@ type keyMap struct {
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab, TimeTab     key.Binding
 	MealTab, BookMeal, DropMeal    key.Binding
+	EmpTab                         key.Binding
 	Help, Clock, NewLeave          key.Binding
 	ConfirmHours                   key.Binding
 	PrevMonth, NextMonth           key.Binding
@@ -89,6 +90,9 @@ func defaultKeys() keyMap {
 		TimeTab: key.NewBinding(key.WithKeys("o", "3"), key.WithHelp("o", "timeoff")),
 		// m, the initial of the word, free of every other tab key.
 		MealTab: key.NewBinding(key.WithKeys("m", "4"), key.WithHelp("m", "meal")),
+		// e, the initial of the word. The directory is read only, so nothing on that screen
+		// competes for it.
+		EmpTab: key.NewBinding(key.WithKeys("e", "5"), key.WithHelp("e", "employee")),
 		// The book-meal line, b for the word it opens. Inside the line b is breakfast's own
 		// tick — the line owns the keyboard, so the two never meet.
 		BookMeal: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "book meal")),
@@ -146,7 +150,7 @@ var (
 )
 
 // TabNames is the name each tab answers to in the config file, in bar order.
-func TabNames() []string { return []string{"tasks", "dash", "time", "meal"} }
+func TabNames() []string { return []string{"tasks", "dash", "time", "meal", "emp"} }
 
 func tabByName(name string) (Tab, bool) {
 	switch name {
@@ -158,6 +162,8 @@ func tabByName(name string) (Tab, bool) {
 		return TabTime, true
 	case "meal":
 		return TabMeal, true
+	case "emp":
+		return TabEmp, true
 	}
 	return 0, false
 }
@@ -252,14 +258,16 @@ func applyTo(dst *keyMap, overrides map[string][]string) error {
 // Rebinding the tab keys themselves is fine, and so is anything the typing modes protect —
 // only the actions those handlers reach are checked.
 func CheckKeys() error {
-	tabs := map[string]string{}
+	tabs, isTabAction := map[string]string{}, map[string]bool{}
 	for _, t := range []struct {
 		name string
 		b    key.Binding
 	}{
 		{"tasks_tab", keys.TasksTab}, {"dash_tab", keys.DashTab},
-		{"time_tab", keys.TimeTab}, {"meal_tab", keys.MealTab}, {"help", keys.Help},
+		{"time_tab", keys.TimeTab}, {"meal_tab", keys.MealTab},
+		{"emp_tab", keys.EmpTab}, {"help", keys.Help},
 	} {
+		isTabAction[t.name] = true
 		for _, k := range t.b.Keys() {
 			tabs[k] = t.name
 		}
@@ -272,9 +280,8 @@ func CheckKeys() error {
 	var clashes []string
 	for i := range tt.NumField() {
 		name := actionName(tt.Field(i).Name)
-		if _, isTab := map[string]bool{"tasks_tab": true, "dash_tab": true,
-			"time_tab": true, "meal_tab": true, "help": true}[name]; isTab {
-			continue
+		if isTabAction[name] {
+			continue // the tab keys themselves, which are allowed to be the tab keys
 		}
 		for _, k := range v.Field(i).Interface().(key.Binding).Keys() {
 			if owner, taken := tabs[k]; taken {
@@ -340,6 +347,7 @@ const tabKeysTOMLFooter = `
 # [keys.tasks]
 # [keys.dash]
 # [keys.time]
+# [keys.emp]
 # [keys.meal]
 # delete = ["d"]
 `
@@ -422,6 +430,12 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{key.NewBinding(key.WithHelp("esc", "close"))}
 	case ModeLeaves:
 		return []key.Binding{key.NewBinding(key.WithHelp(k.Back.Help().Key, "close"))}
+	case ModeEmpSearch:
+		return []key.Binding{
+			key.NewBinding(key.WithHelp("any key", "filter the list")),
+			key.NewBinding(key.WithHelp("enter", "keep it, back to the list")),
+			key.NewBinding(key.WithHelp("esc", "clear it and collapse")),
+		}
 	case ModeWFH:
 		return []key.Binding{k.Next, k.Prev, k.ClearField, k.Accept, k.Cancel}
 	case ModeBook:

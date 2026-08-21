@@ -211,6 +211,19 @@ var (
 		BorderForeground(Link).
 		Foreground(Link).
 		Padding(0, 1)
+	// The job title on the employee row the cursor is on. The accent marks whatever holds the
+	// keys, and the row is one thing — a name in the accent beside a chip still in the tag's
+	// teal read as two rows overlapping.
+	ChipFocus = Chip.BorderForeground(Accent).Foreground(Accent)
+	// A project on an employee's open row is a **pill**: filled and rounded, the way the tab
+	// bar's active tab is, rather than a name between two rules. Several of these names read as
+	// phrases ("Value-Driven Engagement, Internal Meetings & Tasks"), and a fill is what makes
+	// one of them a single object at a glance where a pair of rules only marks its ends.
+	//
+	// The fill is the raised surface with white ink on it, not the accent: a row of accent
+	// pills would say every project is the thing you are on, which is what that colour means
+	// everywhere else. Padding a cell either side is the lozenge's own shape.
+	ProjectPill = lipgloss.NewStyle().Foreground(White).Background(WeekendBand).Padding(0, 1)
 	// Sep is the rule under the header; Track draws the empty part of a bar and the
 	// threshold ticks inside it.
 	Sep   = lipgloss.NewStyle().Foreground(Rule)

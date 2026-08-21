@@ -10,6 +10,9 @@ browser and no mouse:
   attendance clock: check in and out from the same screen.
 - **Time off** — a year calendar of the days you took off, your leave balances, the public
   holidays, and a one-line form that files a request the way the web UI does.
+- **Employees** — the office directory, a row per person; `l` opens one into their email, phone,
+  department, team lead, project managers, time off approver, stack manager and the projects they
+  are on. `/` filters on any of it. Read once, cached on disk, re-read with `r`.
 - **Meals** — this month's meal bookings with the week's menu beside them; book today,
   tomorrow, the week ahead or a range, and cancel the same way.
 
@@ -381,6 +384,20 @@ for the keys the current screen takes.
 | `enter` | on ✓ it asks, then books or cancels; on ✕ it closes the line |
 | `ctrl+u` | clear the focused date |
 | `esc` | close the line, nothing filed |
+
+**Employees** (`e` or `5`)
+
+| Key | Does |
+|---|---|
+| `j` / `k` | next / previous person |
+| `g` / `G` | first / last |
+| `ctrl+f` / `ctrl+b` | half a screen |
+| `l` | open their details; `h` closes |
+| `/` | filter the list — any key filters, `enter` keeps it |
+| `esc` | clear the filter and collapse everything — from the prompt or the list |
+| `r` | re-read the directory from the ERP |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
 
 **Confirm prompts**
 
