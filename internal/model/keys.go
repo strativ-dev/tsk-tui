@@ -396,8 +396,10 @@ func (k keyMap) help(m Mode) []key.Binding {
 	case ModeSearch:
 		return []key.Binding{k.Focus, k.ClearQuery}
 	case ModeList:
+		// No tab key: the bar across the top already picks each tab's letter out of its own
+		// label, so `d dashboard` in the footer spends a slot saying it twice.
 		return []key.Binding{k.Down, k.Up, k.Top, k.HalfDown, k.Expand, k.Collapse, k.Jump,
-			k.DashTab, k.Refresh, k.SetKey, k.Search, k.ClearSearch, k.Quit}
+			k.Refresh, k.SetKey, k.Search, k.ClearSearch, k.Quit}
 	case ModeTable:
 		return []key.Binding{k.Down, k.Up, k.Top, k.HalfDown, k.Edit, k.Add, k.Delete,
 			k.Jump, k.Collapse, k.ClearSearch, k.Back, k.Quit}

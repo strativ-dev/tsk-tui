@@ -327,7 +327,7 @@ for the keys the current screen takes.
 
 | Key | Does |
 |---|---|
-| `j` / `k` | next / previous month |
+| `j` / `k` | next / previous month (`l` / `h` too) |
 | `ctrl+f` / `ctrl+b` | a row of months down / up |
 | `g` / `G` | January / December |
 | `enter` | list this month's time off; `esc` closes |

@@ -71,6 +71,9 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
   inside the word itself** (`hinted`) — accent on an inactive tab, dark ink underlined on
   the pill, where accent on light would fail contrast. Both come off the binding, so a
   rebind shows in the bar with nothing else to edit.
+- **No footer names a tab key.** The bar picks each tab's letter out of its own label, so a
+  `t tasks` or `d dashboard` hint below spends a footer slot saying the same thing twice — the
+  meal tab never had one, and the task list, the chart and the calendar have given theirs up.
 - **Digits are aliases in bar order** (`1`, `2`, `3`, `4`). They are matched in the same place as
   the letters, so the excluded typing modes protect them: a query of `2` and a `/12` date
   prompt both keep their digits.
@@ -407,6 +410,10 @@ for the request form, which is not built.
   `theme.LeaveColor` matches on the type's name — the ids are per database, the palette is
   per meaning — and an unknown type gets **white**, since a leave day in muted ink on a dim
   band is exactly what a weekend looks like.
+- **A month's name is white** (`theme.Title` over `theme.White`), not the muted head style the
+  weekday letters take: the names are how the year is read, and twelve dim ones beside a single
+  accented month read as eleven months switched off. The month in view keeps the accent and the
+  caret.
 - **A month is titled `Jan 26`** and its weekday heads are single letters, right-aligned
   over the dates, per the design. `T`/`T` and `S`/`S` are told apart by their column, which
   is the only thing a date under them is read by anyway.
@@ -439,7 +446,9 @@ One row between the balances and the calendar, and the whole request is on it:
 `new timeoff  │Annual ▾│ │full day ▾│ │21/01/26 │ → │23/01/26 │ │description…│ │✓│ │✕│`.
 
 - **The row is there whether or not the line is open.** Closed it is the label alone, with
-  `n` in the accent; `n` reveals the fields and focuses the leave type. Nothing above or
+  `n` in the accent; `n` reveals the fields and focuses the leave type — and **the label gives up
+  the accent on its key** while it is open, since the line owns the keyboard there and `n` types
+  an `n` into the description. The same rule the meal labels and the clock button follow. Nothing above or
   below moves, which is the point of keeping the row — `TestNewLeaveOpensWithoutShifting`
   holds the calendar's first line at the same index either way.
 - **Every field is a rounded box** (`theme.Field`), as the design draws them, which makes
@@ -560,15 +569,16 @@ One row between the balances and the calendar, and the whole request is on it:
     is listing. `?` still reaches the help toggle, as on every other modal that is not a
     confirm.
 - **It moves in months, not days.** No cursor — a year is a picture — so `Model.timeHold`
-  only says which month the window is built around: `-1` follows **this** month, `j`/`k` step
-  **one month** — Jan, Feb, Mar, which is the sequence a year is read in — `g`/`G` pin it to the
-  ends, and `ctrl+f`/`ctrl+b` move a row of months, the one place a width-dependent jump still
-  says something. They are the **same bindings the task list moves by**, so a rebind moves both
-  (`view.go: monthMoveHelp` reads their keys back for the footer).
-  - **`h`/`l` are unbound here.** They stepped one month while `j`/`k` stepped a row, and a row
-    is two, three or four months depending on the width — so `j` covered a different distance on
-    every terminal, and the calendar read as a grid rather than as twelve months in order. The
-    footer names `j/k` alone, since a hint for a key that cannot fire is a hint that lies.
+  only says which month the window is built around: `-1` follows **this** month, `h`/`j`/`k`/`l`
+  step **one month** — Jan, Feb, Mar, which is the sequence a year is read in — `g`/`G` pin it to
+  the ends, and `ctrl+f`/`ctrl+b` move a row of months, the one place a width-dependent jump
+  still says something. They are the **same bindings the task list moves by**, so a rebind moves
+  both (`view.go: monthMoveHelp` reads their keys back for the footer).
+  - **`h`/`l` are aliases of `j`/`k`, not a second distance.** They stepped one month while
+    `j`/`k` stepped a row, and a row is two, three or four months depending on the width — so
+    the same key covered a different jump on every terminal, and the calendar read as a grid
+    rather than as twelve months in order. Now whichever hand you reach with lands on the next
+    month, and the footer lists all four.
   - This month carries the **caret** (`▸Aug`), which is the only thing that says where today is
     once a leave has taken the cells.
 - **The balances are four boxes** (`view.go: balanceCards`), as the design draws them: the

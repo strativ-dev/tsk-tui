@@ -1200,7 +1200,11 @@ func (m Model) leaveRow(label, compact bool, desc string) string {
 
 	var parts []string
 	if label {
-		parts = append(parts, hinted("new timeoff", m.k().NewLeave, theme.DayLabel, theme.HintKey))
+		// The label keeps its `n` picked out only while the line is shut. Open, the line owns
+		// the keyboard and `n` types an n into the description, so the accent on it would be
+		// advertising a key that cannot fire — the same rule the meal labels and the clock
+		// button follow.
+		parts = append(parts, hinted("new timeoff", m.k().NewLeave, theme.DayLabel, theme.DayLabel))
 	}
 	// The type reads in its own colour — the same one its days are drawn in on the calendar
 	// below — and keeps it while it holds the keys, only bolder: cycling the dropdown is
@@ -1655,7 +1659,9 @@ func (m Model) monthBlock(year int, mon time.Month, marks map[string]dayMark) mo
 	// design: a month on its own could be any year's.
 	bg := theme.Surface
 	label := fmt.Sprintf("%s %02d", mon.String()[:3], year%100)
-	name, style := "  "+label, theme.Header
+	// White, not the muted head style: a month's own name is how the year is read, and twelve
+	// dim names beside one accented month read as eleven things switched off.
+	name, style := "  "+label, theme.Title.Foreground(theme.White)
 	if int(mon)-1 == m.timeMonth() {
 		bg = theme.PanelHold
 		name, style = "▸ "+label, theme.TitleFocus
@@ -1874,12 +1880,13 @@ func holidaySpan(h api.Holiday) string {
 	return from.Format("Jan 2") + "-" + to.Format("Jan 2")
 }
 
-// monthMoveHelp is the footer's entry for the two motions, named after what they move —
+// monthMoveHelp is the footer's entry for the four motions, named after what they move —
 // months, not rows or days — with the keys read off the bindings themselves so a rebind
-// follows. Only j and k: h and l are unbound on this screen, and a footer that named them
-// would be advertising keys that cannot fire.
+// follows. All four step one month: h/l are aliases of j/k here, so the hint lists them in the
+// order a hand finds them rather than implying two different distances.
 func (m Model) monthMoveHelp() key.Binding {
-	keysOf := []string{m.k().Down.Help().Key, m.k().Up.Help().Key}
+	keysOf := []string{m.k().Collapse.Help().Key, m.k().Down.Help().Key,
+		m.k().Up.Help().Key, m.k().Expand.Help().Key}
 	return key.NewBinding(key.WithHelp(strings.Join(keysOf, "/"), "month"))
 }
 
@@ -2347,18 +2354,20 @@ func (m Model) footer() string {
 	case !m.showHelp:
 	case m.tab == TabDash:
 		// It moves in screenfuls, not days, and there is no i: the query field filters
-		// tasks and this is not that tab.
+		// tasks and this is not that tab. No tab key either — the bar across the top picks the
+		// letter out of every tab's own label, so naming one here spends a slot saying it twice.
 		help = []key.Binding{m.k().Top, m.k().HalfDown, m.k().PrevMonth, m.clockHelp(),
-			m.k().TasksTab, m.k().Refresh, m.k().Quit, m.k().Help}
+			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabTime:
 		// It moves in months, and the filters are the leave types' own initials, so they
-		// are named by the answer rather than by the keymap.
+		// are named by the answer rather than by the keymap. No tab key, for the same reason
+		// the chart and the meal calendar have none.
 		help = []key.Binding{m.k().NewLeave, m.monthMoveHelp(), m.k().Top, m.filterHelp()}
 		if m.timeFilter != 0 {
 			help = append(help, key.NewBinding(
 				key.WithHelp(m.k().Back.Help().Key, "clear filter")))
 		}
-		help = append(help, m.k().TasksTab, m.k().Refresh, m.k().Quit, m.k().Help)
+		help = append(help, m.k().Refresh, m.k().Quit, m.k().Help)
 	case m.tab == TabMeal:
 		// It moves in months and nothing else: the calendar is read only for now, so there
 		// is no key here that changes a booking.

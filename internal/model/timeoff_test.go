@@ -204,10 +204,10 @@ func TestTabKeysBeatTheFilters(t *testing.T) {
 	}
 }
 
-// j and k walk the year a month at a time, and neither goes past January or December. h and l
-// are unbound here: they used to step one month while j/k stepped a row of them, and a row is a
-// different distance on every terminal width.
-func TestTimeWalksMonthsWithJK(t *testing.T) {
+// All four of h j k l walk the year a month at a time, and none goes past January or December.
+// h/l are aliases of j/k rather than the row step they used to be: a row is a different distance
+// on every terminal width, so the same key meant a different jump on every screen.
+func TestTimeWalksMonthsWithHJKL(t *testing.T) {
 	m := send(t, timeModel(t, 158, 46), runes("g")) // January
 
 	if got := send(t, m, runes("j")); got.timeMonth() != 1 {
@@ -228,11 +228,18 @@ func TestTimeWalksMonthsWithJK(t *testing.T) {
 		t.Errorf("k landed on month %d, want November", got.timeMonth())
 	}
 
-	// h and l move nothing on this screen.
-	for _, k := range []string{"h", "l"} {
-		if got := send(t, send(t, m, runes("j")), runes(k)); got.timeMonth() != 1 {
-			t.Errorf("%s moved the calendar to month %d", k, got.timeMonth())
-		}
+	// l is another j and h another k: one month, either way, and clamped at the ends.
+	if got := send(t, m, runes("l")); got.timeMonth() != 1 {
+		t.Errorf("l landed on month %d, want February", got.timeMonth())
+	}
+	if got := send(t, m, runes("h")); got.timeMonth() != 0 {
+		t.Errorf("h walked past January to month %d", got.timeMonth())
+	}
+	if got := send(t, send(t, m, runes("j")), runes("h")); got.timeMonth() != 0 {
+		t.Errorf("j then h landed on month %d, want January again", got.timeMonth())
+	}
+	if got := send(t, end, runes("l")); got.timeMonth() != 11 {
+		t.Errorf("l walked past December to month %d", got.timeMonth())
 	}
 
 	// Walking there brings that month into view with the caret on it.
@@ -240,8 +247,8 @@ func TestTimeWalksMonthsWithJK(t *testing.T) {
 	if v := plain(sep.View()); !strings.Contains(v, "▸ ") {
 		t.Errorf("the month walked to has no caret:\n%s", v)
 	}
-	// And the footer names the two keys off their own bindings.
-	if got := m.monthMoveHelp().Help(); got.Key != "j/k" || got.Desc != "month" {
+	// And the footer names all four off their own bindings.
+	if got := m.monthMoveHelp().Help(); got.Key != "h/j/k/l" || got.Desc != "month" {
 		t.Errorf("the footer hint is %q %q", got.Key, got.Desc)
 	}
 }
@@ -714,6 +721,55 @@ func TestNewLeaveOpensWithoutShifting(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Errorf("the line is missing %q:\n%s", want, line)
 		}
+	}
+}
+
+// A month's name is white: it is how the year is read, and twelve muted names beside one
+// accented month read as eleven things switched off. The month in view keeps the accent.
+func TestMonthNamesAreWhite(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const (
+		white  = "255;255;255"
+		accent = "255;192;0"
+		muted  = "138;143;153"
+	)
+	m := send(t, timeModel(t, 130, 32), runes("g")) // January, so Jan carries the caret
+	jan := lineWith(t, m.View(), "Jan 26")
+	if !strings.Contains(jan, accent) {
+		t.Errorf("the month in view is not accented:\n%q", jan)
+	}
+	// Its neighbours on the same line are the quiet ones.
+	quiet, _, _ := strings.Cut(jan[strings.Index(jan, "Feb"):], "Mar")
+	if !strings.Contains(jan, white) {
+		t.Errorf("no white month name on the row:\n%q", jan)
+	}
+	if strings.Contains(quiet, muted) {
+		t.Errorf("February's name is muted:\n%q", quiet)
+	}
+}
+
+// The label's own key is picked out only while the line is shut: open, the line has the
+// keyboard and n types an n into the description, so an accent on it would advertise a key that
+// cannot fire.
+func TestNewLeaveLabelDropsItsKeyWhenOpen(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const accent = "255;192;0" // #FFC000
+	m := timeModel(t, 120, 34)
+	if line := lineWith(t, m.View(), "timeoff"); !strings.Contains(line, accent) {
+		t.Errorf("the closed label does not pick out its key:\n%q", line)
+	}
+	// Only as far as the label itself: the focused type field's own frame is accent too, and
+	// that is what says which field has the keys.
+	open := send(t, m, runes("n"))
+	label, _, _ := strings.Cut(lineWith(t, open.View(), "timeoff"), "timeoff")
+	if strings.Contains(label, accent) {
+		t.Errorf("the open line still accents its label:\n%q", label)
 	}
 }
 

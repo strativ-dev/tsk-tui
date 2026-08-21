@@ -2100,14 +2100,15 @@ func (m Model) loadTime() (Model, tea.Cmd) {
 // something must not shadow it.
 func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	// j and k walk the year a month at a time — Jan, Feb, Mar — which is the sequence a year
-	// is read in and the unit the caret and the holiday panel both follow. They are the
-	// bindings the task list moves by, so a rebind moves both. h and l are unbound here: they
-	// stepped one month while j/k stepped a row of them, and a row is 2, 3 or 4 months
-	// depending on the width, so the same key covered a different distance on every terminal.
-	case key.Matches(msg, m.k().Down):
+	// All four walk the year a month at a time — Jan, Feb, Mar — which is the sequence a year is
+	// read in and the unit the caret and the holiday panel both follow. h/l used to step a
+	// month while j/k stepped a row of them, and a row is 2, 3 or 4 months depending on the
+	// width, so the same key covered a different distance on every terminal; they are aliases
+	// now, and whichever hand you reach with lands on the next month. They are the bindings the
+	// task list moves by, so a rebind moves both screens.
+	case key.Matches(msg, m.k().Down), key.Matches(msg, m.k().Expand):
 		return m.holdTime(m.timeMonth() + 1), nil
-	case key.Matches(msg, m.k().Up):
+	case key.Matches(msg, m.k().Up), key.Matches(msg, m.k().Collapse):
 		return m.holdTime(m.timeMonth() - 1), nil
 
 	case key.Matches(msg, m.k().Top):

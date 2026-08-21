@@ -259,8 +259,37 @@ func TestTabBarAndFooter(t *testing.T) {
 	if strings.Contains(footer, "i search") {
 		t.Errorf("the dashboard footer offers the query field:\n%s", footer)
 	}
-	if !strings.Contains(footer, "tasks") || !strings.Contains(footer, "quit") {
+	if !strings.Contains(footer, "check in") || !strings.Contains(footer, "quit") {
 		t.Errorf("the dashboard footer is missing its keys:\n%s", footer)
+	}
+}
+
+// No footer names a tab key: the bar across the top already picks each tab's letter out of its
+// own label, so a hint for it in the footer spends a slot saying the same thing twice.
+func TestFootersDoNotRepeatTheTabBar(t *testing.T) {
+	for _, c := range []struct {
+		what string
+		m    Model
+	}{
+		{"tasks", timeModel(t, 110, 30)}, // t first, below
+		{"dashboard", dashModel(t, 110, 30)},
+		{"time off", timeModel(t, 110, 30)},
+		{"meal", mealModel(t, 110, 30)},
+	} {
+		m := c.m
+		if c.what == "tasks" {
+			m = send(t, m, runes("t"))
+		}
+		footer := plain(send(t, m, runes("?")).footer())
+		for _, hint := range []string{"t tasks", "d dashboard", "o timeoff", "m meal"} {
+			if strings.Contains(footer, hint) {
+				t.Errorf("the %s footer advertises %q:\n%s", c.what, hint, footer)
+			}
+		}
+		// The screen's own keys are still there — the tab hint is the only thing that went.
+		if !strings.Contains(footer, "q quit") || !strings.Contains(footer, "? keys") {
+			t.Errorf("the %s footer lost its own keys:\n%s", c.what, footer)
+		}
 	}
 }
 
