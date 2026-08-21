@@ -63,7 +63,14 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | `TabDash` | `d` · `2` | this month's hours per day, and the ERP's clock (`c`) |
 | `TabTime` | `o` · `3` | this year's time off: the calendar, the balances, the holidays |
 | `TabMeal` | `m` · `4` | this month's canteen meals, one bar per meal per day |
+| `TabEmp` | `e` · `5` | the office directory, a card per person, filtered by a query field |
 
+- The bar **gives up its words before it wraps** (`tabBar`, the `short` tier): five labels want
+  63 cells, and the bar is the first line of every screen — wrapped, it pushes the whole UI down
+  a row and scrolls the terminal. Below that it keeps the digits and the letters and drops the
+  words, so every tab is still named by the key that reaches it. The time off summary that rides
+  on this row is skipped for the same reason when the bar leaves it no room: `spread` clamps its
+  gap to two cells rather than truncating.
 - The tab bar is the **first line of every screen** (`view.go: tabBar`), the active tab
   reversed out in the **accent** (`theme.Pill`) — on this line the primary colour marks
   one thing, which screen you are on: `¹tasks  ²dashboard  ³timeoff  ⁴meal`. Each tab carries **its position as a
@@ -901,6 +908,90 @@ Two labels under the calendar, a line each, and the whole request is on whicheve
 - `mealLoading` is in `busy()`, and every figure — the day's bookings (`mealsOn`), the
   `N of M days` count (`mealDaysBooked`) — is **derived on render**, never stored.
 
+## Employees (`TabEmp`)
+
+The office directory: a card per person — name, job title, work email, work phone — with a query
+field over it. `e` to open, `t` to go back. **Read only.**
+
+- **`hr.employee.public`, not `hr.employee`** (`api.FetchEmployees`): the public model is what
+  the web client's own directory reads and what every employee is allowed to see, where the
+  private one refuses most of its fields to anyone outside the HR groups — and one refused field
+  fails the whole read, which is the trap `employeeOf` documents. The browser reaches it over
+  `/web/dataset/call_kw` with a session cookie; we have an API key, so it goes through
+  `execute_kw` like the rest of the app, and `search_read` is the query `web_search_read` wraps.
+- The read asks for **exactly the five fields a card shows** and `order: "name asc"` — the ERP
+  has a collation for these names and the cache should hold them the way the directory reads
+  them. Every field is `odooText`: `work_phone` is `false` for half the office.
+- **It is read once and cached on disk** (`store.EmployeesPath`, `employees.json`): a name and a
+  job title do not change between two openings of a terminal. `Init` loads the file, `e` shows
+  whatever it holds, and only an empty cache fetches. `r` re-reads, and the cards stay up while
+  it does — a failed re-read keeps the directory it had rather than emptying the screen.
+  - **Its own file, not a second key in `tasks.json`**: the two have nothing to do with each
+    other, and a write of one must not be able to lose the other.
+- **It is a list, shaped like the task list** (`view.go: empRow`): a caret, the name, and the job
+  title beside it, one row a person with a blank line between them, and the row under the cursor
+  carrying the accent and the focus border.
+  - **Two fixed columns, not a right-aligned title**: the name gets `empNameCells` (30) and the
+    title a chip in `empJobCells` (40), so every chip starts on the same cell. Pushed to the
+    right edge instead, each title began somewhere else and the column read as two ragged edges.
+    A narrow terminal takes the cells off the **job** column first, down to `empMinJob`, since a
+    name is what the row is for (`empColumns`).
+  - **The held row takes the accent whole** — the name and the chip (`theme.ChipFocus`). A name
+    in the accent beside a title still in the tag's teal read as two rows overlapping; the chip
+    keeps that teal on every row the cursor is not on. It was a grid of four-line cards
+  first — 82 of those is six rows a person, and a directory you scroll by the screenful stops
+  being a directory.
+- **`l` opens a row into everything the ERP knows** (`api.FetchEmployee`, `empDetailLines`), `h`
+  closes it: email, phone, department, team lead, project managers, time off approver, stack
+  manager, coach, location, and the projects they are assigned to. One fact a line, indented
+  under the name, in a label column of `empLabelCells`; a field the ERP left empty is **left
+  out** rather than drawn as a dash, since a row of them says nothing.
+  - **Up to three reads, and the last two only when there is something to resolve.** Odoo answers
+    a many2one with an `[id, name]` pair — so a department and a team lead arrive named — but a
+    **many2many comes back as bare ids**, so `assigned_project_ids` and
+    `additional_project_manager_ids` each need their own `read` to become words. The web client
+    does the same thing; nothing on `hr.employee.public` carries those names.
+  - **Read once per person, kept in memory** (`empDetail`, `empPulling`): a department does not
+    move while a terminal is open, and a second `l` on the same row asks nothing. Not cached to
+    disk, unlike the list itself — a stale manager is worse than a re-read, and the list is what
+    makes the screen usable offline.
+  - The projects are **pills** (`theme.ProjectPill`, `empChips`) rather than a sentence: several
+    of the names read as phrases — *Value-Driven Engagement, Internal Meetings & Tasks* — and a
+    fill is what makes one of them a single object at a glance, where a pair of rules only marks
+    its ends. The fill is the raised surface with white ink, **not the accent**: a row of accent
+    pills would say every project is the thing you are on. A cell of gap between them, or a run
+    of fills reads as one long pill.
+- **The filter is a prompt, not a field** (`/`, `ModeEmpSearch`): it costs the list no rows while
+  it is not being typed into, and it renders above the status line exactly as the date jump's own
+  prompt does. The two ways out say what happens to the query: **`esc` drops it** and gives the
+  whole list back, which is what `esc` means everywhere else here — it undoes the thing you
+  opened — and **`enter` keeps it** and hands the keyboard to the rows, so a filtered list can be
+  walked and opened. While one is on, the head shows `/guard`, or a short list has no visible
+  reason.
+- **`esc` clears the filter and collapses the rows** (`clearEmpFilter`), from the prompt **and**
+  from the list: it is the same key whichever half of the screen has the keyboard, so a filtered
+  list with three rows open takes one keystroke to put back. It takes the screen back to what `e`
+  opens on. A cleared query that left five rows open would put the list back and
+  leave the screen a screenful of detail. It is the **only** key that does it — there is no
+  `ctrl+u` here, since that clears the *task* query on every other screen and a second meaning
+  for it on one tab is a key that does two things.
+- **Its own input** (`Model.empQuery`), not the task list's: that one filters tasks, and one input
+  shared between them would filter the other screen by whatever was typed here. `ModeEmpSearch` is
+  excluded from the tab-key block, so a name can hold a `t` and a `d`.
+- **The filter matches the whole row** (`empRows`) — name, job title, email and phone joined —
+  since "who is the security guard" and "who has a strativ.se address" are the same question
+  asked of different fields. Derived on render, never a second slice kept in step.
+- The head counts what is on screen: `82 employees`, or `1 of 82` once a query is on. Nothing
+  matching says so rather than leaving a blank screen.
+- `j`/`k`/`g`/`G`/`ctrl+f`/`ctrl+b` move the cursor — the same bindings the task list uses —
+  and `empHold` is the row `l` acts on.
+- **The maps inside the model are copied on write** (`withKey`, and the same for `empDetail`): the
+  model is a value everywhere else in this app, and a map inside it is a reference, which is the
+  trap `ticksWith` documents on the meal line.
+- Opening it needs the key owner's **email**, exactly as the chart, the calendar and the meal
+  month do: `empWanted` is set, the day total is fetched, and the directory continues when
+  `DayHoursMsg.UserEmail` lands.
+
 ## Modes
 
 One `Mode` field on the root model. Only the active mode consumes keys.
@@ -917,6 +1008,7 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeAuth` | API key prompt; opens when no key is stored or a fetch returns 401 |
 | `ModeForm` | the new-timeoff line on `TabTime`; owns every key, so a description can hold `t` |
 | `ModeWFH` | the WFH request line on `TabDash`, opened by the ERP refusing a check in |
+| `ModeEmpSearch` | the employee tab's own query field; its own input, so it cannot filter tasks |
 
 ## Keymap
 

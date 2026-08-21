@@ -123,6 +123,27 @@ const (
 	// bookScopeCells is the widest scope name plus its arrow, so the dropdown does not
 	// resize as it is cycled — a field that changes width moves everything to its right.
 	bookScopeCells = 10
+
+	// An employee card is the four lines the ERP's own directory shows — name, job title,
+	// email, phone — inside a rounded box, so six rows with its border and the blank line
+	// under it. One card a row: the lines are sentences, not columns, and two cards side by
+	// side would cut the job titles this office writes ("Intern – Process Improvement &
+	// Operational Efficiency - L0").
+	empCardLines = 6
+	// The label column in an open row: "project mgr" is the longest of them.
+	empLabelCells = 13
+	// A row is two fixed columns: the name, then the job title in a chip. Fixed, so the chips
+	// start on the same cell down the whole list — pushed to the right edge instead, every
+	// title began somewhere else and the column read as ragged. 30 holds all but the longest
+	// names here ("Rafee Mizan Khan Chowdhury"), and 40 holds the titles this office writes
+	// ("Assistant Manager-Administration & Operation - L4" is cut, and is meant to be).
+	empNameCells = 30
+	empJobCells  = 40
+	// Narrower than this a chip has no room to be one, so the name gives up cells instead.
+	empMinJob = 14
+	// The card is as wide as its widest line and no wider, capped: stretched to a 200-cell
+	// terminal a card of four short lines reads as a banner.
+	empCardCells = 52
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -132,8 +153,13 @@ func (m Model) View() string {
 	top := m.tabBar()
 	if m.tab == TabTime {
 		// The year and what has been taken out of it ride here: the tab bar's row is half
-		// empty, and a title line of its own would cost the calendar a row.
-		top = spread(top, m.timeSummary(m.cols()-lipgloss.Width(top)-2)+" ", m.cols())
+		// empty, and a title line of its own would cost the calendar a row. Only when the bar
+		// leaves room for it — spread clamps its gap to two cells rather than truncating, so
+		// on a bar that already fills the width it would push the row three cells over and
+		// wrap the whole screen.
+		if room := m.cols() - lipgloss.Width(top) - 2; room > 0 {
+			top = spread(top, m.timeSummary(room)+" ", m.cols())
+		}
 	}
 	head := []string{top}
 	if m.tab == TabTasks {
@@ -175,6 +201,10 @@ func (m Model) View() string {
 		tail = append(tail, strings.Split(m.dayModal(), "\n")...)
 	case ModeLeaves:
 		tail = append(tail, strings.Split(m.leavesModal(), "\n")...)
+	case ModeEmpSearch:
+		// Above the status line, like the date jump's own prompt: it belongs to the moment it
+		// is being typed, and the header says the filter is on once the prompt has closed.
+		tail = append(tail, theme.Blur.Render(m.empQuery.View()))
 	}
 	// Flattened and cut to the width: a server message can arrive with newlines in it,
 	// and a status line that wraps costs the list a row it was not given.
@@ -228,6 +258,9 @@ func (m Model) View() string {
 		// along.
 		head = append(head, m.mealHead()...)
 	}
+	if m.tab == TabEmp {
+		head = append(head, m.empHead()...)
+	}
 
 	// The body takes the rows left between header and footer, and is padded out to
 	// them, which pins the status line and the key hints to the bottom of the screen.
@@ -238,6 +271,9 @@ func (m Model) View() string {
 	}
 	if m.tab == TabMeal {
 		body, focus = m.mealLines()
+	}
+	if m.tab == TabEmp {
+		body, focus = m.empLines()
 	}
 	if m.tab == TabDash {
 		body, focus = m.dashLines(budget)
@@ -359,23 +395,40 @@ func (m Model) tabBar() string {
 		{TabDash, "dashboard", m.k().DashTab},
 		{TabTime, "timeoff", m.k().TimeTab},
 		{TabMeal, "meal", m.k().MealTab},
+		{TabEmp, "employee", m.k().EmpTab},
 	}
 
-	var b strings.Builder
-	b.WriteString("  ")
-	for i, t := range tabs {
-		active := t.tab == m.tab
-		body, hint := theme.Dim, theme.HintKey
-		if active {
-			body, hint = theme.Pill, theme.PillKey
-		}
-		// A superscript index sits at the top-left of the label, btop style, and is a key
-		// in its own right: 1 and 2 in bar order, alongside the letter.
-		b.WriteString(body.Render(" ") + hint.Render(superscript(i+1)) +
-			hinted(t.label, t.key, body, hint) + body.Render(" "))
+	bar := func(short bool) string {
+		var b strings.Builder
 		b.WriteString("  ")
+		for i, t := range tabs {
+			active := t.tab == m.tab
+			body, hint := theme.Dim, theme.HintKey
+			if active {
+				body, hint = theme.Pill, theme.PillKey
+			}
+			label := t.label
+			if short {
+				// A terminal too narrow for five words keeps the digits and the letters and
+				// gives up the words: every tab is still named by the key that reaches it,
+				// which is the part of the label that does the work.
+				label = t.key.Help().Key
+			}
+			// A superscript index sits at the top-left of the label, btop style, and is a key
+			// in its own right: 1 and 2 in bar order, alongside the letter.
+			b.WriteString(body.Render(" ") + hint.Render(superscript(i+1)) +
+				hinted(label, t.key, body, hint) + body.Render(" "))
+			b.WriteString("  ")
+		}
+		return b.String()
 	}
-	return b.String()
+	// The bar is the first line of every screen, so it can never be the thing that wraps: a
+	// wrapped bar pushes the whole UI down a row and scrolls the terminal.
+	full := bar(false)
+	if lipgloss.Width(full) > m.cols() {
+		return bar(true)
+	}
+	return full
 }
 
 // hinted renders label with the binding's key picked out inside it. A key that is not
@@ -1045,6 +1098,196 @@ func center(s string, w int) string {
 }
 
 // header is the caret, the boxed query field, and the day's progress cluster.
+// --- employees ---------------------------------------------------------------
+
+// empHead is the directory's own header: how many rows the filter leaves out of how many
+// there are, and the filter itself when one is on.
+//
+// No query box: the filter is a prompt opened with `/` and closed with esc, so the header is
+// one line and the list gets the rest — a field that is always on screen costs three rows to
+// say nothing most of the time.
+func (m Model) empHead() []string {
+	left := theme.Header.Render("EMPLOYEES")
+	if q := strings.TrimSpace(m.empQuery.Value()); q != "" {
+		// A filter that is on but not being typed still has to be visible, or the list is
+		// short for a reason nothing on screen explains.
+		left += theme.Dim.Render("  /") + theme.MatchText.Render(trunc(oneLine(q), 24))
+	}
+	right := m.empCount()
+	if m.empLoading {
+		// The cache is still on screen, so the loader sits beside the count rather than
+		// replacing the rows, the same as the chart's month does.
+		right = m.spin.View() + " " + right
+	}
+	return []string{
+		theme.Blur.Render(spread(left, right, m.cols()-gutter)),
+		"",
+	}
+}
+
+// empCount is how many rows the filter leaves out of how many there are — the whole number
+// alone when nothing is filtered, since "82 of 82" answers a question nobody asked.
+func (m Model) empCount() string {
+	shown, all := len(m.empRows()), len(m.emps)
+	switch {
+	case all == 0:
+		return ""
+	case shown == all:
+		return theme.Dim.Render(fmt.Sprintf("%d %s", all, plural(all, "employee", "employees")))
+	}
+	return theme.Dim.Render(fmt.Sprintf("%d of %d", shown, all))
+}
+
+// empLines is the body: one row per employee, the way the task list is one row per task —
+// a caret, the name, and the job title on the right edge — and the row under the cursor opens
+// into everything the ERP knows about them.
+func (m Model) empLines() ([]string, int) {
+	rows := m.empRows()
+	if len(rows) == 0 {
+		switch {
+		case m.empLoading:
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading the directory…"))}, -1
+		case len(m.emps) == 0:
+			return []string{theme.Blur.Render(
+				theme.Dim.Render("no directory yet — r to read it"))}, -1
+		}
+		return []string{theme.Blur.Render(theme.Dim.Render("nobody matches that"))}, -1
+	}
+
+	var out []string
+	focus := -1
+	held := min(m.empHold, len(rows)-1)
+	for i, e := range rows {
+		if i == held {
+			focus = len(out)
+		}
+		out = append(out, m.empRow(e, i == held))
+		if m.empOpen[e.ID] {
+			out = append(out, m.empDetailLines(e)...)
+		}
+		out = append(out, "") // one blank line between people, as between tasks
+	}
+	return out, focus
+}
+
+// empRow is one line of the list: the caret, the name in its own column, then the job title in
+// a chip beside it. Two fixed columns rather than a name and a right-aligned title, so every
+// chip starts on the same cell and the list reads as two columns instead of two ragged edges.
+func (m Model) empRow(e store.Employee, focused bool) string {
+	caret := theme.Dim.Render("▸ ")
+	if m.empOpen[e.ID] {
+		caret = theme.Dim.Render("▾ ")
+	}
+
+	nameW, jobW := m.empColumns()
+	ink, chip := theme.DayLabel, theme.Chip
+	if focused {
+		// The accent marks whatever holds the keys, exactly as the task under the cursor does —
+		// and the **whole** row takes it, title included: a name in the accent beside a chip
+		// still in the tag's teal read as two rows overlapping.
+		ink, chip = theme.TitleFocus, theme.ChipFocus
+	}
+	name := ink.Render(pad(trunc(oneLine(e.Name), nameW-1), nameW))
+	// The chip's own frame and padding are four of its cells, so the title gets the rest.
+	job := chip.Render(trunc(oneLine(orDash(e.Job)), jobW-4))
+	return row(caret+name+pad(job, jobW), focused)
+}
+
+// empColumns is what the two columns get: the fixed widths where the terminal holds them, and
+// the job column giving up cells first where it does not — a name is what the row is for.
+func (m Model) empColumns() (name, job int) {
+	room := m.cols() - gutter - 2 // the caret
+	name, job = empNameCells, empJobCells
+	if name+job <= room {
+		return name, job
+	}
+	if job = room - name; job < empMinJob {
+		name = max(room-empMinJob, 12)
+		job = max(room-name, 0)
+	}
+	return name, job
+}
+
+// empDetailLines is the open row's own block: how to reach them, where they sit, and what they
+// are on. Indented under the name, one fact a line, and the projects as chips.
+func (m Model) empDetailLines(e store.Employee) []string {
+	d, have := m.empDetail[e.ID]
+	if !have {
+		if m.empPulling[e.ID] {
+			return []string{theme.Blur.Render("    " + m.spin.View() +
+				theme.Dim.Render(" reading their details…"))}
+		}
+		return []string{theme.Blur.Render(theme.Dim.Render("    nothing read yet — l again"))}
+	}
+
+	var out []string
+	add := func(label, value string) {
+		if strings.TrimSpace(value) == "" {
+			return // a field the ERP left empty is left out rather than drawn as a dash
+		}
+		out = append(out, theme.Blur.Render("    "+
+			theme.Dim.Render(pad(label, empLabelCells))+
+			theme.DayLabel.Render(trunc(oneLine(value), m.cols()-gutter-empLabelCells-6))))
+	}
+	add("email", d.Email)
+	add("phone", d.Phone)
+	add("mobile", d.Mobile)
+	add("department", d.Department)
+	add("team lead", d.TeamLead)
+	add("project mgr", strings.Join(d.Managers, ", "))
+	add("time off", d.TimeOff)
+	add("stack mgr", d.StackManager)
+	add("coach", d.Coach)
+	add("location", d.Location)
+
+	// The projects are chips rather than a sentence: they are a list of names, several of them
+	// long enough to be mistaken for a phrase, and the frames are what say where one ends.
+	for i, line := range m.empChips(d.Projects) {
+		label := "projects"
+		if i > 0 {
+			label = "" // the label heads the run, and the rest of it is indented under it
+		}
+		out = append(out, theme.Blur.Render("    "+theme.Dim.Render(pad(label, empLabelCells))+line))
+	}
+	return out
+}
+
+// empChips wraps the project names into rows of pills that fit the width. A pill is the name
+// reversed out of a filled lozenge, the shape the tab bar's active tab has.
+func (m Model) empChips(names []string) []string {
+	room := m.cols() - gutter - empLabelCells - 6
+	if len(names) == 0 || room < 12 {
+		return nil
+	}
+	var out []string
+	line := ""
+	for _, n := range names {
+		chip := theme.ProjectPill.Render(trunc(oneLine(n), room-4))
+		if line != "" && lipgloss.Width(line)+lipgloss.Width(chip)+1 > room {
+			out = append(out, line)
+			line = ""
+		}
+		if line != "" {
+			line += " "
+		}
+		line += chip
+	}
+	if line != "" {
+		out = append(out, line)
+	}
+	return out
+}
+
+// orDash is what a field the ERP left empty reads as on the row itself: the job title column
+// still has to say something, or the line reads as a name with a missing half.
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
+}
+
 // --- time off ----------------------------------------------------------------
 
 // timeYearOf is the year on screen: the one the ERP answered for, or this one before any
@@ -2356,7 +2599,8 @@ func (m Model) footer() string {
 		label = "-- CANCEL MEAL --"
 	}
 	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
-		m.mode != ModeLeaves && m.mode != ModeBook && m.mode != ModeWFH {
+		m.mode != ModeLeaves && m.mode != ModeBook && m.mode != ModeWFH &&
+		m.mode != ModeEmpSearch {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -2364,6 +2608,8 @@ func (m Model) footer() string {
 			label = m.timeLabel()
 		case TabMeal:
 			label = "-- MEAL --"
+		case TabEmp:
+			label = "-- EMPLOYEE --"
 		}
 	}
 
@@ -2406,6 +2652,15 @@ func (m Model) footer() string {
 				key.WithHelp(m.k().Back.Help().Key, "clear filter")))
 		}
 		help = append(help, m.k().Refresh, m.k().Quit, m.k().Help)
+	case m.tab == TabEmp:
+		// A filter and a window over it, and nothing that writes: r is the only key here that
+		// reaches the ERP.
+		help = []key.Binding{m.k().Down, m.k().Up, m.k().Top, m.k().HalfDown,
+			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "details")),
+			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
+			key.NewBinding(key.WithHelp(m.k().Jump.Help().Key, "filter")),
+			key.NewBinding(key.WithHelp(m.k().Back.Help().Key, "clear + collapse")),
+			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabMeal:
 		// It moves in months and nothing else: the calendar is read only for now, so there
 		// is no key here that changes a booking.

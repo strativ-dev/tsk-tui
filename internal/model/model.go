@@ -39,6 +39,10 @@ const (
 	// ModeWFH is the work-from-home request line, opened by the ERP refusing a check in for
 	// want of one. It owns every key while it is open, so its reason can hold a t or a d.
 	ModeWFH
+	// ModeEmpSearch is the employee tab's own query field. Its own mode, and its own input:
+	// the task list's query filters tasks, and carrying one across would filter the other
+	// screen by whatever was typed here.
+	ModeEmpSearch
 )
 
 // Tab is the top-level screen, above modes: the task list and everything reached from
@@ -50,6 +54,7 @@ const (
 	TabDash
 	TabTime
 	TabMeal
+	TabEmp
 )
 
 // k is the keymap this screen reads: the global one, or the tab's own where the config file
@@ -299,6 +304,23 @@ type Model struct {
 	// mealWanted is the meal calendar waiting on the login, exactly as dashWanted and
 	// timeWanted are: RPC needs the key owner's email and only the REST day total carries it.
 	mealWanted bool
+	// The office directory. It is the same list every day — a name, a job title, an email —
+	// so it is read once, cached on disk, and shown from the cache from then on; r re-reads
+	// it. empQuery is this screen's own filter, matched against every field of a card.
+	emps       []store.Employee
+	empLoading bool
+	// empWanted is the directory waiting on the login, exactly as dashWanted is: RPC needs
+	// the key owner's email and only the REST day total carries it.
+	empWanted bool
+	empQuery  textinput.Model
+	// empHold is the row the cursor is on: `l` opens that one, so the list needs to say which.
+	empHold int
+	// empOpen is the rows showing their detail, and empDetail what the ERP answered for them —
+	// read once per employee, since a department and a team lead do not move while a terminal
+	// is open. empPulling is the reads in flight, so a second `l` cannot ask twice.
+	empOpen    map[int]bool
+	empDetail  map[int]store.EmployeeDetail
+	empPulling map[int]bool
 	// form is the new-timeoff line. Closed, it is a label and nothing else.
 	form leaveForm
 	// applying is a request for time off in flight.
@@ -374,6 +396,16 @@ func New() Model {
 	// Sized for the fallback width until the first WindowSizeMsg lands, so the field
 	// cannot wrap its own box on the very first frame either.
 	m.search.Width = m.searchFieldWidth()
+	// The directory's own filter. Its own input, so a query typed here cannot filter tasks,
+	// and a prompt rather than a box: it is opened with / and closed with esc, so it costs the
+	// list no rows when it is not being typed into.
+	m.empQuery = textinput.New()
+	m.empQuery.Prompt = "search: "
+	m.empQuery.PromptStyle = theme.Prompt
+	m.empQuery.Width = 32
+	m.empOpen = map[int]bool{}
+	m.empDetail = map[int]store.EmployeeDetail{}
+	m.empPulling = map[int]bool{}
 	// Field widths mirror the table columns, so the insert row sits in them.
 	for i, ph := range []string{"dd/mm/yy", "what you did", "h:mm"} {
 		f := textinput.New()
@@ -386,7 +418,7 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, store.Load, store.LoadKey())
+	return tea.Batch(textinput.Blink, store.Load, store.LoadEmployees, store.LoadKey())
 }
 
 // Update runs the mode handlers and then keeps the two animations in step with the state:
@@ -425,7 +457,7 @@ func clockTick() tea.Cmd {
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
 		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || m.confirming ||
-		len(m.pulling) > 0
+		m.empLoading || len(m.empPulling) > 0 || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -535,14 +567,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m, cmd = m.loadMeal()
 				cmds = append(cmds, cmd)
 			}
+			if m.empWanted {
+				m, cmd = m.loadEmp()
+				cmds = append(cmds, cmd)
+			}
 			if len(cmds) > 0 {
 				return m, tea.Batch(cmds...)
 			}
 		}
-		if msg.Err != nil && (m.dashWanted || m.timeWanted || m.mealWanted) {
+		if msg.Err != nil && (m.dashWanted || m.timeWanted || m.mealWanted || m.empWanted) {
 			m.dashWanted, m.timeWanted, m.mealWanted = false, false, false
+			m.empWanted = false
 			m.dashLoading, m.timeLoading, m.syncing, m.clocking = false, false, false, false
-			m.mealLoading = false
+			m.mealLoading, m.empLoading = false, false
 			m.err = msg.Err
 		}
 		return m, nil
@@ -746,6 +783,44 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case store.EmployeesLoadedMsg:
+		// The cache, off disk at launch. An error here is not worth a status line of its own:
+		// the tab says it has nothing and r reads the ERP.
+		if msg.Err == nil {
+			m.emps = msg.Employees
+		}
+		return m, nil
+
+	case api.EmployeesMsg:
+		m.empLoading = false
+		if msg.Err != nil {
+			// The cache stays: a failed re-read must not empty a directory that was on screen.
+			m.err = msg.Err
+			m.status = "the directory is unchanged: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		m.emps, m.err = msg.Employees, nil
+		m.empHold = min(m.empHold, max(len(m.empRows())-1, 0))
+		m.status = fmt.Sprintf("%d %s from the ERP",
+			len(msg.Employees), plural(len(msg.Employees), "employee", "employees"))
+		return m, store.SaveEmployees(msg.Employees)
+
+	case api.EmployeeMsg:
+		delete(m.empPulling, msg.ID)
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.status = "could not read that employee: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// Copied on write for the same reason the open set is: a map inside a value model.
+		next := make(map[int]store.EmployeeDetail, len(m.empDetail)+1)
+		for k, v := range m.empDetail {
+			next[k] = v
+		}
+		next[msg.ID] = msg.Detail
+		m.empDetail, m.err = next, nil
+		return m, nil
+
 	case api.HoursConfirmedMsg:
 		m.confirming = false
 		month := msg.Month
@@ -908,7 +983,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the key is still the tab it always was.
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
 			m.mode != ModeAuth && m.mode != ModeForm && m.mode != ModeBook &&
-			m.mode != ModeWFH && !claims(m.tab, msg) {
+			m.mode != ModeWFH && m.mode != ModeEmpSearch && !claims(m.tab, msg) {
 			switch {
 			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
@@ -919,6 +994,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.showTime()
 			case key.Matches(msg, m.k().MealTab):
 				return m.showMeal()
+			case key.Matches(msg, m.k().EmpTab):
+				return m.showEmp()
 			case key.Matches(msg, m.k().TasksTab):
 				m.tab = TabTasks
 				return m, nil
@@ -955,6 +1032,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.updateTime(msg)
 			case TabMeal:
 				return m.updateMeal(msg)
+			case TabEmp:
+				return m.updateEmp(msg)
 			}
 		}
 
@@ -1793,6 +1872,201 @@ func (m Model) toggleClock() (tea.Model, tea.Cmd) {
 		m.status = "checking out…"
 	}
 	return m, api.ToggleAttendance(m.key, m.login, m.db, m.attEmp, want)
+}
+
+// --- employees ---------------------------------------------------------------
+
+// showEmp opens the directory. The cache is what it shows: the list is read once and kept on
+// disk, since a name and a job title do not change between two openings of a terminal. `r`
+// is how it is re-read.
+func (m Model) showEmp() (tea.Model, tea.Cmd) {
+	m.tab = TabEmp
+	if len(m.emps) > 0 || m.empLoading {
+		return m, nil // the cache answers, or the read is already out
+	}
+	return m.loadEmp()
+}
+
+// loadEmp reads the whole directory in one call.
+func (m Model) loadEmp() (Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.empLoading = true
+	if strings.TrimSpace(m.login) == "" {
+		// The day total's answer carries the email the RPC login needs.
+		m.empWanted = true
+		return m, api.FetchDayHours(m.key, parse.Today())
+	}
+	m.empWanted = false
+	return m, api.FetchEmployees(m.key, m.login, m.db)
+}
+
+// updateEmp is the directory: a filter and a window over it, and nothing that writes. There
+// is no cursor to act with — a card is something to read — so the motions only say which
+// card the window is built around.
+func (m Model) updateEmp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == ModeEmpSearch {
+		return m.updateEmpSearch(msg)
+	}
+	switch {
+	case key.Matches(msg, m.k().Down):
+		return m.holdEmp(m.empHold + 1), nil
+	case key.Matches(msg, m.k().Up):
+		return m.holdEmp(m.empHold - 1), nil
+	case key.Matches(msg, m.k().Top):
+		return m.holdEmp(0), nil
+	case key.Matches(msg, m.k().Bottom):
+		return m.holdEmp(len(m.empRows()) - 1), nil
+	case key.Matches(msg, m.k().HalfDown):
+		return m.holdEmp(m.empHold + m.halfPage(empCardLines)), nil
+	case key.Matches(msg, m.k().HalfUp):
+		return m.holdEmp(m.empHold - m.halfPage(empCardLines)), nil
+
+	case key.Matches(msg, m.k().Expand):
+		// l opens the row under the cursor and reads its detail once: a department and a team
+		// lead do not move while a terminal is open, so a second open costs nothing.
+		return m.openEmp()
+	case key.Matches(msg, m.k().Collapse):
+		if e, ok := m.empAt(m.empHold); ok {
+			delete(m.empOpen, e.ID)
+		}
+		return m, nil
+
+	case key.Matches(msg, m.k().Jump):
+		// / opens the filter, which is a prompt rather than a field on the screen: it belongs
+		// to the moment you are typing it, and a box that is always there costs the list three
+		// rows to say nothing.
+		m.mode = ModeEmpSearch
+		m.empQuery.Focus()
+		return m, textinput.Blink
+
+	case key.Matches(msg, m.k().Back):
+		// esc from the list does what esc from the prompt does: back to what `e` opens on. It
+		// is the same key whether or not the prompt is up, so a filtered list with three rows
+		// open takes one keystroke to put back — and not two different ones depending on where
+		// the keyboard happens to be.
+		return m.clearEmpFilter(), nil
+
+	case key.Matches(msg, m.k().Refresh):
+		// The one thing that goes back to the ERP here. The cache stays up while it does, so
+		// the screen keeps its cards with the loader beside the count.
+		return m.loadEmp()
+
+	case key.Matches(msg, m.k().Quit):
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateEmpSearch is the filter prompt: every key is a character, and the two ways out say what
+// happens to the query. **esc drops it** and gives the whole list back, which is what esc means
+// everywhere else here — it undoes the thing you opened. **enter keeps it** and hands the
+// keyboard to the rows, so a filtered list can be walked and opened.
+func (m Model) updateEmpSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Cancel): // checked first: esc is in both sets
+		m = m.clearEmpFilter()
+		m.empQuery.Blur()
+		m.mode = ModeList
+		return m, nil
+	case key.Matches(msg, m.k().Focus): // enter: the filter stands
+		m.empQuery.Blur()
+		m.mode = ModeList
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.empQuery, cmd = m.empQuery.Update(msg)
+	// A narrower list means the held row may no longer exist.
+	m.empHold = min(m.empHold, max(len(m.empRows())-1, 0))
+	return m, cmd
+}
+
+// clearEmpFilter takes the screen back to what `e` opens on: the whole list, from the top, with
+// every row shut. Clearing the query and leaving five rows open would put the list back and the
+// screen still a screenful of detail.
+//
+// `esc` is the only way to it. There is no ctrl+u here: that key clears the **task** query
+// everywhere else in the app, and a second meaning for it on one screen is a key that does two
+// things — where esc already means "undo the thing you opened".
+func (m Model) clearEmpFilter() Model {
+	m.empQuery.SetValue("")
+	m.empOpen = map[int]bool{}
+	m.empHold = 0
+	return m
+}
+
+// empAt is the employee on row i of the filtered list.
+func (m Model) empAt(i int) (store.Employee, bool) {
+	rows := m.empRows()
+	if i < 0 || i >= len(rows) {
+		return store.Employee{}, false
+	}
+	return rows[i], true
+}
+
+// openEmp shows the cursor's row in full, reading it from the ERP the first time. A row with
+// nothing in it yet still opens — the loader goes where the detail will be, so the keypress is
+// visibly doing something.
+func (m Model) openEmp() (tea.Model, tea.Cmd) {
+	e, ok := m.empAt(m.empHold)
+	if !ok {
+		return m, nil
+	}
+	m.empOpen = withKey(m.empOpen, e.ID, true)
+	if _, have := m.empDetail[e.ID]; have || m.empPulling[e.ID] {
+		return m, nil
+	}
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	if strings.TrimSpace(m.login) == "" {
+		m.status = "sync first — the ERP login comes with today's total"
+		return m, nil
+	}
+	m.empPulling = withKey(m.empPulling, e.ID, true)
+	return m, api.FetchEmployee(m.key, m.login, m.db, e.ID)
+}
+
+// withKey is a map with one key set, as a new map: the model is a value everywhere else in
+// this app, and a map inside it is a reference — writing in place reaches every copy that
+// still holds the old one, which is the same trap ticksWith documents.
+func withKey(in map[int]bool, id int, want bool) map[int]bool {
+	out := make(map[int]bool, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	out[id] = want
+	return out
+}
+
+// holdEmp pins the window to card i, clamped: the ends of the list stop rather than wrap.
+func (m Model) holdEmp(i int) Model {
+	m.empHold = min(max(i, 0), max(len(m.empRows())-1, 0))
+	return m
+}
+
+// empRows is the cards the query leaves, derived on every render like every other filtered
+// list here. The match is on the whole card — name, job title, email and phone joined — since
+// "who is the security guard" and "who has a strativ.se address" are the same question asked
+// of different fields.
+func (m Model) empRows() []store.Employee {
+	q := strings.ToLower(strings.TrimSpace(m.empQuery.Value()))
+	if q == "" {
+		return m.emps
+	}
+	out := make([]store.Employee, 0, len(m.emps))
+	for _, e := range m.emps {
+		hay := strings.ToLower(strings.Join([]string{e.Name, e.Job, e.Email, e.Phone}, " "))
+		if strings.Contains(hay, q) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // needsWFH says whether a refusal is the one a work-from-home request answers. The ERP's own
@@ -3713,6 +3987,8 @@ func modeLabel(m Mode) string {
 		return "-- NEW TIMEOFF --"
 	case ModeWFH:
 		return "-- WFH REQUEST --"
+	case ModeEmpSearch:
+		return "-- SEARCH --"
 	}
 	return ""
 }
