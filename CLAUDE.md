@@ -1075,7 +1075,11 @@ Jump (`ModeJump`)
     The cursor walks to the first row that matches; those rows are already on screen,
     so covering them with a modal would hide the thing you asked about. No tasks are
     pulled — an open task's lines are already read
-  - **From the list** it is a **report on one day**, so the query is **resolved** with
+  - **From the list** it is a **report on one day** — over **every task, filtered or not**
+    (`dayRows`, `jumpHits`, and the pull loop in `Model.jumpDate`'s handler): "where did Tuesday
+    go" is a question about the day, and the query field answers a different one, which task you
+    were looking for. Scoped to the filter it left the other tasks' hours out silently, since a
+    modal has no way to say what it did not count. So the query is **resolved** with
     the insert field's grammar (`parse.Date` against today, `Model.jumpDate`): `12` is
     the 12th of *this* month. It opens the **day modal** (`ModeDay`,
     `view.go: dayModal`): one line per entry logged on that date in any task — task

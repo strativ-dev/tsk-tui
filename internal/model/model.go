@@ -1712,9 +1712,13 @@ func (m Model) applyJump(q string) (tea.Model, tea.Cmd) {
 	// Read the tasks this jump cannot see yet. A pull returns a task's whole history,
 	// so one with rows already on disk has nothing to add; one with none has never
 	// been opened, and its hours would silently miss the day.
+	//
+	// **Every task, not the filtered ones**: this is a report on a day across the whole
+	// list, and a query typed to find one task would otherwise leave the other tasks'
+	// hours out of it — silently, since the modal has no way to say what it did not read.
 	var cmds []tea.Cmd
 	unread := 0
-	for _, t := range m.filtered() {
+	for _, t := range m.tasks {
 		if len(t.Rows) > 0 || m.pulled[t.ID] {
 			continue
 		}
@@ -1751,7 +1755,9 @@ type dayRow struct {
 // dayRows is what was logged on jumpDate, newest task order, derived on every render
 // so lines that arrive from a pull join the modal on their own.
 func (m Model) dayRows() (rows []dayRow, total int) {
-	for _, t := range m.filtered() {
+	// Every task the list holds, filtered or not: the question is what the day went on, and
+	// the search field answers a different one — which task you were looking for.
+	for _, t := range m.tasks {
 		name := t.Key
 		if name == "" {
 			name = t.Title
@@ -1796,7 +1802,9 @@ func (m Model) onJumpDate(e store.Entry) bool {
 // pulls and edits both change it.
 func (m Model) jumpHits() int {
 	n := 0
-	for _, t := range m.filtered() {
+	// The same list dayRows counts, or the status line and the modal would disagree about
+	// how many entries a day holds.
+	for _, t := range m.tasks {
 		for _, e := range t.Rows {
 			if m.onJumpDate(e) {
 				n++

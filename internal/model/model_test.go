@@ -661,6 +661,38 @@ func lineWith(t *testing.T, view, needle string) string {
 	return ""
 }
 
+// The day modal reports on the whole list, filter or no filter: "where did Tuesday go" is a
+// question about the day, and the query field answers a different one — which task you were
+// looking for. Filtered, the modal used to leave every other task's hours out of it silently.
+func TestJumpFromListIgnoresTheFilter(t *testing.T) {
+	// Filter down to one task, which holds nothing on the 12th of August.
+	m := send(t, jumpModel(t), runes("i"), runes("one"), special(tea.KeyEsc))
+	if len(m.filtered()) != 1 {
+		t.Fatalf("the filter left %d tasks", len(m.filtered()))
+	}
+
+	// The whole date, so this holds whatever today is — the day-only grammar resolves against
+	// today, which is what makes its own test skippable.
+	day := send(t, m, runes("/"), runes("12/08/26"), special(tea.KeyEnter))
+	rows, total := day.dayRows()
+	if len(rows) != 2 || total != 75 {
+		t.Fatalf("dayRows = %+v, total = %d — the filter narrowed the day", rows, total)
+	}
+	if got := day.jumpHits(); got != 2 {
+		t.Errorf("jumpHits = %d, want the same 2 the modal lists", got)
+	}
+	v := day.View()
+	for _, want := range []string{"AI-2", "standup", "AI-3", "code review", "1h15m in 2 entries"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the day modal is missing %q while a filter is on:\n%s", want, v)
+		}
+	}
+	// The list behind it is still filtered — the modal is what ignores the query, not the tab.
+	if len(day.filtered()) != 1 {
+		t.Errorf("the jump cleared the filter: %d tasks", len(day.filtered()))
+	}
+}
+
 // From the list, /12 is the 12th of the current month and answers with the day modal:
 // every entry logged on it, in whatever task, without opening any of them.
 func TestJumpFromListListsTheDay(t *testing.T) {
