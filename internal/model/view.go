@@ -132,6 +132,9 @@ const (
 	empCardLines = 6
 	// The label column in an open row: "project mgr" is the longest of them.
 	empLabelCells = 13
+	// The same idea on a requisition, where the labels are the ERP's own and longer:
+	// "purpose of replacement".
+	reqLabelCells = 24
 	// A row is two fixed columns: the name, then the job title in a chip. Fixed, so the chips
 	// start on the same cell down the whole list — pushed to the right edge instead, every
 	// title began somewhere else and the column read as ragged. 30 holds all but the longest
@@ -261,6 +264,9 @@ func (m Model) View() string {
 	if m.tab == TabEmp {
 		head = append(head, m.empHead()...)
 	}
+	if m.tab == TabReq {
+		head = append(head, m.reqHead()...)
+	}
 
 	// The body takes the rows left between header and footer, and is padded out to
 	// them, which pins the status line and the key hints to the bottom of the screen.
@@ -274,6 +280,9 @@ func (m Model) View() string {
 	}
 	if m.tab == TabEmp {
 		body, focus = m.empLines()
+	}
+	if m.tab == TabReq {
+		body, focus = m.reqLines()
 	}
 	if m.tab == TabDash {
 		body, focus = m.dashLines(budget)
@@ -396,6 +405,7 @@ func (m Model) tabBar() string {
 		{TabTime, "timeoff", m.k().TimeTab},
 		{TabMeal, "meal", m.k().MealTab},
 		{TabEmp, "employee", m.k().EmpTab},
+		{TabReq, "requisitions", m.k().ReqTab},
 	}
 
 	bar := func(short bool) string {
@@ -1098,6 +1108,218 @@ func center(s string, w int) string {
 }
 
 // header is the caret, the boxed query field, and the day's progress cluster.
+// --- requisitions ------------------------------------------------------------
+
+// The requisitions table's columns, in the order the ERP's own list view puts them. Fixed
+// widths, so the columns line up down the screen and the head means what it says; a narrow
+// terminal drops them from the **right** (`reqCols`), which is the order they stop being worth
+// a cell in — the designation is the same on every row of your own list, and who it is for is
+// you.
+const (
+	reqCatCells    = 24 // "Accessories Replacement Requisition" is cut, and is meant to be
+	reqDateCells   = 10 // dd/mm/yy, and wide enough for SUBMITTED to head it uncut
+	reqForCells    = 18
+	reqDesigCells  = 26 // "Senior Software Engineer" whole, which is most of this office
+	reqStageCells  = 10
+	reqUrgentCells = 8 // headed URGENT, the tick under it
+)
+
+// reqHead is the table's own header: the count, then the column names under it.
+func (m Model) reqHead() []string {
+	left := theme.Header.Render("REQUISITIONS")
+	right := ""
+	if n := len(m.reqs); n > 0 {
+		right = theme.Dim.Render(fmt.Sprintf("%d %s", n, plural(n, "requisition", "requisitions")))
+	}
+	if m.reqLoading {
+		right = m.spin.View() + " " + right
+	}
+	return []string{
+		theme.Blur.Render(spread(left, right, m.cols()-gutter)),
+		"",
+		theme.Blur.Render(m.reqColumns()),
+	}
+}
+
+// reqColumns is the head row, drawn by the same widths the rows are, so the two cannot drift.
+func (m Model) reqColumns() string {
+	cells := []string{pad("", 2)}
+	for _, c := range m.reqCols() {
+		// Cut a cell short of the column, exactly as the rows are: SUBMITTED is nine
+		// characters in a nine-cell column, and the two heads ran together into one word.
+		cells = append(cells, pad(trunc(c.head, c.cells-1), c.cells))
+	}
+	return theme.Header.Render(strings.Join(cells, ""))
+}
+
+// reqCol is one column: its heading, its width, and what a row puts in it.
+type reqCol struct {
+	head  string
+	cells int
+	value func(store.Requisition) string
+}
+
+// reqCols is the columns the width holds, dropped from the right as it narrows: the category,
+// the two dates and the stage are what a requisition **is**, so they go last.
+func (m Model) reqCols() []reqCol {
+	all := []reqCol{
+		{"CATEGORY", reqCatCells, func(r store.Requisition) string { return reqCategory(r.Category) }},
+		{"SUBMITTED", reqDateCells, func(r store.Requisition) string { return orDash(r.Submitted) }},
+		{"DEADLINE", reqDateCells, func(r store.Requisition) string { return orDash(r.Deadline) }},
+		{"STAGE", reqStageCells, func(r store.Requisition) string { return orDash(r.Stage) }},
+		// Headed with the word rather than a `!`: three cells and a bare exclamation mark read
+		// as punctuation left behind between two columns, and the column is only ever ticked on
+		// a row or two, so there is nothing else to work out what it means from. The row draws
+		// it, so the tick can carry its own colour.
+		{"URGENT", reqUrgentCells, nil},
+		{"FOR", reqForCells, func(r store.Requisition) string { return orDash(r.For) }},
+		{"DESIGNATION", reqDesigCells, func(r store.Requisition) string { return orDash(r.Designation) }},
+	}
+	room, out := m.cols()-gutter-2, []reqCol{}
+	for _, c := range all {
+		if room-c.cells < 0 {
+			break
+		}
+		room -= c.cells
+		out = append(out, c)
+	}
+	return out
+}
+
+// reqCategory is the category without the word every one of them ends in. "New Accessories
+// Requisition" in a 24-cell column is "New Accessories Requis…", where the half that was cut is
+// the half every row shares — the column is headed CATEGORY, so the word is already said.
+func reqCategory(s string) string {
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "Requisition"))
+}
+
+// reqLines is the body: one row per requisition, and the row under the cursor opening into the
+// properties its own category asked for.
+func (m Model) reqLines() ([]string, int) {
+	if len(m.reqs) == 0 {
+		if m.reqLoading {
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading your requisitions…"))}, -1
+		}
+		return []string{theme.Blur.Render(
+			theme.Dim.Render("nothing filed — " + m.k().Refresh.Help().Key + " to read again"))}, -1
+	}
+
+	var out []string
+	focus := -1
+	held := min(m.reqHold, len(m.reqs)-1)
+	for i, r := range m.reqs {
+		if i == held {
+			focus = len(out)
+		}
+		out = append(out, m.reqRow(r, i == held))
+		if m.reqOpen[r.ID] {
+			out = append(out, m.reqDetail(r)...)
+			out = append(out, "")
+		}
+	}
+	return out, focus
+}
+
+// reqRow is one line of the table: the caret and a cell per column, the held row in the accent.
+func (m Model) reqRow(r store.Requisition, focused bool) string {
+	caret := theme.Dim.Render("▸ ")
+	if m.reqOpen[r.ID] {
+		caret = theme.Dim.Render("▾ ")
+	}
+	ink := theme.DayLabel
+	if focused {
+		ink = theme.TitleFocus
+	}
+
+	cells := []string{caret}
+	for _, c := range m.reqCols() {
+		if c.value == nil {
+			// Urgent is a tick and nothing when it is not: a column of crosses says "no" over
+			// and over, where an empty cell says the same thing and reads as empty.
+			// Centred under its own head, and nothing at all when it is not urgent: a column of
+			// crosses says "no" over and over, where an empty cell says the same thing.
+			mark := ""
+			if r.Urgent {
+				mark = theme.Err.Render("✓")
+			}
+			cells = append(cells, pad(center(mark, c.cells-1), c.cells))
+			continue
+		}
+		cell := ink
+		if c.head == "STAGE" {
+			// The stage keeps its own colour on every row, held or not: green is settled, red is
+			// not happening, amber is waiting on somebody, and that is information rather than
+			// focus. The border and the rest of the row's accent are what say where the cursor
+			// is.
+			cell = theme.StageInk(r.Stage)
+		}
+		cells = append(cells, cell.Render(pad(trunc(oneLine(c.value(r)), c.cells-1), c.cells)))
+	}
+	return row(strings.Join(cells, ""), focused)
+}
+
+// reqDetail is the open row's own block: what its category asked for, then the note. The
+// properties come from the ERP with their own labels, so a category nobody has taught this app
+// about still reads correctly.
+func (m Model) reqDetail(r store.Requisition) []string {
+	var out []string
+	add := func(label, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		room := m.cols() - gutter - reqLabelCells - 6
+		for i, line := range wrapCells(oneLine(value), room) {
+			head := label
+			if i > 0 {
+				head = "" // the label heads the run; the rest is indented under it
+			}
+			out = append(out, theme.Blur.Render("    "+
+				theme.Dim.Render(pad(head, reqLabelCells))+theme.DayLabel.Render(line)))
+		}
+	}
+	if r.Urgent {
+		add("urgency", orDash(r.Urgency))
+	}
+	for _, p := range r.Props {
+		add(strings.ToLower(p.Label), p.Value)
+	}
+	add("note", r.Note)
+	if len(out) == 0 {
+		return []string{theme.Blur.Render(theme.Dim.Render("    nothing else on this one"))}
+	}
+	return out
+}
+
+// wrapCells breaks text into lines of at most n cells, on spaces where it can: a purpose or a
+// note is a sentence, and cutting one to the width loses the half that says why.
+func wrapCells(s string, n int) []string {
+	if n < 8 {
+		n = 8
+	}
+	var out []string
+	line := ""
+	for _, w := range strings.Fields(s) {
+		switch {
+		case line == "":
+			line = w
+		case lipgloss.Width(line)+1+lipgloss.Width(w) <= n:
+			line += " " + w
+		default:
+			out = append(out, line)
+			line = w
+		}
+		for lipgloss.Width(line) > n { // a single word longer than the column
+			out = append(out, trunc(line, n))
+			line = string([]rune(line)[len([]rune(trunc(line, n))):])
+		}
+	}
+	if line != "" {
+		out = append(out, line)
+	}
+	return out
+}
+
 // --- employees ---------------------------------------------------------------
 
 // empHead is the directory's own header: how many rows the filter leaves out of how many
@@ -2610,6 +2832,8 @@ func (m Model) footer() string {
 			label = "-- MEAL --"
 		case TabEmp:
 			label = "-- EMPLOYEE --"
+		case TabReq:
+			label = "-- REQUISITIONS --"
 		}
 	}
 
@@ -2652,6 +2876,13 @@ func (m Model) footer() string {
 				key.WithHelp(m.k().Back.Help().Key, "clear filter")))
 		}
 		help = append(help, m.k().Refresh, m.k().Quit, m.k().Help)
+	case m.tab == TabReq:
+		// A cursor and a row that opens; nothing here writes, and filing one is a form this
+		// screen does not have.
+		help = []key.Binding{m.k().Down, m.k().Up, m.k().Top, m.k().HalfDown,
+			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "details")),
+			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
+			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabEmp:
 		// A filter and a window over it, and nothing that writes: r is the only key here that
 		// reaches the ERP.

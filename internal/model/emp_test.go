@@ -76,7 +76,7 @@ func TestEmpTabOpensAndReads(t *testing.T) {
 		t.Error("e read the directory a second time — the cache is what it shows")
 	}
 	// r is how it is re-read, and the cards stay up while it is out.
-	fresh, cmd := sendCmd(t, again, runes("r"))
+	fresh, cmd := sendCmd(t, again, runes("R"))
 	if cmd == nil || !fresh.empLoading {
 		t.Fatal("r did not re-read the directory")
 	}

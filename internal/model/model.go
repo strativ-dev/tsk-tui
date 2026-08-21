@@ -55,6 +55,7 @@ const (
 	TabTime
 	TabMeal
 	TabEmp
+	TabReq
 )
 
 // k is the keymap this screen reads: the global one, or the tab's own where the config file
@@ -321,6 +322,14 @@ type Model struct {
 	empOpen    map[int]bool
 	empDetail  map[int]store.EmployeeDetail
 	empPulling map[int]bool
+	// The requisitions filed for the key's owner: read once a session, since a stage moves
+	// while HR works and a cache on disk would be a promise this screen cannot keep. `R`
+	// re-reads. reqOpen is the rows showing their own properties.
+	reqs       []store.Requisition
+	reqLoading bool
+	reqWanted  bool
+	reqHold    int
+	reqOpen    map[int]bool
 	// form is the new-timeoff line. Closed, it is a label and nothing else.
 	form leaveForm
 	// applying is a request for time off in flight.
@@ -406,6 +415,7 @@ func New() Model {
 	m.empOpen = map[int]bool{}
 	m.empDetail = map[int]store.EmployeeDetail{}
 	m.empPulling = map[int]bool{}
+	m.reqOpen = map[int]bool{}
 	// Field widths mirror the table columns, so the insert row sits in them.
 	for i, ph := range []string{"dd/mm/yy", "what you did", "h:mm"} {
 		f := textinput.New()
@@ -457,7 +467,7 @@ func clockTick() tea.Cmd {
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
 		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || m.confirming ||
-		m.empLoading || len(m.empPulling) > 0 || len(m.pulling) > 0
+		m.empLoading || m.reqLoading || len(m.empPulling) > 0 || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -571,15 +581,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m, cmd = m.loadEmp()
 				cmds = append(cmds, cmd)
 			}
+			if m.reqWanted {
+				m, cmd = m.loadReq()
+				cmds = append(cmds, cmd)
+			}
 			if len(cmds) > 0 {
 				return m, tea.Batch(cmds...)
 			}
 		}
-		if msg.Err != nil && (m.dashWanted || m.timeWanted || m.mealWanted || m.empWanted) {
+		if msg.Err != nil && (m.dashWanted || m.timeWanted || m.mealWanted || m.empWanted ||
+			m.reqWanted) {
 			m.dashWanted, m.timeWanted, m.mealWanted = false, false, false
-			m.empWanted = false
+			m.empWanted, m.reqWanted = false, false
 			m.dashLoading, m.timeLoading, m.syncing, m.clocking = false, false, false, false
-			m.mealLoading, m.empLoading = false, false
+			m.mealLoading, m.empLoading, m.reqLoading = false, false, false
 			m.err = msg.Err
 		}
 		return m, nil
@@ -805,6 +820,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			len(msg.Employees), plural(len(msg.Employees), "employee", "employees"))
 		return m, store.SaveEmployees(msg.Employees)
 
+	case api.RequisitionsMsg:
+		m.reqLoading = false
+		if msg.Err != nil {
+			// Whatever was on screen stays: a failed re-read must not empty a list that was
+			// answering the question a moment ago.
+			m.err = msg.Err
+			m.status = "the requisitions are unchanged: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		m.reqs, m.err = msg.Rows, nil
+		m.reqHold = min(m.reqHold, max(len(m.reqs)-1, 0))
+		m.status = fmt.Sprintf("%d %s from the ERP",
+			len(msg.Rows), plural(len(msg.Rows), "requisition", "requisitions"))
+		return m, nil
+
 	case api.EmployeeMsg:
 		delete(m.empPulling, msg.ID)
 		if msg.Err != nil {
@@ -996,6 +1026,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.showMeal()
 			case key.Matches(msg, m.k().EmpTab):
 				return m.showEmp()
+			case key.Matches(msg, m.k().ReqTab):
+				return m.showReq()
 			case key.Matches(msg, m.k().TasksTab):
 				m.tab = TabTasks
 				return m, nil
@@ -1034,6 +1066,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.updateMeal(msg)
 			case TabEmp:
 				return m.updateEmp(msg)
+			case TabReq:
+				return m.updateReq(msg)
 			}
 		}
 
@@ -2075,6 +2109,92 @@ func (m Model) empRows() []store.Employee {
 		}
 	}
 	return out
+}
+
+// --- requisitions ------------------------------------------------------------
+
+// showReq opens the requisitions and reads them once a session. Not cached to disk, unlike the
+// directory: a stage moves while HR works on it, and a list of stale ones would answer the
+// screen's only question wrongly.
+func (m Model) showReq() (tea.Model, tea.Cmd) {
+	m.tab = TabReq
+	if len(m.reqs) > 0 || m.reqLoading {
+		return m, nil
+	}
+	return m.loadReq()
+}
+
+func (m Model) loadReq() (Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.reqLoading = true
+	if strings.TrimSpace(m.login) == "" {
+		// The day total's answer carries the email the RPC login needs.
+		m.reqWanted = true
+		return m, api.FetchDayHours(m.key, parse.Today())
+	}
+	m.reqWanted = false
+	return m, api.FetchRequisitions(m.key, m.login, m.db)
+}
+
+// updateReq is the requisitions table: a cursor, a row that opens into its own properties, and
+// nothing that writes — filing one is a form this screen does not have.
+func (m Model) updateReq(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Down):
+		return m.holdReq(m.reqHold + 1), nil
+	case key.Matches(msg, m.k().Up):
+		return m.holdReq(m.reqHold - 1), nil
+	case key.Matches(msg, m.k().Top):
+		return m.holdReq(0), nil
+	case key.Matches(msg, m.k().Bottom):
+		return m.holdReq(len(m.reqs) - 1), nil
+	case key.Matches(msg, m.k().HalfDown):
+		return m.holdReq(m.reqHold + m.halfPage(2)), nil
+	case key.Matches(msg, m.k().HalfUp):
+		return m.holdReq(m.reqHold - m.halfPage(2)), nil
+
+	case key.Matches(msg, m.k().Expand):
+		// The detail came with the list — properties are a field on the same record — so this
+		// opens a row rather than reading one.
+		if r, ok := m.reqAt(m.reqHold); ok {
+			m.reqOpen = withKey(m.reqOpen, r.ID, true)
+		}
+		return m, nil
+	case key.Matches(msg, m.k().Collapse):
+		if r, ok := m.reqAt(m.reqHold); ok {
+			delete(m.reqOpen, r.ID)
+		}
+		return m, nil
+	case key.Matches(msg, m.k().Back):
+		// esc shuts everything, the same as it does on the directory.
+		m.reqOpen, m.reqHold = map[int]bool{}, 0
+		return m, nil
+
+	case key.Matches(msg, m.k().Refresh):
+		return m.loadReq()
+
+	case key.Matches(msg, m.k().Quit):
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) holdReq(i int) Model {
+	m.reqHold = min(max(i, 0), max(len(m.reqs)-1, 0))
+	return m
+}
+
+// reqAt is the requisition on row i.
+func (m Model) reqAt(i int) (store.Requisition, bool) {
+	if i < 0 || i >= len(m.reqs) {
+		return store.Requisition{}, false
+	}
+	return m.reqs[i], true
 }
 
 // needsWFH says whether a refusal is the one a work-from-home request answers. The ERP's own

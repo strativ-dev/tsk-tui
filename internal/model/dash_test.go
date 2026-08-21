@@ -726,7 +726,7 @@ func TestDashReadsTheMonthOnce(t *testing.T) {
 	if cmd != nil {
 		t.Error("the month was read twice")
 	}
-	if _, cmd = sendCmd(t, again, runes("r")); cmd == nil {
+	if _, cmd = sendCmd(t, again, runes("R")); cmd == nil {
 		t.Error("r did not re-read the month")
 	}
 }

@@ -161,6 +161,19 @@ func LeaveDay(c lipgloss.Color) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(Ink).Background(c).Bold(true)
 }
 
+// StageInk is the colour a stage reads in. Matched on the ERP's own words, since the stages are
+// per approval flow and the palette is per meaning: a database that renames "Done" keeps its
+// colour by keeping the word, and an unknown stage is one that is waiting on somebody.
+func StageInk(stage string) lipgloss.Style {
+	switch s := strings.ToLower(strings.TrimSpace(stage)); {
+	case strings.Contains(s, "done"), strings.Contains(s, "approved"), strings.Contains(s, "complete"):
+		return StageDone
+	case strings.Contains(s, "reject"), strings.Contains(s, "cancel"), strings.Contains(s, "refuse"):
+		return StageRejected
+	}
+	return StageWaiting
+}
+
 // LeaveInk is the same colour as text — the balance chips and the holiday panel, where
 // there is no band to reverse out of.
 func LeaveInk(c lipgloss.Color) lipgloss.Style {
@@ -211,6 +224,13 @@ var (
 		BorderForeground(Link).
 		Foreground(Link).
 		Padding(0, 1)
+	// A requisition's stage, by what it means rather than by its name: done is settled, rejected
+	// is not happening, and anything else is waiting on somebody — the same three readings the
+	// hour chart's thresholds have, in the same three colours.
+	StageDone     = lipgloss.NewStyle().Foreground(Complete)
+	StageRejected = lipgloss.NewStyle().Foreground(Destructive)
+	StageWaiting  = lipgloss.NewStyle().Foreground(HourMid)
+
 	// The job title on the employee row the cursor is on. The accent marks whatever holds the
 	// keys, and the row is one thing — a name in the accent beside a chip still in the tag's
 	// teal read as two rows overlapping.

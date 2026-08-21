@@ -63,7 +63,8 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | `TabDash` | `d` · `2` | this month's hours per day, and the ERP's clock (`c`) |
 | `TabTime` | `o` · `3` | this year's time off: the calendar, the balances, the holidays |
 | `TabMeal` | `m` · `4` | this month's canteen meals, one bar per meal per day |
-| `TabEmp` | `e` · `5` | the office directory, a card per person, filtered by a query field |
+| `TabEmp` | `e` · `5` | the office directory, a row per person, filtered by a `/` prompt |
+| `TabReq` | `r` · `6` | the requisitions you filed, a table, each row opening into its own fields |
 
 - The bar **gives up its words before it wraps** (`tabBar`, the `short` tier): five labels want
   63 cells, and the bar is the first line of every screen — wrapped, it pushes the whole UI down
@@ -200,7 +201,7 @@ One chart: hours logged per day this month, `d` to open, `t` to go back.
   decimal hours, and 8.25 means nothing to anyone logging time — 8:15 does.
 - The `logged` figure is a **bar** too (`monthBar`), against the month's target. A 14h
   shortfall stated as a number alone read like a rounding error.
-- The month is read **once** per session (`dashMonth`), and `r` re-reads it.
+- The month is read **once** per session (`dashMonth`), and `R` re-reads it.
 - Opening it needs the key owner's **email**, which only arrives with the REST day-total
   answer (`DayHoursMsg.UserEmail`). Pressing `d` before the first sync lands sets
   `dashWanted`, fetches the day total, and continues into the chart when the email
@@ -646,7 +647,7 @@ One row between the balances and the calendar, and the whole request is on it:
 - The initial inside a card is **its own span**, not part of a style wrapping the label: a
   colour nested inside another does not survive the inner reset.
 - **One year in hand at a time** (`Model.timeYear`, the cache key as well as the year on
-  screen), and `r` re-reads it. `r` does **not** clear `timeYear` — `loadTime` is called
+  screen), and `R` re-reads it. `R` does **not** clear `timeYear` — `loadTime` is called
   outright, so nothing needs it cleared, and clearing it blanks the calendar and its totals
   for as long as the read takes. The loader sits beside the title instead, as on the chart.
 - **No year switching**, per the spec: `<`/`>` are the chart's months and nothing here.
@@ -654,7 +655,7 @@ One row between the balances and the calendar, and the whole request is on it:
   the day total is fetched, and the calendar continues when `DayHoursMsg.UserEmail` lands.
   Both flags can be set at once — `d` then `o` before the first sync — so the handler starts
   whichever asked.
-- The rest of the keys are the shared ones: `r` re-reads, `q` asks before quitting, `i` and
+- The rest of the keys are the shared ones: `R` re-reads, `q` asks before quitting, `i` and
   `ctrl+u` leave for the query field (which filters tasks, so it takes you to that tab), `?`
   toggles the key list. There is no `j`/`k` and no `x` — nothing here is a list, and nothing
   here writes.
@@ -898,7 +899,7 @@ Two labels under the calendar, a line each, and the whole request is on whicheve
 - **It moves in months, nothing else**: `<` / `>` step `Model.mealOffset`, and `>` refuses
   past `0` — the canteen has nothing to report on a month that has not happened. Stepping
   clears `mealMonth`, so the new month is read; **one month in hand at a time**, the same as
-  the chart. `r` re-reads without clearing it, so the month on screen stays up with the
+  the chart. `R` re-reads without clearing it, so the month on screen stays up with the
   loader beside its title.
 - The month, the step keys and the legend are laid out with the **header** (`mealHead`), so
   the weeks scroll under the figures they are read against.
@@ -924,7 +925,7 @@ field over it. `e` to open, `t` to go back. **Read only.**
   them. Every field is `odooText`: `work_phone` is `false` for half the office.
 - **It is read once and cached on disk** (`store.EmployeesPath`, `employees.json`): a name and a
   job title do not change between two openings of a terminal. `Init` loads the file, `e` shows
-  whatever it holds, and only an empty cache fetches. `r` re-reads, and the cards stay up while
+  whatever it holds, and only an empty cache fetches. `R` re-reads, and the cards stay up while
   it does — a failed re-read keeps the directory it had rather than emptying the screen.
   - **Its own file, not a second key in `tasks.json`**: the two have nothing to do with each
     other, and a write of one must not be able to lose the other.
@@ -992,6 +993,59 @@ field over it. `e` to open, `t` to go back. **Read only.**
   month do: `empWanted` is set, the day total is fetched, and the directory continues when
   `DayHoursMsg.UserEmail` lands.
 
+## Requisitions (`TabReq`)
+
+What you have asked the office for, as a table: category, submitted, deadline, stage, urgent —
+and `l` opens a row into the fields its own category asked for. `r` to open, `t` to go back.
+**Read only**; filing one is a form this screen does not have.
+
+- **`r` is the tab, and `R` re-reads** — every screen's refresh moved to the capital. A tab key is
+  matched before every handler, so `r` could not be both; the shift of the same letter keeps the
+  two ideas together rather than scattering refresh onto a third key.
+- **`serp.general.requisition` `search_read`**, with the ERP's own list domain
+  `employee_id.user_id = uid` — your requisitions, not the office's — ordered
+  `submission_date desc, id desc`, capped at `reqLimit` (80, what its own list view asks for).
+- **The detail comes with the list.** `requisition_properties` is a *properties* field on the
+  same record — Odoo answers it with the category's definition and the value together — so asking
+  for it in the list costs one field and opening a row costs no round trip. That is the opposite
+  of the employee directory, where the detail is a second read whose ids have to be resolved.
+- **The properties are drawn from the ERP's own labels** (`store.Prop`, `odooProp.text`), never
+  from field names this app knows: a replacement asks for the purpose, the specification and the
+  device it replaces, a maintenance one asks something else, and a category nobody has taught this
+  app about still reads correctly. Values are formatted by their own type — a date as `dd/mm/yy`,
+  a boolean as `yes`/`no`, a many2one by its name, or `#26` when the caller cannot read that
+  record's name (which is most of `maintenance.equipment` for a normal user). An empty one is
+  **left off** rather than drawn as a label with nothing after it.
+- **Urgent is a tick and nothing else** (`reqRow`), in the destructive red, centred under a column
+  **headed with the word**: a column of crosses says "no" over and over, where an empty cell says
+  the same thing — but three cells headed `!` read as punctuation left between two columns, and
+  with only a row or two ticked there was nothing to work out its meaning from.
+- **The stage reads in the colour of what it means** (`theme.StageInk`): green settled, red not
+  happening, amber waiting on somebody — the hour chart's own three readings in its own three
+  colours. Matched on the ERP's words, not on ids, since the stages are per approval flow. It
+  **keeps that colour on the held row**, where the rest of the cells take the accent: the colour
+  is information and the border is focus.
+- **The category loses the word every category ends in** (`reqCategory`): "New Accessories
+  Requisition" cut to 24 cells is "New Accessories Requis…", where the half that goes is the half
+  every row shares — and the column is headed CATEGORY, so the word is already said.
+- The designation column is 26 cells — `Senior Software Engineer` whole, which is what most of
+  this office has; the titles that run past that (`Assistant Manager-Administration & Operation
+  - L4`) are cut, and the open row says the rest.
+- **Fixed columns, dropped from the right** (`reqCols`): the category, the two dates, the stage
+  and the tick are what a requisition **is**, so they go last; the designation is the same on
+  every row of your own list and who it is for is you. The head is drawn by the same widths as the
+  rows, cut a cell short like they are — `SUBMITTED` is nine characters, and in a nine-cell
+  column it ran into `DEADLINE`.
+- **Read once a session, not cached to disk** (`showReq`): a stage moves while HR works on it, so
+  a list of stale ones would answer this screen's only question wrongly. The directory is cached
+  because a name does not move; this is not.
+- **`esc` shuts every open row** and sends the cursor back to the top, the same as it does on the
+  directory. There is no filter here — five rows do not need one.
+- A note runs to paragraphs, so `oneLine` flattens it on the way in (everything the ERP wrote
+  does) and `wrapCells` breaks it on spaces to the width when it is drawn.
+- Opening it needs the key owner's **email**, exactly as every other RPC screen: `reqWanted` is
+  set, the day total is fetched, and the table continues when `DayHoursMsg.UserEmail` lands.
+
 ## Modes
 
 One `Mode` field on the root model. Only the active mode consumes keys.
@@ -1031,7 +1085,8 @@ List (`ModeList`) — the mode the app starts in
 - `d` — the dashboard tab; `o` — the time off tab; `t` comes back here
 - `/` — date jump (→ `ModeJump`); from here it lists the whole day in a modal
   (→ `ModeDay`), so it needs neither this task open nor any rows in it
-- `r` — fetch tasks from the API
+- `R` — fetch tasks from the API. The capital, because `r` is the requisitions tab from every
+  screen and a tab key is matched first
 - `K` — replace the stored API key (→ `ModeAuth`)
 - `i` / `esc` — focus the search input
 - `ctrl+u` — clear the query **and** focus the search input (does not collapse)
@@ -1230,7 +1285,7 @@ matches `user_id` (res.users), not `employee_id`.
   response (`DayHoursMsg.UserEmail`) — nothing else exposes it.
 - `task_id` is the numeric `project.task` id from `/tasks/my`, not the `AI-283`
   key. Filtering on the key string returns nothing.
-- Lines are read lazily: expanding a task pulls it once (`Model.pulled`), and `r`
+- Lines are read lazily: expanding a task pulls it once (`Model.pulled`), and `R`
   clears that so open tasks re-read.
 - A pull **merges**, never assigns (`store.MergeRows`). `Entry.Local` marks what the
   ERP has no matching copy of — an entry typed with `a`, or a pulled line edited

@@ -42,10 +42,15 @@ func TestTimeTabOpensAndReads(t *testing.T) {
 	}
 	v := plain(m.View())
 	for _, want := range []string{"TIME OFF 2026", "sick Time Off", "paternity Time Off",
-		"DAYS AVAILABLE", "wk   M    T    W    T    F    S    S", "days taken"} {
+		"DAYS AVAILABLE", "wk   M    T    W    T    F    S    S"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the calendar is missing %q:\n%s", want, v)
 		}
+	}
+	// The days taken ride on the tab bar's own row, so they need a terminal the bar leaves
+	// room on — six tabs take 76 cells of it.
+	if wide := plain(timeModel(t, 140, 30).View()); !strings.Contains(wide, "days taken") {
+		t.Errorf("the year's total is missing on a wide terminal:\n%s", wide)
 	}
 	// The balances are on the cards under their names, at double width: 9 sick, 8.5 annual.
 	if figures := lineWith(t, v, wide("8.5")); !strings.Contains(figures, wide("9")) {
@@ -76,9 +81,9 @@ func TestTimeRefreshKeepsTheYearUp(t *testing.T) {
 	m := timeModel(t, 100, 30)
 	m.login = "user@example.com"
 
-	m, cmd := sendCmd(t, m, runes("r"))
+	m, cmd := sendCmd(t, m, runes("R"))
 	if cmd == nil || !m.timeLoading {
-		t.Fatal("r did not re-read the year")
+		t.Fatal("R did not re-read the year")
 	}
 	v := plain(m.View())
 	if !strings.Contains(v, "TIME OFF 2026") || !strings.Contains(v, "wk   M") {
@@ -164,7 +169,9 @@ func TestMonthLeavesFollowsTheFilter(t *testing.T) {
 // A letter filters by the leave type it starts, the same letter clears it, and so does
 // esc. The types come from the ERP, so nothing here is hardcoded.
 func TestTimeFilterFollowsTheTypes(t *testing.T) {
-	m := timeModel(t, 100, 30)
+	// 140 rather than 100: the days-taken count shares the tab bar's row, and six tabs take
+	// 76 cells of it.
+	m := timeModel(t, 140, 30)
 
 	casual := send(t, m, runes("c"))
 	if casual.timeFilter != 4 {
@@ -639,7 +646,9 @@ func TestTimeTakenCountsDays(t *testing.T) {
 // A pending request is underlined and says so once, above the calendar; a year with
 // nothing pending does not explain an underline nobody can see.
 func TestPendingIsExplainedOnlyWhenPresent(t *testing.T) {
-	m := timeModel(t, 120, 45)
+	// The note rides the tab bar's row and is the first part it gives up, so this wants a
+	// terminal the six tabs leave room on.
+	m := timeModel(t, 160, 45)
 	if v := plain(m.View()); !strings.Contains(v, "pending underlined") {
 		t.Errorf("the pending note is missing:\n%s", v)
 	}

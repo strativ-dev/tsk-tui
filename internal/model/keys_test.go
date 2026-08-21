@@ -170,7 +170,7 @@ func TestPerTabKeysOnlyBindThatTab(t *testing.T) {
 		t.Errorf("the task list's delete = %v, want the global x", got)
 	}
 	// Everything the table did not name still comes from the global map.
-	if got := keysFor(TabMeal).Refresh.Keys(); len(got) == 0 || got[0] != "r" {
+	if got := keysFor(TabMeal).Refresh.Keys(); len(got) == 0 || got[0] != "R" {
 		t.Errorf("the meal tab lost the global refresh: %v", got)
 	}
 	// And the footer follows it: the help key is read off the binding the screen uses.
@@ -212,6 +212,24 @@ func TestPerTabKeyBeatsTheTabKey(t *testing.T) {
 	// On every other screen d is still the dashboard.
 	if away := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 34}, runes("d")); away.tab != TabDash {
 		t.Errorf("d on the task list went to %v", away.tab)
+	}
+}
+
+// The refusal names the way out, since the usual cause is a config file written by an older
+// --print-keys, back when the key was not a tab key yet.
+func TestKeyCollisionSaysHowToFixIt(t *testing.T) {
+	t.Cleanup(func() { keys = defaultKeys() })
+	if err := ApplyKeys(map[string][]string{"refresh": {"r"}}); err != nil {
+		t.Fatalf("ApplyKeys: %v", err)
+	}
+	err := CheckKeys()
+	if err == nil {
+		t.Fatal("refresh on the requisitions tab key was accepted")
+	}
+	for _, want := range []string{"keys.refresh", "req_tab", "config.toml", "delete the line"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q:\n%s", want, err)
+		}
 	}
 }
 

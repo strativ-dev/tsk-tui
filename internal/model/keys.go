@@ -25,7 +25,7 @@ type keyMap struct {
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab, TimeTab     key.Binding
 	MealTab, BookMeal, DropMeal    key.Binding
-	EmpTab                         key.Binding
+	EmpTab, ReqTab                 key.Binding
 	Help, Clock, NewLeave          key.Binding
 	ConfirmHours                   key.Binding
 	PrevMonth, NextMonth           key.Binding
@@ -63,8 +63,11 @@ func defaultKeys() keyMap {
 		No:         key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n", "no")),
 		ClearQuery: key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear + collapse")),
 		Focus:      key.NewBinding(key.WithKeys("esc", "enter"), key.WithHelp("enter", "task list")),
-		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "fetch tasks")),
-		SetKey:     key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "api key")),
+		// R, not r: r is the requisitions tab from every screen, and a tab key that means one
+		// thing everywhere is worth more than the shorter refresh key. Shift of the same letter
+		// keeps the two related rather than scattering the idea across the keyboard.
+		Refresh: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "fetch tasks")),
+		SetKey:  key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "api key")),
 		// ctrl+l is unusable in practice: tmux and vim grab it. ctrl+u it is, which also
 		// matches what ctrl+u already does inside the search field.
 		ClearSearch: key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "clear search")),
@@ -93,6 +96,8 @@ func defaultKeys() keyMap {
 		// e, the initial of the word. The directory is read only, so nothing on that screen
 		// competes for it.
 		EmpTab: key.NewBinding(key.WithKeys("e", "5"), key.WithHelp("e", "employee")),
+		// r, the initial of the word, which cost refresh its own key — see Refresh above.
+		ReqTab: key.NewBinding(key.WithKeys("r", "6"), key.WithHelp("r", "requisitions")),
 		// The book-meal line, b for the word it opens. Inside the line b is breakfast's own
 		// tick — the line owns the keyboard, so the two never meet.
 		BookMeal: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "book meal")),
@@ -150,7 +155,7 @@ var (
 )
 
 // TabNames is the name each tab answers to in the config file, in bar order.
-func TabNames() []string { return []string{"tasks", "dash", "time", "meal", "emp"} }
+func TabNames() []string { return []string{"tasks", "dash", "time", "meal", "emp", "req"} }
 
 func tabByName(name string) (Tab, bool) {
 	switch name {
@@ -164,6 +169,8 @@ func tabByName(name string) (Tab, bool) {
 		return TabMeal, true
 	case "emp":
 		return TabEmp, true
+	case "req":
+		return TabReq, true
 	}
 	return 0, false
 }
@@ -265,7 +272,7 @@ func CheckKeys() error {
 	}{
 		{"tasks_tab", keys.TasksTab}, {"dash_tab", keys.DashTab},
 		{"time_tab", keys.TimeTab}, {"meal_tab", keys.MealTab},
-		{"emp_tab", keys.EmpTab}, {"help", keys.Help},
+		{"emp_tab", keys.EmpTab}, {"req_tab", keys.ReqTab}, {"help", keys.Help},
 	} {
 		isTabAction[t.name] = true
 		for _, k := range t.b.Keys() {
@@ -294,7 +301,11 @@ func CheckKeys() error {
 		return nil
 	}
 	sort.Strings(clashes)
-	return fmt.Errorf("%s\nthe tab keys are matched first, so those actions could never fire",
+	// The way out, named: a config file written by an older --print-keys carries the keymap of
+	// the day it was written, so a key that has since become a tab key lands here — and the
+	// message has to say what to do about it rather than only what is wrong.
+	return fmt.Errorf("%s\nthe tab keys are matched first, so those actions could never fire"+
+		"\nchange the key in config.toml, or delete the line to take the current default",
 		strings.Join(clashes, "\n"))
 }
 
@@ -348,6 +359,7 @@ const tabKeysTOMLFooter = `
 # [keys.dash]
 # [keys.time]
 # [keys.emp]
+# [keys.req]
 # [keys.meal]
 # delete = ["d"]
 `
