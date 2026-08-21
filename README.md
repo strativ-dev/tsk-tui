@@ -56,6 +56,9 @@ binary, no CGO.
   reads against what the month is billed for.
 - **Check in and out.** `c` on the dashboard: a boxed button, green to check in, amber to
   check out, `WFH`/`OFFICE` and the running time beside it.
+- **A WFH request where the refusal happens.** When the ERP turns a check in down for want of
+  a work-from-home request, a one-line form opens under the button — two dates and a reason —
+  and ✓ files it and tries the check in again.
 - **A year of time off on one screen.** `o` opens a calendar of every day you took off,
   coloured by leave type, with public holidays and weekends dimmed and this month's caret
   where today is. Half days show as half-filled dates, requests still waiting on approval
@@ -309,6 +312,15 @@ for the keys the current screen takes.
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
+
+**The WFH request line** (opened by the ERP refusing a check in)
+
+| Key | Does |
+|---|---|
+| `tab` / `shift+tab` | the two dates → the reason → ✓ → ✕ |
+| `enter` | next field; on ✓ it files the request and checks in, on ✕ it closes the line |
+| `ctrl+u` | clear the focused field |
+| `esc` | close the line, nothing filed |
 
 **Time off** (`o` or `3`)
 

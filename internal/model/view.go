@@ -195,7 +195,13 @@ func (m Model) View() string {
 	if m.tab == TabDash {
 		dHead := m.dashHead()
 		dFoot = m.dashFoot()
-		for _, frame := range []*[]string{&dFoot, &dHead} {
+		frames := []*[]string{&dFoot, &dHead}
+		if m.wfh.open {
+			// The request line lives in the head and holds the keyboard, so the head cannot be
+			// the thing that is given up: a field you cannot see is a field you cannot fill.
+			frames = frames[:1]
+		}
+		for _, frame := range frames {
 			if m.rows()-len(head)-len(tail)-len(dHead)-len(dFoot) >= minDayRows {
 				break
 			}
@@ -424,6 +430,14 @@ func (m Model) dashHead() []string {
 	for _, l := range strings.Split(m.clockButton(), "\n") {
 		out = append(out, m.clockLine("", l))
 	}
+	// The WFH request line goes under the button, on the same right edge: it is about the check
+	// in that was just refused, and the button is what refused it. Nothing opens it but that
+	// refusal, so the rows cost the chart nothing the rest of the time.
+	if m.wfh.open {
+		for _, l := range m.wfhBand() {
+			out = append(out, m.clockLine("", l))
+		}
+	}
 	if len(m.dashDays) == 0 {
 		return out
 	}
@@ -500,6 +514,10 @@ func (m Model) clockStatus() string {
 func (m Model) clockButton() string {
 	box, label := theme.ClockIn, hinted("check in", m.k().Clock, theme.ClockText, theme.HintKey)
 	switch {
+	case m.wfh.open:
+		// The request line under it holds the keyboard, so c does nothing: the button goes dim
+		// and gives up the accent, since an accent on a key that cannot fire is the accent lying.
+		box, label = theme.ClockOff, theme.Dim.Render("check in")
 	case m.clocking:
 		// The loader takes the label's place, so the box does not move while the ERP thinks
 		// about it, and the border still says which way it is going.
@@ -540,6 +558,115 @@ func checkedLabel(in bool) string {
 		return "checked in"
 	}
 	return "checked out"
+}
+
+// wfhBand is the work-from-home request line: the two days, why, and the two buttons. Three
+// rows, because every field is a box, the same as the time off line's are.
+//
+// It is not opened by a key. The ERP refuses a check in once the free WFH days are gone and
+// says what it wants instead, so the line is the answer to that sentence and appears with it.
+func (m Model) wfhBand() []string {
+	// Bare lines: clockLine is what puts them on the right edge and in the blurred gutter, the
+	// same as the button's own three rows, and a second gutter here pushed the row off the edge.
+	return strings.Split(m.wfhRow(m.wfh.reason.View(), m.wfhCompact()), "\n")
+}
+
+// wfhRow draws the line with the reason given, so the same code both renders it and measures
+// what is left for that reason — the two cannot disagree about a cell.
+//
+// compact is the narrow terminal's version: the boxes give up the space inside them but stay
+// boxes, the same trade the book-meal line makes.
+func (m Model) wfhRow(reason string, compact bool) string {
+	parts := []string{
+		theme.DayLabel.Render("wfh request"),
+		m.wfhField(m.wfhDate(0), wfhFromField, compact),
+		theme.Dim.Render(" → "),
+		m.wfhField(m.wfhDate(1), wfhToField, compact),
+		m.wfhField(reason, wfhReasonField, compact),
+	}
+	// The two buttons carry what they do in the frame and fill when the keys are on them,
+	// exactly as the other lines' do: these are pressed, not typed into.
+	ok, drop := theme.FieldOk, theme.FieldDrop
+	tick, cross := theme.Ok, theme.Err
+	if m.wfh.field == wfhOKField {
+		ok, tick = theme.FieldOkOn, theme.OnOk
+	}
+	if m.wfh.field == wfhXField {
+		drop, cross = theme.FieldDropOn, theme.OnDrop
+	}
+	if compact {
+		ok, drop = ok.Padding(0), drop.Padding(0)
+	}
+	parts = append(parts, ok.Render(tick.Render("✓")), drop.Render(cross.Render("✕")))
+
+	spaced := make([]string, 0, 2*len(parts))
+	for i, p := range parts {
+		if i > 0 {
+			spaced = append(spaced, " ")
+		}
+		spaced = append(spaced, p)
+	}
+	// Center, which is what puts the one-line label beside the three-line boxes rather than
+	// on their top rule.
+	return lipgloss.JoinHorizontal(lipgloss.Center, spaced...)
+}
+
+// wfhField is one box on the line, framed in the accent while it holds the keys.
+func (m Model) wfhField(s string, field int, compact bool) string {
+	box := theme.Field
+	if m.wfh.field == field {
+		box = theme.FieldFocus
+	}
+	if compact {
+		box = box.Padding(0)
+	}
+	return box.Render(s)
+}
+
+// wfhDate draws one of the two date fields. A field just tabbed onto shows its value
+// selected — the next keystroke replaces the whole thing — which is what the accent fill
+// means here, as it does on every other line.
+func (m Model) wfhDate(i int) string {
+	in := m.wfh.from
+	if i == 1 {
+		in = m.wfh.to
+	}
+	if m.wfhDateIndex() == i && m.wfh.fresh[i] {
+		// Padded to the full column, so a selected value measures exactly what the input it
+		// stands in for does: sized a cell short, the box shrank as the keys moved onto it and
+		// the two buttons slid along the row.
+		return theme.Match.Render(pad(in.Value(), dateWidth))
+	}
+	return in.View()
+}
+
+// wfhSkeleton is the row with an empty reason: everything on it that is fixed, measured on the
+// row as it is drawn rather than added up, since the padding and the spaces between the boxes
+// are each a cell that arithmetic forgets.
+func (m Model) wfhSkeleton(compact bool) int {
+	return lipgloss.Width(strings.Split(m.wfhRow("", compact), "\n")[1])
+}
+
+// wfhRoom is what the line has to fit in: the width, less the gutter, less the two cells
+// clockLine keeps between the left of the row and the right-aligned cluster it puts the line in.
+func (m Model) wfhRoom() int { return m.cols() - gutter - 2 }
+
+// wfhCompact says whether the row has to give up the space inside its boxes: the reason needs a
+// cell of its own and a cell for the cursor after it.
+func (m Model) wfhCompact() bool {
+	return m.wfhRoom()-m.wfhSkeleton(false) < 2
+}
+
+// wfhMaxReason keeps the line a cluster under the button rather than a band across the screen:
+// stretched to the edge on a wide terminal the row ran the whole width, which read as a second
+// header rather than as something belonging to the button above it. The input scrolls what it
+// holds, so the cap costs visible characters and nothing else.
+const wfhMaxReason = 24
+
+// wfhReasonWidth is what the reason gets: the row less everything that is fixed, less the
+// cursor cell an input always draws after its text, capped.
+func (m Model) wfhReasonWidth() int {
+	return min(max(m.wfhRoom()-m.wfhSkeleton(m.wfhCompact())-1, 1), wfhMaxReason)
 }
 
 // todayLogged is the hours on today, beside the month's own totals — the one figure on that
@@ -2093,7 +2220,7 @@ func (m Model) footer() string {
 		label = "-- CANCEL MEAL --"
 	}
 	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
-		m.mode != ModeLeaves && m.mode != ModeBook {
+		m.mode != ModeLeaves && m.mode != ModeBook && m.mode != ModeWFH {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -2115,6 +2242,10 @@ func (m Model) footer() string {
 		// Its own keys, whichever tab is behind it: the line holds the keyboard, so the tab's
 		// own hints would be advertising keys that cannot fire.
 		help = m.k().help(ModeBook)
+	case m.mode == ModeWFH:
+		// Same reason: the request line has the keyboard, and the chart's month keys behind
+		// it are letters a reason has to be able to hold.
+		help = m.k().help(ModeWFH)
 	case m.mode == ModeForm:
 		// Its own keys, whichever tab is behind it, and only the ones the focused field
 		// takes: j/k belong to a dropdown and are letters everywhere else.

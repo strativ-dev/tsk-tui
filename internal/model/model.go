@@ -36,6 +36,9 @@ const (
 	ModeConfirm
 	ModeAuth
 	ModeForm // the new-timeoff line on TabTime
+	// ModeWFH is the work-from-home request line, opened by the ERP refusing a check in for
+	// want of one. It owns every key while it is open, so its reason can hold a t or a d.
+	ModeWFH
 )
 
 // Tab is the top-level screen, above modes: the task list and everything reached from
@@ -137,6 +140,27 @@ type mealForm struct {
 	on       map[int]bool
 }
 
+// The WFH request line's fields, in tab order: the two days, why, then the two buttons.
+const (
+	wfhFromField = iota
+	wfhToField
+	wfhReasonField
+	wfhOKField
+	wfhXField
+	wfhFieldCount
+)
+
+// wfhForm is the work-from-home request line. One struct, so closing it is one assignment
+// and nothing half-typed outlives the line it was typed on.
+type wfhForm struct {
+	open  bool
+	field int
+	// from and to are dd/mm/yy text fields; fresh marks one whose value is selected, so the
+	// first keystroke replaces it rather than appending to it.
+	from, to, reason textinput.Model
+	fresh            [2]bool
+}
+
 // Insert-mode focus positions.
 const (
 	fieldDate = iota
@@ -204,6 +228,17 @@ type Model struct {
 	// ticking says a 30s repaint is already scheduled for the elapsed figure, the same
 	// guard spinning is for the spinner.
 	ticking bool
+
+	// wfh is the work-from-home request line. It is not opened by a key: the ERP refuses a
+	// check in once the free WFH days are used up and names what it wants, so that refusal
+	// opens it. wfhFiling is a create in flight.
+	wfh       wfhForm
+	wfhFiling bool
+	// wfhFiled says a request has already been filed this session, which is what stops the
+	// line reappearing: the check in is retried after the request lands, and if the ERP still
+	// wants an *approved* one it refuses with the same words — reopening the line there would
+	// loop, and file the same days again.
+	wfhFiled bool
 
 	// dashHold is the day the chart's window is built around when the month is taller
 	// than the terminal: -1 follows today, g and G pin it to the ends. There is no
@@ -386,7 +421,7 @@ func clockTick() tea.Cmd {
 // time off (applying), a check in or out (clocking), or a task's lines.
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
-		m.mealCancelling || m.booking || m.clocking || len(m.pulling) > 0
+		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -419,6 +454,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fields[fieldDesc].Width = fieldWidth(m.descWidth())
 		if m.form.open {
 			m.form.desc.Width = m.leaveDescWidth()
+		}
+		if m.wfh.open {
+			m.wfh.reason.Width = m.wfhReasonWidth()
 		}
 		return m, nil
 
@@ -671,6 +709,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The clock is the ERP's, so a failed call changes nothing here.
 			m.err = msg.Err
 			m.status = "attendance unchanged: " + oneLine(msg.Err.Error())
+			// One refusal names the thing that would fix it: "you have exceeded the number of
+			// days available for WFH, please submit a WFH request". The line is the shortest
+			// way from that sentence to the request, so the error opens it rather than only
+			// reporting it. Once one has been filed it stays shut — see wfhFiled.
+			if needsWFH(msg.Err) && !m.wfh.open && !m.wfhFiled {
+				return m.openWFH()
+			}
 			return m, nil
 		}
 
@@ -688,11 +733,37 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Never retry a toggle — a retry ping-pongs. Say what the server says.
 			m.status = "the ERP says you are " + checkedLabel(msg.At.CheckedIn) + " — screen refreshed"
 		case msg.Toggled && msg.At.CheckedIn:
+			// In: whatever the WFH days were short by is no longer in the way, so the next
+			// refusal of this kind gets the line again.
+			m.wfhFiled = false
 			m.status = "checked in at " + clockTime(msg.At.Since)
 		case msg.Toggled:
 			m.status = "checked out at " + clockTime(time.Now())
 		}
 		return m, nil
+
+	case api.WFHRequestedMsg:
+		m.wfhFiling = false
+		if msg.Err != nil {
+			m.err = msg.Err
+			if msg.ID == 0 {
+				// Nothing was filed, so the line stays exactly as typed: a refusal has to
+				// have something to come back to.
+				m.status = "the ERP refused the WFH request: " + oneLine(msg.Err.Error())
+				return m, nil
+			}
+			// The record exists. Re-filing would ask HR for the same days twice, so the line
+			// closes and the ERP's own words stand.
+			m.wfh, m.mode, m.wfhFiled = wfhForm{}, ModeList, true
+			m.status = oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// Filed and submitted, so the check in is worth another try — that is what the
+		// request was for, and the ERP has the last word on whether it is enough.
+		m.wfh, m.mode, m.err = wfhForm{}, ModeList, nil
+		m.wfhFiled = true
+		m.status = "WFH request submitted — checking in…"
+		return m.toggleClock()
 
 	case api.LoggedMsg:
 		m.syncing = false
@@ -811,7 +882,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the key is still the tab it always was.
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
 			m.mode != ModeAuth && m.mode != ModeForm && m.mode != ModeBook &&
-			!claims(m.tab, msg) {
+			m.mode != ModeWFH && !claims(m.tab, msg) {
 			switch {
 			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
@@ -844,6 +915,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// c, which are the tasks tab, nothing, and a leave filter everywhere else.
 		if m.mode == ModeBook {
 			return m.updateBook(msg)
+		}
+		// And the WFH request line: it sits over the chart, whose own keys are letters, so a
+		// reason that says "at the dentist" must not step the month while it is typed.
+		if m.mode == ModeWFH {
+			return m.updateWFH(msg)
 		}
 		if m.mode != ModeAuth {
 			switch m.tab {
@@ -1691,6 +1767,184 @@ func (m Model) toggleClock() (tea.Model, tea.Cmd) {
 		m.status = "checking out…"
 	}
 	return m, api.ToggleAttendance(m.key, m.login, m.db, m.attEmp, want)
+}
+
+// needsWFH says whether a refusal is the one a work-from-home request answers. The ERP's own
+// sentence is "You have exceeded the number of days available for WFH. Please submit a WFH
+// request.", and matching its name for the thing is the only reading that cannot mistake some
+// other refusal for this one.
+func needsWFH(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "wfh")
+}
+
+// openWFH reveals the request line, focused on the first day, with today in both date fields
+// — the day whose check in was just refused is the day the request is for.
+func (m Model) openWFH() (tea.Model, tea.Cmd) {
+	f := wfhForm{open: true, field: wfhFromField}
+	for _, in := range []*textinput.Model{&f.from, &f.to} {
+		*in = textinput.New()
+		in.Prompt = ""
+		in.Placeholder = "dd/mm/yy"
+		in.Width = fieldWidth(dateWidth)
+		in.CharLimit = 8
+	}
+	f.from.SetValue(parse.Today())
+	f.to.SetValue(parse.Today())
+	f.fresh = [2]bool{true, true}
+
+	f.reason = textinput.New()
+	f.reason.Prompt = ""
+	f.reason.Placeholder = "reason"
+
+	m.wfh, m.mode = f, ModeWFH
+	// Sized after the form is in the model, never before: the width is measured on the row as
+	// it will be drawn, and an empty wfhForm draws no date fields to measure against.
+	m.wfh.reason.Width = m.wfhReasonWidth()
+	m.wfh.from.Focus()
+	return m, textinput.Blink
+}
+
+// closeWFH takes the line away. Nothing has been filed, so nothing asks — the days and the
+// reason are two keystrokes and a sentence, and the refusal that opened it is still in the
+// status line to open it again.
+func (m Model) closeWFH() (tea.Model, tea.Cmd) {
+	m.wfh = wfhForm{}
+	m.mode, m.err = ModeList, nil
+	return m, nil
+}
+
+// updateWFH is the request line: tab through the fields, enter on ✓ to file it and check in,
+// enter on ✕ or esc to drop it.
+func (m Model) updateWFH(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Next):
+		return m.moveWFHField(1), nil
+	case key.Matches(msg, m.k().Prev):
+		return m.moveWFHField(-1), nil
+
+	case key.Matches(msg, m.k().Accept):
+		switch m.wfh.field {
+		case wfhOKField:
+			return m.fileWFH()
+		case wfhXField:
+			return m.closeWFH()
+		default:
+			return m.moveWFHField(1), nil
+		}
+
+	case key.Matches(msg, m.k().Cancel):
+		return m.closeWFH()
+
+	case key.Matches(msg, m.k().ClearField):
+		if in := m.wfhInput(); in != nil {
+			in.SetValue("")
+			if i := m.wfhDateIndex(); i >= 0 {
+				m.wfh.fresh[i] = false
+			}
+		}
+		return m, nil
+	}
+
+	in := m.wfhInput()
+	if in == nil {
+		return m, nil
+	}
+	// A date field opens with its value selected: the first thing typed replaces it whole.
+	if i := m.wfhDateIndex(); i >= 0 && m.wfh.fresh[i] && msg.Type == tea.KeyRunes {
+		in.SetValue("")
+		m.wfh.fresh[i] = false
+	}
+	var cmd tea.Cmd
+	*in, cmd = in.Update(msg)
+	return m, cmd
+}
+
+// moveWFHField normalizes the date being left — dates are rewritten on exit, never per
+// keystroke — and focuses the next field, wrapping.
+func (m Model) moveWFHField(by int) Model {
+	m.normalizeWFHDates()
+	m.wfh.field = (m.wfh.field + by + wfhFieldCount) % wfhFieldCount
+	for _, in := range []*textinput.Model{&m.wfh.from, &m.wfh.to, &m.wfh.reason} {
+		in.Blur()
+	}
+	if in := m.wfhInput(); in != nil {
+		in.Focus()
+	}
+	if i := m.wfhDateIndex(); i >= 0 {
+		m.wfh.fresh[i] = true // freshly focused: the value is selected
+	}
+	return m
+}
+
+// wfhInput is the text field the cursor is in, or nil on a button.
+func (m *Model) wfhInput() *textinput.Model {
+	switch m.wfh.field {
+	case wfhFromField:
+		return &m.wfh.from
+	case wfhToField:
+		return &m.wfh.to
+	case wfhReasonField:
+		return &m.wfh.reason
+	}
+	return nil
+}
+
+// wfhDateIndex is which of the two date fields has the cursor, or -1.
+func (m Model) wfhDateIndex() int {
+	switch m.wfh.field {
+	case wfhFromField:
+		return 0
+	case wfhToField:
+		return 1
+	}
+	return -1
+}
+
+// normalizeWFHDates rewrites a date field as it is left, and drags the end along when the
+// start passes it — a range that reads backwards would cover the days between.
+func (m *Model) normalizeWFHDates() {
+	switch m.wfh.field {
+	case wfhFromField:
+		if d, err := parse.Date(m.wfh.from.Value(), parse.Today()); err == nil {
+			m.wfh.from.SetValue(d)
+			if before(d, m.wfh.to.Value()) {
+				m.wfh.to.SetValue(d)
+			}
+			m.err = nil
+		} else {
+			m.err = err
+		}
+	case wfhToField:
+		if d, err := parse.Date(m.wfh.to.Value(), m.wfh.from.Value()); err == nil {
+			m.wfh.to.SetValue(d)
+			m.err = nil
+		} else {
+			m.err = err
+		}
+	}
+}
+
+// fileWFH sends the request. No modal: it asks a manager for days, which is not destructive,
+// and the line itself already states everything the prompt would repeat.
+func (m Model) fileWFH() (Model, tea.Cmd) {
+	m.normalizeWFHDates()
+	if strings.TrimSpace(m.wfh.reason.Value()) == "" {
+		// The ERP requires it, so this is a refusal it would make one round trip later.
+		m.status = "say why you are working from home"
+		return m, nil
+	}
+	if m.wfhFiling {
+		m.status = "still waiting on the ERP…"
+		return m, nil
+	}
+
+	m.wfhFiling, m.err = true, nil
+	m.status = "requesting work from home…"
+	return m, api.RequestWFH(m.key, m.login, m.db, m.attEmp,
+		m.wfh.from.Value(), m.wfh.to.Value(), m.wfh.reason.Value())
 }
 
 // updateDash is the chart tab: the month's ends, half a screen either way, a refresh, and
@@ -3400,6 +3654,8 @@ func modeLabel(m Mode) string {
 		return "-- API KEY --"
 	case ModeForm:
 		return "-- NEW TIMEOFF --"
+	case ModeWFH:
+		return "-- WFH REQUEST --"
 	}
 	return ""
 }

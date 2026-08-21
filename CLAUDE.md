@@ -254,6 +254,58 @@ Check in and out without leaving the terminal — top-right of the chart, `WFH  
   the only place that localises it. Wall-clock formatting lives in `view.go`, not
   `internal/parse`, which is about the input grammar.
 
+### The WFH request line (`ModeWFH`)
+
+One row over the chart, opened by a refusal rather than by a key:
+`wfh request  │21/08/26 │ → │21/08/26 │ │reason…│ │✓│ │✕│`.
+
+- **The refusal is what opens it.** `attendance_manual` declines a check in from home once the
+  free days are used up — *"You have exceeded the number of days available for WFH. Please
+  submit a WFH request."* — and the line is the shortest way from that sentence to the request,
+  so `needsWFH` matches the ERP's own word for the thing and `openWFH` runs there. Any other
+  refusal is reported and nothing opens: a form in front of an unrelated error is a form that
+  cannot help.
+- **The model is `serp_attendance.wfh_request`, not `hr.leave`.** There is no work-from-home
+  leave type on this database; the serp attendance module keeps its own model, and
+  `hr.attendance.wfh_request_id` points at it. Fields are `start_date` / `end_date` /
+  `description` (labelled *Reason*, and **required**, so a blank one is refused here rather
+  than one round trip later), `employee_id` defaults to the caller, and `number_of_days` and
+  `name` are computed.
+- **Two calls, because create alone is not a request.** `state` defaults to `draft` — the ERP
+  calls it *"To Submit"* — so `api.RequestWFH` follows the create with **`action_confirm`**,
+  which is what moves it to `confirm` (*To Approve*). Read off `default_get` and `fields_get`
+  over RPC; the MCP does not expose this model at all, so it was probed there.
+- **A create that landed with a submit that did not still carries its id back**
+  (`WFHRequestedMsg.ID`): re-filing would ask HR for the same days twice, so the line closes on
+  it and says what happened. **Nothing retries**, for the same reason.
+- **The answer retries the check in** — that is what the request was for — and the ERP has the
+  last word on whether a submitted request is enough. If it refuses again with the same words,
+  `wfhFiled` keeps the line shut: reopening there would loop, filing the same days on every
+  attempt. A check in that lands clears the flag.
+- **✓ does not ask.** It asks a manager for days, which destroys nothing, and the line already
+  states everything a modal would repeat. `esc` and `✕` close it outright for the same reason —
+  nothing has been filed, and the refusal is still in the status line to open it again.
+- **The line owns the keyboard while it is open** (`ModeWFH` excluded from the tab-key and `?`
+  block, routed before the tab handlers), so a reason can hold a `t`, a `d` and an `m` while the
+  chart's own month keys sit behind it.
+- It renders **under the check in button, on the same right edge** (`dashHead`, through
+  `clockLine`): the button is what refused, so the line belongs to it. The rows come out of the
+  head, so the days window into what is left, and a chart too short for both **gives up days
+  rather than the head** while the line is open — a field you cannot see is a field you cannot
+  fill. The lines go in bare: `clockLine` is what right-aligns them and adds the gutter, and a
+  second one pushed the row off the edge.
+- **The button goes dim and gives up its accent** while the line is open (`clockButton`): `c`
+  cannot fire, since the line holds the keyboard, which is the same rule the meal tab's inactive
+  label follows.
+- The reason is capped at `wfhMaxReason` cells so the row stays a cluster under the button
+  rather than a band across the screen; the input scrolls, so the cap costs visible characters
+  and nothing else. Dates normalize on exit and the end follows the start past it
+  (`normalizeWFHDates`, `before`), the same rules the other two lines have; a selected value is
+  padded to the **full** `dateWidth`, so tabbing onto a date does not shrink its box and slide
+  the buttons along the row. The reason's width is measured **after** the form is in the model:
+  an empty `wfhForm` draws no date fields, so sizing against it left the row too wide by nine
+  cells and `clockLine` truncated the buttons off.
+
 ## Time off (`TabTime`)
 
 A year calendar of the days you took off, the leave balances above it, the public holidays
@@ -798,6 +850,7 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeConfirm` | modal; swallows everything except `y` / `n` / `esc` |
 | `ModeAuth` | API key prompt; opens when no key is stored or a fetch returns 401 |
 | `ModeForm` | the new-timeoff line on `TabTime`; owns every key, so a description can hold `t` |
+| `ModeWFH` | the WFH request line on `TabDash`, opened by the ERP refusing a check in |
 
 ## Keymap
 

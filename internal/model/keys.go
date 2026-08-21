@@ -415,6 +415,8 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{key.NewBinding(key.WithHelp("esc", "close"))}
 	case ModeLeaves:
 		return []key.Binding{key.NewBinding(key.WithHelp(k.Back.Help().Key, "close"))}
+	case ModeWFH:
+		return []key.Binding{k.Next, k.Prev, k.ClearField, k.Accept, k.Cancel}
 	case ModeBook:
 		return []key.Binding{k.Next, k.Cycle,
 			key.NewBinding(key.WithHelp("b l s", "meal")), k.Accept, k.Cancel}
