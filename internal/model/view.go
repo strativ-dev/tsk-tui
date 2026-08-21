@@ -93,12 +93,21 @@ const (
 	weekCol   = 3
 	monthPad  = 1
 	monthCols = monthPad + weekCol + 7*dayCell
-	// A week row always has a line under it: that air is what makes the month read as a
-	// calendar rather than as a table, and it is the design's own proportion — a day is
-	// nearly as tall as it is wide there. A roomy terminal also gets the padding the design
-	// puts above the month's name and under its weekday heads; a short one spends those two
-	// rows on days.
-	roomyRows = 34
+	// A week row gets a line under it when the terminal can spend one: that air is what makes
+	// the month read as a calendar rather than as a table, and it is the design's own
+	// proportion — a day is nearly as tall as it is wide there. A roomier terminal also gets
+	// the padding the design puts around the month cell. Both are given up to keep **two rows
+	// of months** on screen, which is how the year is read here — six months at a time, a
+	// half-year to a screenful (`timeTier`).
+	//
+	// timeChrome is what the calendar's own furniture costs in rows: the tab bar, the balance
+	// cards, the two rules with the request line between them, then the status line and the
+	// footer. An estimate, like dashChrome — being a row out only moves where a tier changes.
+	timeChrome = 13
+	// A month is its name, its weekday heads and six week rows — 8 rows bare, 13 with the air
+	// between weeks, 16 with the design's padding round it as well.
+	monthWeeks = 6
+	monthBare  = monthWeeks + 2
 	// A month is its name and its weekday heads above however many week rows it spans —
 	// four to six — and the months in one row are padded to the tallest of them and no
 	// further: six rows everywhere would cost the year lines it does not have to spend.
@@ -225,7 +234,7 @@ func (m Model) View() string {
 	budget := m.rows() - len(head) - len(tail)
 	body, focus := m.listLines()
 	if m.tab == TabTime {
-		body, focus = m.timeLines()
+		body, focus = m.timeLines(budget)
 	}
 	if m.tab == TabMeal {
 		body, focus = m.mealLines()
@@ -1012,9 +1021,11 @@ func (m Model) timeYearOf() int {
 // timeLayout splits the width between the months and the holidays: **months first**, up to
 // three, and the panel takes what is left when that is enough to read a holiday on.
 //
-// The months are what this screen is, so three of them outrank the list — but a panel that
-// leaves only one month beside it is a list with a calendar attached, so it is dropped before
-// the second month is. panel is 0 when there is no column for it.
+// The months are what this screen is, and a full row of three is what makes a screenful half a
+// year — two rows of three — so the panel never costs a month its column. It had a column of
+// its own from about 130 cells, at the price of the third month; the holidays are still on the
+// calendar as dimmed days, where a month is not recoverable from a list. panel is 0 when there
+// is no column left for it.
 func (m Model) timeLayout() (cols, panel int) {
 	room := m.cols() - gutter
 	// One hairline between each pair of months, and no gap: they are cells of one grid.
@@ -1022,12 +1033,31 @@ func (m Model) timeLayout() (cols, panel int) {
 	if len(m.timeHolidays) == 0 {
 		return fit, 0
 	}
-	for c := fit; c >= 2; c-- {
-		if left := room - (c*monthCols + c - 1) - len(colGap); left >= panelMin {
-			return c, min(left, panelMax)
-		}
+	if left := room - (fit*monthCols + fit - 1) - len(colGap); left >= panelMin {
+		return fit, min(left, panelMax)
 	}
 	return fit, 0
+}
+
+// timeTier is how much air a month cell can afford: the padding the design puts around it,
+// and the blank line under every week row.
+//
+// Both are spent only when **two rows of months** still fit — six months at a time is what a
+// year is read in here, and a screen showing one row of three is a quarter, not a half-year.
+// The padding goes first and the air second, since the air is what makes a month read as a
+// calendar rather than as a table.
+func (m Model) timeTier() (roomy, airy bool) {
+	budget := max(m.rows()-timeChrome, 1)
+	// Two rows of months, the rule between them, and the two lines the window spends on its
+	// own "↑ N more" / "↓ N more" — a year is four rows, so something is always hidden.
+	rows := func(n int) int { return 2*n + 1 + 2 }
+	switch {
+	case budget >= rows(monthBare+monthWeeks-1+3):
+		return true, true
+	case budget >= rows(monthBare+monthWeeks-1):
+		return false, true
+	}
+	return false, false
 }
 
 // timeCols is how many months go side by side. ctrl+f / ctrl+b move by one row of them, so
@@ -1415,7 +1445,7 @@ func wide(s string) string {
 	return b.String()
 }
 
-// timePending is whether anything on the calendar// timePending is whether anything on the calendar is still waiting on approval.
+// timePending is whether anything on the calendar is still waiting on approval.
 func (m Model) timePending() bool {
 	for _, l := range m.timeLeaves {
 		if l.State != "validate" && (m.timeFilter == 0 || l.KindID == m.timeFilter) {
@@ -1428,7 +1458,13 @@ func (m Model) timePending() bool {
 // timeLines is the body: the twelve months, laid out in rows of as many as fit, with the
 // holiday panel beside them when there is room, and the index of the line the month in
 // view starts on. Derived from the answer on every render, like every other body.
-func (m Model) timeLines() ([]string, int) {
+//
+// It takes the budget and cuts itself to **whole rows of months**, which is why it is handed
+// one at all (`dashLines` takes it for the same reason): the generic line window cut wherever
+// the rows ran out, which left a row of months sliced through its third week above a
+// "↓ 11 more" that counted lines nobody thinks in. What it hides, it hides by the row and says
+// in months.
+func (m Model) timeLines(budget int) ([]string, int) {
 	if m.timeYear == 0 {
 		if m.timeLoading {
 			return []string{theme.Blur.Render(
@@ -1446,20 +1482,15 @@ func (m Model) timeLines() ([]string, int) {
 	vRule := theme.Sep.Background(theme.Surface).Render("│")
 	hRule := theme.Sep.Render(strings.Repeat("─", cols*monthCols+cols-1))
 
-	var lines []string
+	// One entry per row of months, so the body can be cut by the row rather than by the line.
+	rows := make([][]string, 0, (12+cols-1)/cols)
 	for r := 0; r < (12+cols-1)/cols; r++ {
-		if r > 0 {
-			lines = append(lines, hRule)
-		}
 		blocks, tall := make([]monthPanel, 0, cols), 0
 		for c := range cols {
 			mon := r*cols + c
 			if mon > 11 {
 				blocks = append(blocks, blank) // a short last row is padded, not shifted
 				continue
-			}
-			if mon == hold {
-				focus = len(lines)
 			}
 			b := m.monthBlock(year, time.Month(mon+1), marks)
 			tall = max(tall, len(b.lines))
@@ -1468,6 +1499,7 @@ func (m Model) timeLines() ([]string, int) {
 		// Every month in the row is padded to the tallest of them, on its own panel, and no
 		// further: a month that spans five weeks beside one that spans six costs one line,
 		// where padding all twelve to six would cost the year four.
+		out := make([]string, 0, tall)
 		for i := range tall {
 			row := make([]string, 0, cols)
 			for _, b := range blocks {
@@ -1477,14 +1509,72 @@ func (m Model) timeLines() ([]string, int) {
 				}
 				row = append(row, b.lines[i])
 			}
-			lines = append(lines, strings.Join(row, vRule))
+			out = append(out, strings.Join(row, vRule))
 		}
+		rows = append(rows, out)
+	}
+
+	first, last := m.timeWindow(rows, hold/cols, budget)
+	var lines []string
+	if first > 0 {
+		lines = append(lines, monthsHidden("↑", first*cols))
+	}
+	for r := first; r < last; r++ {
+		if r > first {
+			lines = append(lines, hRule)
+		}
+		if r == hold/cols {
+			focus = len(lines)
+		}
+		lines = append(lines, rows[r]...)
+	}
+	if last < len(rows) {
+		lines = append(lines, monthsHidden("↓", 12-last*cols))
 	}
 
 	for i, l := range lines {
 		lines[i] = theme.Blur.Render(l)
 	}
 	return lines, focus
+}
+
+// timeWindow is the rows of months that fit the budget, as a half-open range around the row
+// the caret is in. It grows forward first — a year is read Jan to Dec — and the caret's own row
+// goes in whether it fits or not, since a body of nothing but markers answers nothing.
+func (m Model) timeWindow(rows [][]string, hold, budget int) (first, last int) {
+	height := func(a, b int) int {
+		n := b - a - 1 // the hairline between each pair of rows
+		for _, r := range rows[a:b] {
+			n += len(r)
+		}
+		if a > 0 {
+			n++ // the "↑ N more months" line
+		}
+		if b < len(rows) {
+			n++
+		}
+		return n
+	}
+
+	first, last = hold, hold+1
+	for {
+		grew := false
+		if last < len(rows) && height(first, last+1) <= budget {
+			last, grew = last+1, true
+		}
+		if first > 0 && height(first-1, last) <= budget {
+			first, grew = first-1, true
+		}
+		if !grew {
+			return first, last
+		}
+	}
+}
+
+// monthsHidden is the marker for the rows the budget could not hold, counted in **months**:
+// this body is cut by the row, so a line count would be an answer to a question nobody asked.
+func monthsHidden(arrow string, n int) string {
+	return theme.Dim.Render(fmt.Sprintf("%s %d more %s", arrow, n, plural(n, "month", "months")))
 }
 
 // withHolidayPanel puts the public holidays down the right of the calendar, in their own
@@ -1587,8 +1677,9 @@ func (m Model) monthBlock(year int, mon time.Month, marks map[string]dayMark) mo
 	head += fill(monthCols-lipgloss.Width(head)-lipgloss.Width(count)) + count
 
 	// The design pads the month cell — a line above its name and one under the weekday
-	// heads — and a terminal too short for the year spends those two rows on days instead.
-	roomy := m.rows() >= roomyRows
+	// heads — and puts a line under every week row. A terminal that cannot hold two rows of
+	// months spends those on months instead; see timeTier.
+	roomy, airy := m.timeTier()
 	var out []string
 	if roomy {
 		out = append(out, fill(monthCols))
@@ -1600,7 +1691,7 @@ func (m Model) monthBlock(year int, mon time.Month, marks map[string]dayMark) mo
 	out = append(out, m.weekdayHead(bg))
 	today := time.Now().Format("2006-01-02")
 	for r := range (lead + last + 6) / 7 {
-		if r > 0 {
+		if r > 0 && airy {
 			out = append(out, fill(monthCols)) // air under the week above
 		}
 		// The ISO week of the row's Monday, which in the first row can belong to the month
@@ -1783,12 +1874,12 @@ func holidaySpan(h api.Holiday) string {
 	return from.Format("Jan 2") + "-" + to.Format("Jan 2")
 }
 
-// monthMoveHelp is the footer's entry for the four motions, named after what they move —
+// monthMoveHelp is the footer's entry for the two motions, named after what they move —
 // months, not rows or days — with the keys read off the bindings themselves so a rebind
-// follows.
+// follows. Only j and k: h and l are unbound on this screen, and a footer that named them
+// would be advertising keys that cannot fire.
 func (m Model) monthMoveHelp() key.Binding {
-	keysOf := []string{m.k().Collapse.Help().Key, m.k().Down.Help().Key,
-		m.k().Up.Help().Key, m.k().Expand.Help().Key}
+	keysOf := []string{m.k().Down.Help().Key, m.k().Up.Help().Key}
 	return key.NewBinding(key.WithHelp(strings.Join(keysOf, "/"), "month"))
 }
 

@@ -2100,22 +2100,22 @@ func (m Model) loadTime() (Model, tea.Cmd) {
 // something must not shadow it.
 func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	// h j k l walk the grid the months are laid out in: one month either way, one row of them
-	// up or down. They are the same four bindings the task list moves by, so a rebind moves
-	// both, and the row is however many months the width is showing.
-	case key.Matches(msg, m.k().Collapse):
-		return m.holdTime(m.timeMonth() - 1), nil
-	case key.Matches(msg, m.k().Expand):
-		return m.holdTime(m.timeMonth() + 1), nil
+	// j and k walk the year a month at a time — Jan, Feb, Mar — which is the sequence a year
+	// is read in and the unit the caret and the holiday panel both follow. They are the
+	// bindings the task list moves by, so a rebind moves both. h and l are unbound here: they
+	// stepped one month while j/k stepped a row of them, and a row is 2, 3 or 4 months
+	// depending on the width, so the same key covered a different distance on every terminal.
 	case key.Matches(msg, m.k().Down):
-		return m.holdTime(m.timeMonth() + m.timeCols()), nil
+		return m.holdTime(m.timeMonth() + 1), nil
 	case key.Matches(msg, m.k().Up):
-		return m.holdTime(m.timeMonth() - m.timeCols()), nil
+		return m.holdTime(m.timeMonth() - 1), nil
 
 	case key.Matches(msg, m.k().Top):
 		return m.holdTime(0), nil
 	case key.Matches(msg, m.k().Bottom):
 		return m.holdTime(11), nil
+	// A row of months is what a screenful means here, which is the one place a width-dependent
+	// jump still says something.
 	case key.Matches(msg, m.k().HalfDown):
 		return m.holdTime(m.timeMonth() + m.timeCols()), nil
 	case key.Matches(msg, m.k().HalfUp):

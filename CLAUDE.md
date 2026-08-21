@@ -359,17 +359,29 @@ for the request form, which is not built.
   35 cells and a month 39 with the week-number column (`weekCol`) and the cell's left padding
   (`monthPad`) in front of it, so **three months want 121 cells and three months with the
   holiday panel about 148**; below that the width buys months one at a time.
-- **Every week row has a line under it.** That air is what makes a month read as a calendar
-  rather than as a table, and it is the design's own proportion — a day there is nearly as tall
-  as it is wide. The padding above the month's name and under its weekday heads comes too on a
-  terminal tall enough to spend it (`roomyRows`).
+- **The body is cut by the row, never through a month** (`timeLines` takes the budget, as
+  `dashLines` does, and `timeWindow` picks the rows): the generic line window sliced a row
+  through its third week and reported `↓ 11 more` in lines, which is a count nobody thinks in.
+  Whole rows only, the caret's row always among them, growing forward first — a year is read Jan
+  to Dec — and what is left out says so in **months** (`↑ 6 more months`).
+- **A screenful is two rows of three months** — half a year — and that outranks a month cell's
+  own air (`timeTier`). A week row gets a line under it, which is what makes a month read as a
+  calendar rather than as a table and is the design's own proportion (a day nearly as tall as it
+  is wide), and the design's padding around the cell comes on top of that; both are spent only
+  when two rows still fit. So a month is **8 rows bare, 13 with the air, 16 padded as well**, and
+  a 130×32 terminal shows six months where the aired version showed three and a half. The budget
+  is `rows() - timeChrome` less the two lines the window spends on its own `↑ N more` /
+  `↓ N more` — an estimate, like `dashChrome`, since being a row out only moves where a tier
+  changes.
 - **The days the request line covers are reversed out in the accent** — the same mark a date
   jump leaves on the rows it found. The type it is for is on the request line itself, in its
   own colour, so the day does not have to carry both.
-- **Months first, then the holidays** (`timeLayout`): three months outrank the list, and the
-  panel takes what is left when that is enough to read a holiday on (`panelMin` to
-  `panelMax`). A panel that would leave only one month beside it is dropped instead — that is
-  a list with a calendar attached, not a calendar.
+- **Months first, then the holidays** (`timeLayout`): a full row of three is what makes a
+  screenful half a year, so the panel **never costs a month its column** — it takes what three
+  months leave when that is enough to read a holiday on (`panelMin` to `panelMax`), which is
+  about 148 cells, and is dropped below that. It used to have a column from about 130 at the
+  price of the third month; the holidays are still on the calendar there as dimmed days, where a
+  month is not recoverable from a list.
 - **The months are cells of one surface, divided by hairlines** — `│` between the columns and
   a `─` across the grid between the rows, never a gap, which is what the spec asks for
   everywhere. The month in view is **tinted with the accent at 4.5%**
@@ -418,10 +430,9 @@ for the request form, which is not built.
   window instead, the header and the first holidays scrolled away with January on the first
   keypress. A list taller than the body ends in `… N more` rather than stopping mid-year;
   the spec gives the panel its own scroll, which is what that line stands in for.
-- It gets its column whenever **two months still fit beside it** (`timePanel`): with one,
-  the screen is a list with a calendar attached rather than a calendar. So 88 cells and up
-  — three months beside it from about 114 — and below that the dimmed days on the months
-  are the whole answer.
+- It gets its column only when **a full row of three months still fits beside it**
+  (`timeLayout`): from about 148 cells, and below that the dimmed days on the months are the
+  whole answer.
 ### The new-timeoff line (`n`)
 
 One row between the balances and the calendar, and the whole request is on it:
@@ -545,17 +556,21 @@ One row between the balances and the calendar, and the whole request is on it:
     so a month with no half day in it does not pay for the word "afternoon", and the rows are
     derived on render (`monthLeaves`) like every other figure here.
   - Routed **before the tab handlers** (`Model.updateLeaves`), the way the new-timeoff line
-    is: otherwise `h`/`l` would walk the months behind a modal whose head names the month it
+    is: otherwise `j`/`k` would walk the months behind a modal whose head names the month it
     is listing. `?` still reaches the help toggle, as on every other modal that is not a
     confirm.
 - **It moves in months, not days.** No cursor — a year is a picture — so `Model.timeHold`
-  only says which month the window is built around: `-1` follows **this** month, `h`/`l` step
-  one month, `j`/`k` a row of them, `g`/`G` pin it to the ends, and `ctrl+f`/`ctrl+b` move a
-  row like `j`/`k`. The four motions are the **same bindings the task list moves by**, so a
-  rebind moves both, and a row is however many months the width is showing
-  (`view.go: monthMoveHelp` reads their keys back for the footer). This month carries the **caret**
-  (`▸Aug`), which is the only thing that says where today is once a leave has taken the
-  cells.
+  only says which month the window is built around: `-1` follows **this** month, `j`/`k` step
+  **one month** — Jan, Feb, Mar, which is the sequence a year is read in — `g`/`G` pin it to the
+  ends, and `ctrl+f`/`ctrl+b` move a row of months, the one place a width-dependent jump still
+  says something. They are the **same bindings the task list moves by**, so a rebind moves both
+  (`view.go: monthMoveHelp` reads their keys back for the footer).
+  - **`h`/`l` are unbound here.** They stepped one month while `j`/`k` stepped a row, and a row
+    is two, three or four months depending on the width — so `j` covered a different distance on
+    every terminal, and the calendar read as a grid rather than as twelve months in order. The
+    footer names `j/k` alone, since a hint for a key that cannot fire is a hint that lies.
+  - This month carries the **caret** (`▸Aug`), which is the only thing that says where today is
+    once a leave has taken the cells.
 - **The balances are four boxes** (`view.go: balanceCards`), as the design draws them: the
   type's name with its filter key picked out, the days left, and `DAYS AVAILABLE` under it,
   divided by verticals and ruled above and below — the rule above is the screen's own, under

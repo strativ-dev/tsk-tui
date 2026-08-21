@@ -62,7 +62,8 @@ binary, no CGO.
 - **A year of time off on one screen.** `o` opens a calendar of every day you took off,
   coloured by leave type, with public holidays and weekends dimmed and this month's caret
   where today is. Half days show as half-filled dates, requests still waiting on approval
-  as underlined ones.
+  as underlined ones. Six months at a time — three a row, two rows — on a terminal 130 by 32
+  or bigger; taller ones spend the extra rows on air around the weeks.
 - **Your leave balances, from the ERP.** Four boxes above the calendar — `sick Time Off`,
   `9`, `DAYS AVAILABLE` — and each type's own initial filters the year down to it.
 - **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
@@ -326,8 +327,7 @@ for the keys the current screen takes.
 
 | Key | Does |
 |---|---|
-| `h` / `l` | previous / next month |
-| `j` / `k` | a row of months down / up |
+| `j` / `k` | next / previous month |
 | `ctrl+f` / `ctrl+b` | a row of months down / up |
 | `g` / `G` | January / December |
 | `enter` | list this month's time off; `esc` closes |

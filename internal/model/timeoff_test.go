@@ -115,11 +115,11 @@ func TestMonthLeavesModal(t *testing.T) {
 	}
 
 	// A half day says which half; a request still waiting on an approver says so.
-	feb := send(t, m, runes("l"), special(tea.KeyEnter))
+	feb := send(t, m, runes("j"), special(tea.KeyEnter))
 	if got := plain(feb.View()); !strings.Contains(got, "18 Feb (Wed, morning)") {
 		t.Errorf("a half day does not say which half:\n%s", got)
 	}
-	apr := send(t, m, runes("l"), runes("l"), runes("l"), special(tea.KeyEnter))
+	apr := send(t, m, runes("j"), runes("j"), runes("j"), special(tea.KeyEnter))
 	if got := plain(apr.View()); !strings.Contains(got, "pending") {
 		t.Errorf("a request waiting on approval is not marked:\n%s", got)
 	}
@@ -138,9 +138,9 @@ func TestMonthLeavesModal(t *testing.T) {
 	if back.timeMonth() != 0 {
 		t.Errorf("closing it moved the calendar to month %d", back.timeMonth())
 	}
-	// The modal owns the keyboard while it is up: h and l do not walk the months behind it.
-	if held := send(t, open, runes("l")); held.timeMonth() != 0 || held.mode != ModeLeaves {
-		t.Errorf("l walked to month %d behind the modal", held.timeMonth())
+	// The modal owns the keyboard while it is up: j and k do not walk the months behind it.
+	if held := send(t, open, runes("j")); held.timeMonth() != 0 || held.mode != ModeLeaves {
+		t.Errorf("j walked to month %d behind the modal", held.timeMonth())
 	}
 }
 
@@ -204,42 +204,44 @@ func TestTabKeysBeatTheFilters(t *testing.T) {
 	}
 }
 
-// h j k l walk the grid the months are laid out in: one month either way, one row of them up
-// or down, and none of them past January or December.
-func TestTimeWalksMonthsWithHJKL(t *testing.T) {
+// j and k walk the year a month at a time, and neither goes past January or December. h and l
+// are unbound here: they used to step one month while j/k stepped a row of them, and a row is a
+// different distance on every terminal width.
+func TestTimeWalksMonthsWithJK(t *testing.T) {
 	m := send(t, timeModel(t, 158, 46), runes("g")) // January
-	cols := m.timeCols()
 
-	if got := send(t, m, runes("l")); got.timeMonth() != 1 {
-		t.Errorf("l landed on month %d, want February", got.timeMonth())
+	if got := send(t, m, runes("j")); got.timeMonth() != 1 {
+		t.Errorf("j landed on month %d, want February", got.timeMonth())
 	}
-	if got := send(t, m, runes("h")); got.timeMonth() != 0 {
-		t.Errorf("h walked past January to month %d", got.timeMonth())
-	}
-	if got := send(t, m, runes("j")); got.timeMonth() != cols {
-		t.Errorf("j landed on month %d, want a row of months on (%d)", got.timeMonth(), cols)
+	if got := send(t, m, runes("j"), runes("j")); got.timeMonth() != 2 {
+		t.Errorf("two j landed on month %d, want March", got.timeMonth())
 	}
 	if got := send(t, m, runes("k")); got.timeMonth() != 0 {
 		t.Errorf("k walked past January to month %d", got.timeMonth())
 	}
 
 	end := send(t, m, runes("G")) // December
-	if got := send(t, end, runes("l")); got.timeMonth() != 11 {
-		t.Errorf("l walked past December to month %d", got.timeMonth())
-	}
 	if got := send(t, end, runes("j")); got.timeMonth() != 11 {
 		t.Errorf("j walked past December to month %d", got.timeMonth())
 	}
-	if got := send(t, end, runes("k")); got.timeMonth() != 11-cols {
-		t.Errorf("k landed on month %d, want a row back", got.timeMonth())
+	if got := send(t, end, runes("k")); got.timeMonth() != 10 {
+		t.Errorf("k landed on month %d, want November", got.timeMonth())
 	}
+
+	// h and l move nothing on this screen.
+	for _, k := range []string{"h", "l"} {
+		if got := send(t, send(t, m, runes("j")), runes(k)); got.timeMonth() != 1 {
+			t.Errorf("%s moved the calendar to month %d", k, got.timeMonth())
+		}
+	}
+
 	// Walking there brings that month into view with the caret on it.
-	sep := send(t, m, runes("j"), runes("j"), runes("l"))
+	sep := send(t, m, runes("j"), runes("j"), runes("j"))
 	if v := plain(sep.View()); !strings.Contains(v, "▸ ") {
 		t.Errorf("the month walked to has no caret:\n%s", v)
 	}
-	// And the footer names the four keys off their own bindings.
-	if got := m.monthMoveHelp().Help(); got.Key != "h/j/k/l" || got.Desc != "month" {
+	// And the footer names the two keys off their own bindings.
+	if got := m.monthMoveHelp().Help(); got.Key != "j/k" || got.Desc != "month" {
 		t.Errorf("the footer hint is %q %q", got.Key, got.Desc)
 	}
 }
@@ -428,7 +430,9 @@ func TestMonthPanelIsRectangular(t *testing.T) {
 // they are read, head and all. Zipped into the body instead, the list scrolled away with
 // January on the first keypress.
 func TestHolidayPanelIsPinned(t *testing.T) {
-	m := timeModel(t, 130, 30)
+	// Wide enough for the panel to have a column at all: three months come first, so it takes
+	// what is left of 158 cells rather than a month's own 39.
+	m := timeModel(t, 158, 34)
 	// Which screen row the panel starts on, and what is in its column there.
 	panelAt := func(v string) (int, string) {
 		t.Helper()
@@ -465,12 +469,75 @@ func TestHolidayPanelIsPinned(t *testing.T) {
 	}
 }
 
-// The holiday panel appears when two months still fit beside it, and gives its column up
-// when they do not.
+// A screenful of this calendar is two rows of three months. The air a month cell carries — the
+// padding around it, then the blank line under every week row — is spent only when two rows
+// still fit, so a 30-row terminal shows six months rather than three and a half.
+func TestCalendarFitsTwoRowsOfMonths(t *testing.T) {
+	months := func(m Model) int {
+		n := 0
+		for _, l := range strings.Split(plain(m.View()), "\n") {
+			for _, mon := range []string{"Jan 26", "Feb 26", "Mar 26", "Apr 26", "May 26",
+				"Jun 26", "Jul 26", "Aug 26", "Sep 26", "Oct 26", "Nov 26", "Dec 26"} {
+				if strings.Contains(l, mon) {
+					n++
+				}
+			}
+		}
+		return n
+	}
+
+	short := timeModel(t, 130, 32)
+	if roomy, airy := short.timeTier(); roomy || airy {
+		t.Errorf("a 32-row terminal is spending air: roomy = %v, airy = %v", roomy, airy)
+	}
+	if got := months(short); got < 6 {
+		t.Errorf("%d months on a 130x32 screen, want two rows of three:\n%s",
+			got, plain(short.View()))
+	}
+
+	// Nothing is ever cut mid-month: the body holds whole rows of months, and what it hides it
+	// says in months rather than in lines.
+	for _, size := range [][2]int{{130, 32}, {166, 33}, {158, 28}, {130, 45}} {
+		v := plain(timeModel(t, size[0], size[1]).View())
+		// One weekday head per month drawn, and a month is only ever drawn whole, so the
+		// count is a multiple of the row — a sliced row would leave a head with no weeks or
+		// weeks with no head.
+		heads := strings.Count(v, "wk   M")
+		if heads == 0 || heads%timeModel(t, size[0], size[1]).timeCols() != 0 {
+			t.Errorf("at %dx%d, %d months are on screen — a row was cut through:\n%s",
+				size[0], size[1], heads, v)
+		}
+		for _, l := range strings.Split(v, "\n") {
+			if strings.Contains(l, "more") && !strings.Contains(l, "more month") {
+				t.Errorf("at %dx%d the calendar hid lines, not months: %q",
+					size[0], size[1], strings.TrimSpace(l))
+			}
+		}
+	}
+
+	// A tall terminal buys the air back, in the order the design gives it up: the week rows
+	// first, the padding round the cell after.
+	if _, airy := timeModel(t, 130, 42).timeTier(); !airy {
+		t.Error("a 42-row terminal has no air under its week rows")
+	}
+	if roomy, _ := timeModel(t, 130, 48).timeTier(); !roomy {
+		t.Error("a 48-row terminal does not pad the month cell")
+	}
+	// And the air is what it costs: the same month is taller with it than without.
+	bare := len(timeModel(t, 130, 32).monthBlock(2026, time.August, nil).lines)
+	airy := len(timeModel(t, 130, 48).monthBlock(2026, time.August, nil).lines)
+	if airy <= bare {
+		t.Errorf("the aired month is %d lines and the bare one %d", airy, bare)
+	}
+}
+
+// The holiday panel takes what a full row of three months leaves, and never a month's column:
+// a screenful of this calendar is two rows of three, and a month is not recoverable from a list
+// while its holidays are still on it as dimmed days.
 func TestHolidayPanelNeedsRoom(t *testing.T) {
-	// The panel needs a full row of months beside it: three of them and their hairlines take
-	// 95 cells, so it wants 130 and up.
-	wide := plain(timeModel(t, 140, 45).View())
+	// Three months and their hairlines take 119 cells, and the panel wants 24 more: so it
+	// shows from about 148 and up.
+	wide := plain(timeModel(t, 158, 45).View())
 	if !strings.Contains(wide, "PUBLIC HOLIDAYS") || !strings.Contains(wide, "Victory day") {
 		t.Errorf("no holiday panel on a wide terminal:\n%s", wide)
 	}
@@ -483,6 +550,15 @@ func TestHolidayPanelNeedsRoom(t *testing.T) {
 	}
 	if narrow := plain(timeModel(t, 90, 24).View()); strings.Contains(narrow, "PUBLIC HOLIDAYS") {
 		t.Errorf("the panel took the calendar's room on a 90-cell terminal:\n%s", narrow)
+	}
+	// The width that holds three months but not the panel keeps the months: it is the third
+	// month or the list, and the list's own days are still on the calendar.
+	mid := timeModel(t, 130, 30)
+	if v := plain(mid.View()); strings.Contains(v, "PUBLIC HOLIDAYS") {
+		t.Errorf("the panel took a month's column at 130 cells:\n%s", v)
+	}
+	if got := mid.timeCols(); got != maxTimeCols {
+		t.Errorf("130 cells lays out %d months a row, want %d", got, maxTimeCols)
 	}
 }
 
