@@ -219,7 +219,7 @@ Check in and out without leaving the terminal — top-right of the chart, `WFH  
   toggle — the same button the web client shows. Checking out opens the modal
   (`confirmCheckOut`) and takes **`y` only** (`keys.YesOnly`): it closes a session the ERP
   then bills. The spec asks for two keys, `c` and `C`, so a stray `c` cannot close the day;
-  the modal buys that with the guard the app already has, and leaves `C` free.
+  the modal buys that with the guard the app already has; `C` is the month's own confirm, below.
 - **The prompt states facts, not a prediction**: `Check out now? (in since 11:05 AM, 5:12)`.
   `cPrompt` is frozen when it is built and the server stamps its own time, so a promised
   "check out at 4:17 PM" would be a lie two minutes later.
@@ -256,6 +256,43 @@ Check in and out without leaving the terminal — top-right of the chart, `WFH  
 - Times print as `3:04 PM` (`view.go: clockTime`). The API layer keeps Odoo's UTC and this is
   the only place that localises it. Wall-clock formatting lives in `view.go`, not
   `internal/parse`, which is about the input grammar.
+
+### Confirming the month (`C`)
+
+A second box on the button band, left of the clock: `Confirm hour logs`, and the ERP is told the
+month is done.
+
+- **`account.analytic.line.confirm_hour_logs` is a recordset method taking no arguments** — the
+  lines go in `execute_kw`'s ids slot — and it sets each line's `confirmed` boolean. So
+  `api.ConfirmHours` reads the ids first: the key owner's own lines (`user_id = uid`, the same
+  clause the table's read uses), inside the month, `confirmed = false`. There is no monthly
+  sheet model on this database and no `@api.model` entry point; the MCP exposes none of this.
+- **The answer is not a success signal.** It replies with a bare `false` on lines it has in fact
+  just written, so only an RPC error is a failure here and the month is **re-read** rather than
+  trusted. Nothing retries.
+- **A month with nothing left to confirm costs no write** and is not an error — it says
+  `August 2026 was already confirmed`, the same way the meal line refuses before the round trip.
+- **`C`, not `c`.** The clock's `c` closes a session and this closes a month; the pair reads as
+  one idea, and the spec's own reason for keeping `C` free was exactly this kind of key.
+- **It asks first and takes `y` or `n`** (`confirmHourLogs`, `keys.Yes`): the prompt is
+  `Have you logged all hours of August 2026 ?` and it names the **viewed** month, so `<` then `C`
+  asks about July. It is a claim about every day on the chart behind the modal, which is why the
+  month is in the sentence rather than only in the button.
+- **The box is green and stays green**, the colour that invites an action not yet taken: nothing
+  is running here, there is only something to do, so the clock's amber has no meaning for it. The
+  words are white and only the `C` is the accent, exactly as on the clock. It goes dim while the
+  WFH line holds the keyboard, and the loader takes the label's place while the call is out.
+- **While the modal is up the box is pressed**: green fill, white words, and the `C` no longer
+  picked out, since it has been pressed and the modal in front of it is what the keyboard is
+  answering. The fill stops **inside the frame** (`theme.ClockOn`, `ClockOnText`) — the border
+  cells keep their green glyph and no background, so the box measures and reads as the same
+  button it is unpressed; painted onto the border rows as well, the block of colour looked bigger
+  than the button, which is the same reason the ✓ and ✕ on the request lines stop short of their
+  own frames. The label carries the fill on its own span, since a foreground set inside resets
+  the background the box put behind it.
+- **It shares the clock's three rows** (`dashHead`, through `clockLine`): the clock is on the
+  right edge where its own status line sits, the confirm on the left, so the chart pays no rows
+  for it.
 
 ### The WFH request line (`ModeWFH`)
 

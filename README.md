@@ -56,6 +56,8 @@ binary, no CGO.
   reads against what the month is billed for.
 - **Check in and out.** `c` on the dashboard: a boxed button, green to check in, amber to
   check out, `WFH`/`OFFICE` and the running time beside it.
+- **Tell the ERP the month is done.** `C` on the dashboard: a boxed `Confirm hour logs` beside
+  the clock, a prompt naming the month, and every unconfirmed line of it is confirmed at once.
 - **A WFH request where the refusal happens.** When the ERP turns a check in down for want of
   a work-from-home request, a one-line form opens under the button — two dates and a reason —
   and ✓ files it and tries the check in again.
@@ -308,6 +310,7 @@ for the keys the current screen takes.
 | `ctrl+f` / `ctrl+b` | half a screen of days, down / up |
 | `<` / `>` | previous / next month — `>` stops at the current one |
 | `c` | check in, or check out (asks; `y` only) |
+| `C` | confirm this month's hour logs (asks) |
 | `r` | re-read the month from the ERP |
 | `t` | back to the tasks (`1` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |

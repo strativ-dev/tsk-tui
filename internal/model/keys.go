@@ -26,6 +26,7 @@ type keyMap struct {
 	TasksTab, DashTab, TimeTab     key.Binding
 	MealTab, BookMeal, DropMeal    key.Binding
 	Help, Clock, NewLeave          key.Binding
+	ConfirmHours                   key.Binding
 	PrevMonth, NextMonth           key.Binding
 	Cycle                          key.Binding
 }
@@ -105,6 +106,10 @@ func defaultKeys() keyMap {
 		// close the day. The help label stays short — the open footer is already two
 		// lines at 80 columns, and a third costs the chart a day.
 		Clock: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "clock")),
+		// The month's own hour logs, told to the ERP that they are done. Shift+C, because it
+		// is the same idea as the clock's c and the pair reads as one: a lowercase key that
+		// closes a session, a capital one that closes a month.
+		ConfirmHours: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "confirm hour logs")),
 
 		// The time off form. n opens it and focuses the leave type; nothing after the label
 		// is on screen until it does, so the line costs one row either way.

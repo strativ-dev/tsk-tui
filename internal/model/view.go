@@ -433,11 +433,19 @@ func (m Model) dashHead() []string {
 		}
 	}
 
-	// The button is a box, three lines of it, so the one thing on this screen you can press
-	// looks like it. Each line goes in on its own: View budgets rows by counting elements.
+	// Two boxes, three lines each, so the things on this screen you can press look like it.
+	// They share the button band between the month's title and its totals: the clock on the
+	// right edge where its own status line sits, and the month's confirm on the left, which
+	// costs the chart no rows of its own. Each line goes in separately: View budgets rows by
+	// counting elements.
 	out := []string{m.clockLine(title, m.clockStatus())}
-	for _, l := range strings.Split(m.clockButton(), "\n") {
-		out = append(out, m.clockLine("", l))
+	confirm := strings.Split(m.confirmButton(), "\n")
+	for i, l := range strings.Split(m.clockButton(), "\n") {
+		left := ""
+		if i < len(confirm) {
+			left = confirm[i]
+		}
+		out = append(out, m.clockLine(left, l))
 	}
 	// The WFH request line goes under the button, on the same right edge: it is about the check
 	// in that was just refused, and the button is what refused it. Nothing opens it but that
@@ -542,6 +550,36 @@ func (m Model) clockButton() string {
 		label = hinted("check out", m.k().Clock, theme.ClockText, theme.HintKey)
 	}
 	return box.Render(label)
+}
+
+// confirmButton is the month's own hour logs, told to the ERP that they are done: a box like
+// the clock's, since it is the other thing on this screen you press.
+//
+// The border is **green** — the colour that invites an action not yet taken, the same as the
+// check in button's — and it stays green while the month is unconfirmed rather than turning
+// amber: nothing here is running, there is only something to do. The words are white and only
+// the `C` is the accent, exactly as on the clock, so the key reads as the key.
+func (m Model) confirmButton() string {
+	box := theme.ClockIn
+	if m.confirming {
+		// The loader takes the label's place so the box does not move while the ERP thinks
+		// about it, the same as the clock's does.
+		return box.Render(m.spin.View() + " " + theme.ClockText.Render("confirming…"))
+	}
+	if m.wfh.open {
+		// The WFH line has the keyboard, so C cannot fire: a lit key that does nothing is the
+		// accent lying, the same rule the clock button follows.
+		return theme.ClockOff.Render(theme.Dim.Render("Confirm hour logs"))
+	}
+	if m.mode == ModeConfirm && m.cKind == confirmHourLogs {
+		// Pressed: the box fills with the green its border carries and the words go white,
+		// which is what a held-down button looks like everywhere else in this app. The key is
+		// not picked out here — it has already been pressed, and the modal in front of it is
+		// what the keyboard is answering.
+		return theme.ClockOn.Render(theme.ClockOnText.Render("Confirm hour logs"))
+	}
+	return box.Render(hinted("Confirm hour logs", m.k().ConfirmHours,
+		theme.ClockText, theme.HintKey))
 }
 
 // todayLocation is what the ERP said about today in the month it already sent: "home",
@@ -2357,7 +2395,7 @@ func (m Model) footer() string {
 		// tasks and this is not that tab. No tab key either — the bar across the top picks the
 		// letter out of every tab's own label, so naming one here spends a slot saying it twice.
 		help = []key.Binding{m.k().Top, m.k().HalfDown, m.k().PrevMonth, m.clockHelp(),
-			m.k().Refresh, m.k().Quit, m.k().Help}
+			m.k().ConfirmHours, m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabTime:
 		// It moves in months, and the filters are the leave types' own initials, so they
 		// are named by the answer rather than by the keymap. No tab key, for the same reason

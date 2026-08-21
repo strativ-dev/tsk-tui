@@ -264,6 +264,112 @@ func TestTabBarAndFooter(t *testing.T) {
 	}
 }
 
+// The month's own confirm: a green box beside the clock's, C in the accent, and a modal that
+// names the month before anything is written.
+func TestConfirmHourLogsButton(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const (
+		green  = "95;191;127" // #5FBF7F, the same border the check in button invites with
+		accent = "255;192;0"  // the C
+		white  = "255;255;255"
+	)
+	m := clockModel(t, false)
+	line := lineWith(t, m.View(), "onfirm hour logs") // hinted() splits the C into its own span
+	for what, want := range map[string]string{
+		"a green border": green, "the C in the accent": accent, "white words": white,
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the button is missing %s:\n%q", what, line)
+		}
+	}
+	// It shares the clock's own rows rather than costing the chart three of its own.
+	if !strings.Contains(plain(line), "check in") {
+		t.Errorf("the button is not on the clock's band:\n%s", plain(line))
+	}
+
+	// C asks first, names the month, and takes y or n — nothing is written yet.
+	open := send(t, m, runes("C"))
+	if open.mode != ModeConfirm || open.cKind != confirmHourLogs {
+		t.Fatalf("mode = %v, kind = %v", open.mode, open.cKind)
+	}
+	if want := "Have you logged all hours of " + time.Now().Format("January 2006") + " ?"; open.cPrompt != want {
+		t.Errorf("prompt = %q, want %q", open.cPrompt, want)
+	}
+	if open.confirmKeys().Help().Key != m.k().Yes.Help().Key {
+		t.Error("the prompt takes y only — a confirm nobody can answer with enter")
+	}
+	// Pressed: the box fills with the green its border carries, the words go white, and the key
+	// stops being picked out — it has been pressed, and the modal is what answers now.
+	pressed := lineWith(t, open.View(), "onfirm hour logs")
+	if !strings.Contains(pressed, "48;2;95;191;127") {
+		t.Errorf("the pressed button is not filled green:\n%q", pressed)
+	}
+	// The fill stops inside the frame: painted onto the border rows as well, the block of colour
+	// read as bigger than the button it stands in for.
+	rows := strings.Split(open.View(), "\n")
+	at := rowOf(t, plain(open.View()), "onfirm hour logs")
+	for _, i := range []int{at - 1, at + 1} {
+		if strings.Contains(rows[i], "48;2;95;191;127") {
+			t.Errorf("the fill spread onto the button's border row:\n%q", rows[i])
+		}
+	}
+	label, _, _ := strings.Cut(pressed, "onfirm hour logs")
+	if strings.Contains(label, accent) {
+		t.Errorf("the pressed button still picks out its key:\n%q", label)
+	}
+	if no := send(t, open, runes("n")); no.mode == ModeConfirm || no.confirming {
+		t.Error("n did not come back to the chart")
+	}
+
+	// y sends it, and the month it names is the month it sends.
+	yes, cmd := sendCmd(t, open, runes("y"))
+	if cmd == nil || !yes.confirming || !yes.busy() {
+		t.Fatalf("y did not confirm: confirming = %v", yes.confirming)
+	}
+	if !strings.Contains(yes.status, time.Now().Format("January 2006")) {
+		t.Errorf("status = %q", yes.status)
+	}
+
+	// < steps the month, and the prompt follows it.
+	last := time.Now().AddDate(0, -1, 0).Format("January 2006")
+	back := send(t, m, runes("<"), runes("C"))
+	if !strings.Contains(back.cPrompt, last) {
+		t.Errorf("prompt = %q, want %s", back.cPrompt, last)
+	}
+}
+
+// What the ERP says back: a count, a month that had nothing left, or a refusal — and the chart
+// is re-read rather than trusted, since confirm_hour_logs answers false even when it wrote.
+func TestConfirmHourLogsAnswer(t *testing.T) {
+	m := clockModel(t, false)
+	m.confirming = true
+
+	done, cmd := sendCmd(t, m, api.HoursConfirmedMsg{Month: "2026-08-01", Count: 12})
+	if done.confirming || cmd == nil {
+		t.Errorf("confirming = %v, cmd = %v — the month was not re-read", done.confirming, cmd)
+	}
+	if !strings.Contains(done.status, "12 hour logs of August 2026") {
+		t.Errorf("status = %q", done.status)
+	}
+
+	already := send(t, m, api.HoursConfirmedMsg{Month: "2026-08-01"})
+	if !strings.Contains(already.status, "already confirmed") {
+		t.Errorf("status = %q", already.status)
+	}
+
+	failed := send(t, m, api.HoursConfirmedMsg{Month: "2026-08-01",
+		Err: errors.New("odoo: not your line")})
+	if failed.confirming || failed.err == nil {
+		t.Errorf("a refusal was swallowed: %+v", failed.err)
+	}
+	if !strings.Contains(failed.status, "not your line") {
+		t.Errorf("status = %q", failed.status)
+	}
+}
+
 // No footer names a tab key: the bar across the top already picks each tab's letter out of its
 // own label, so a hint for it in the footer spends a slot saying the same thing twice.
 func TestFootersDoNotRepeatTheTabBar(t *testing.T) {

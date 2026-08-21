@@ -235,6 +235,14 @@ var (
 	// are just the words, and the accent is left to mean one thing — the key. White on black
 	// is the strongest ink there is, which is what makes the button read as pressable.
 	ClockText = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+	// A pressed button fills **inside its frame**: the content and the padding take the colour
+	// the border is drawn in, and the border cells themselves stay unpainted, so the box keeps
+	// the shape it has when it is not pressed. Painted onto the border too, the block of colour
+	// read as bigger than the button it was standing in for — the same reason the ✓ and ✕ on
+	// the request lines stop short of their own frames. The label carries the fill on its own
+	// span, since a foreground set inside resets the background the box put behind it.
+	ClockOn     = ClockIn.Background(HourHigh)
+	ClockOnText = lipgloss.NewStyle().Foreground(White).Background(HourHigh).Bold(true)
 
 	// The new-timeoff line's fields: a rounded box each, as the design draws them, which
 	// makes that row three lines tall — it is three lines whether or not the line is open,

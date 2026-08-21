@@ -79,6 +79,7 @@ const (
 	confirmDropMeals
 	confirmBookMeals
 	confirmDropForm
+	confirmHourLogs
 )
 
 // The new-timeoff line's fields, in tab order. leaveTo is the range's end on a full day and
@@ -234,6 +235,8 @@ type Model struct {
 	// opens it. wfhFiling is a create in flight.
 	wfh       wfhForm
 	wfhFiling bool
+	// confirming is a confirm-hour-logs call in flight.
+	confirming bool
 	// wfhFiled says a request has already been filed this session, which is what stops the
 	// line reappearing: the check in is retried after the request lands, and if the ERP still
 	// wants an *approved* one it refuses with the same words — reopening the line there would
@@ -421,7 +424,8 @@ func clockTick() tea.Cmd {
 // time off (applying), a check in or out (clocking), or a task's lines.
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
-		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || len(m.pulling) > 0
+		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || m.confirming ||
+		len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -741,6 +745,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "checked out at " + clockTime(time.Now())
 		}
 		return m, nil
+
+	case api.HoursConfirmedMsg:
+		m.confirming = false
+		month := msg.Month
+		if t, err := time.Parse("2006-01-02", msg.Month); err == nil {
+			month = t.Format("January 2006")
+		}
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.status = "the ERP refused it: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		m.err = nil
+		if msg.Count == 0 {
+			m.status = month + " was already confirmed"
+			return m, nil
+		}
+		// The month is re-read rather than trusted: confirm_hour_logs answers with a bare
+		// false even when it wrote, so the chart is the only honest report of what happened.
+		m.status = fmt.Sprintf("confirmed %d %s of %s",
+			msg.Count, plural(msg.Count, "hour log", "hour logs"), month)
+		return m.loadDash()
 
 	case api.WFHRequestedMsg:
 		m.wfhFiling = false
@@ -1947,6 +1973,19 @@ func (m Model) fileWFH() (Model, tea.Cmd) {
 		m.wfh.from.Value(), m.wfh.to.Value(), m.wfh.reason.Value())
 }
 
+// confirmHours tells the ERP the month's own hour logs are done, once the modal has been
+// answered. The chart behind it is what the claim is about, so the answer re-reads the month
+// rather than assuming anything moved.
+func (m Model) confirmHours() (tea.Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.confirming, m.err = true, nil
+	m.status = "confirming " + m.targetMonth().Format("January 2006") + "'s hour logs…"
+	return m, api.ConfirmHours(m.key, m.login, m.db, m.targetMonth())
+}
+
 // updateDash is the chart tab: the month's ends, half a screen either way, a refresh, and
 // the keys that leave for the task list. There is no cursor to walk a day at a time — the
 // chart is one picture, not a list — so it moves in screenfuls: g and G to the ends,
@@ -1989,6 +2028,19 @@ func (m Model) updateDash(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.toggleClock()
+
+	case key.Matches(msg, m.k().ConfirmHours):
+		// It asks first and takes y or n: it tells the ERP a month is done, which is a claim
+		// about every day on the chart behind the modal, so the month is named in the prompt.
+		if m.confirming {
+			m.status = "still waiting on the ERP…"
+			return m, nil
+		}
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind = confirmHourLogs
+		m.cPrompt = "Have you logged all hours of " +
+			m.targetMonth().Format("January 2006") + " ?"
+		return m, nil
 
 	case key.Matches(msg, m.k().Refresh):
 		m.dashMonth = "" // force a re-read of the month
@@ -3588,6 +3640,10 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.mode = ModeTable
 			return m, nil
+
+		case confirmHourLogs:
+			m.mode = m.prev
+			return m.confirmHours()
 
 		case confirmCheckOut:
 			// Back to whatever had the keyboard — the chart, not a task's rows, which is
