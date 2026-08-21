@@ -846,6 +846,53 @@ func TestMealMenuFollowsTheCursor(t *testing.T) {
 	}
 }
 
+// The accent on the panel is the cursor's day, not today's: it marks what the grid bands and
+// what the keys act on, and today already says itself there with a bright underlined date.
+func TestMealMenuAccentsTheCursorsDay(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	// Walk to a weekday of this week that is not today, so the two marks cannot be confused.
+	m := mealMenuModel(t, 120, 34)
+	mon := m.mealWeekStart()
+	var want time.Time
+	for i := range 5 {
+		if day := mon.AddDate(0, 0, i); day.Format("2006-01-02") != time.Now().Format("2006-01-02") {
+			want = day
+			break
+		}
+	}
+	m = m.holdMeal(want.Day())
+	if m.mealCursorDate() != want.Format("2006-01-02") {
+		t.Fatalf("the cursor is on %s, not %s", m.mealCursorDate(), want.Format("2006-01-02"))
+	}
+
+	styled := strings.Join(m.mealMenuPanel(), "\n")
+	if !strings.Contains(styled, theme.HintKey.Render(truncShaped(want.Format("Mon 2"),
+		m.mealPanelCells()))) {
+		t.Errorf("the cursor's day (%s) is not accented:\n%s", want.Format("Mon 2"), styled)
+	}
+	// Its dishes come with it, and today's — a different day now — do not.
+	for _, mn := range m.menusOn(want.Format("2006-01-02")) {
+		if !strings.Contains(styled, theme.HintKey.Render(truncShaped(mn.Options,
+			m.mealPanelCells()-3))) {
+			t.Errorf("the cursor's %s dish is not accented", mn.Type)
+		}
+	}
+	for _, mn := range m.menusOn(time.Now().Format("2006-01-02")) {
+		if strings.Contains(styled, theme.HintKey.Render(truncShaped(mn.Options,
+			m.mealPanelCells()-3))) {
+			t.Errorf("today's %s dish is accented and the cursor is elsewhere", mn.Type)
+		}
+	}
+	// Today keeps its own label, without the accent.
+	if today := time.Now().Format("Mon 2") + " · today"; strings.Contains(
+		plain(styled), today) && strings.Contains(styled, theme.HintKey.Render(today)) {
+		t.Error("today is still accented with the cursor on another day")
+	}
+}
+
 // mealSoon is the next working day after today in this month, or "" if the month is out of
 // them — which is what makes the future-coloured assertions skippable rather than flaky.
 func mealSoon() string {

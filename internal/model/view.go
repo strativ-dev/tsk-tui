@@ -2757,9 +2757,11 @@ func (m Model) withMealPanel(body []string) []string {
 // mealMenuPanel is what the canteen is serving this week: one block per day, in the order the
 // week runs, with the meals in the order the bars are drawn in.
 //
-// Today's heading takes the **accent** and nothing else on the panel does — the same rule the
-// tab bar follows, where the accent marks the one thing you are on. A day with no menu rows
-// is left out: that is the weekend, and an empty heading says nothing the grid has not said.
+// The **cursor's** block takes the accent and nothing else on the panel does — the same thing
+// the band marks on the grid, so the day you are pointing at and what it is serving read
+// together. Today still says `· today`, without the accent: it says itself on the grid with a
+// bright underlined date, exactly as it does there. A day with no menu rows is left out: that
+// is the weekend, and an empty heading says nothing the grid has not said.
 func (m Model) mealMenuPanel() []string {
 	w := m.mealPanelCells()
 	if w == 0 {
@@ -2767,6 +2769,7 @@ func (m Model) mealMenuPanel() []string {
 	}
 	mon := m.mealWeekStart()
 	today := time.Now().Format("2006-01-02")
+	cursor := m.mealCursorDate()
 
 	out := []string{
 		theme.Header.Render(truncShaped("MENU · week of "+mon.Format("2 Jan"), w)),
@@ -2781,9 +2784,14 @@ func (m Model) mealMenuPanel() []string {
 		}
 		head, label := theme.DayLabel, day.Format("Mon 2")
 		if iso == today {
-			// The one accented thing here: which day of the week you are actually on.
-			head, label = theme.HintKey, label+" · today"
-		} else if m.mealClosed[iso] {
+			label += " · today"
+		}
+		switch {
+		case iso == cursor:
+			// The one accented thing here: the day the cursor is on, which is the day the grid
+			// bands and the day x and the two lines act on.
+			head = theme.HintKey
+		case m.mealClosed[iso]:
 			// The ERP has a menu on a day it says it is shut. Dimmed rather than dropped:
 			// hiding the odd one out hides a fact.
 			head = theme.Dim
@@ -2794,7 +2802,7 @@ func (m Model) mealMenuPanel() []string {
 			if !ok {
 				continue
 			}
-			out = append(out, m.menuLine(t, mn, w, iso == today))
+			out = append(out, m.menuLine(t, mn, w, iso == cursor))
 		}
 	}
 	if len(out) == 2 {
@@ -2810,7 +2818,7 @@ func (m Model) mealMenuPanel() []string {
 // month, and a wrapped panel ran twice the height of the body. The swatch carries which meal
 // it is — the legend above the grid already says which colour is which, so repeating the word
 // here would spend a third of the column saying it twice.
-func (m Model) menuLine(t api.MealType, mn api.MealMenu, w int, today bool) string {
+func (m Model) menuLine(t api.MealType, mn api.MealMenu, w int, cursor bool) string {
 	dish := strings.TrimSpace(mn.Options)
 	if c := strings.TrimSpace(mn.Common); dish == "" {
 		dish = c
@@ -2819,11 +2827,12 @@ func (m Model) menuLine(t api.MealType, mn api.MealMenu, w int, today bool) stri
 		// follows it when the column has room.
 		dish += " · " + c
 	}
-	// Today's whole block takes the accent, dishes included, not just its heading: what is
-	// being served today is the one thing on this panel you act on, and a day marked only by
-	// its heading still reads as four lines of the same weight as every other day.
+	// The cursor's whole block takes the accent, dishes included, not just its heading: what is
+	// being served on the day you are pointing at is what the panel is there to answer, and a
+	// day marked only by its heading still reads as four lines of the same weight as every
+	// other day.
 	ink := theme.MealDate
-	if today {
+	if cursor {
 		ink = theme.HintKey
 	}
 	return theme.MealBooked(theme.MealColor(t.Name)).Render("━━") + " " +

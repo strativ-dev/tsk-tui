@@ -630,9 +630,13 @@ save modal, which are not built — `b` books outright instead.
   `withMealPanel`), composed **after** `window` exactly as the holiday panel is, so the weeks
   scroll under a list that stays where it is read. It follows the cursor: `mealWeekStart` is
   the Monday of the week the cursor is in, so walking to next week brings next week's menu.
-  - **Today's whole block is the accent** — the heading `Thu 20 · today` and its dishes — and
-    nothing else on the panel is: what is being served today is the one thing here you act on,
-    and marking only the heading left four lines of the same weight as every other day. The
+  - **The cursor's whole block is the accent** — the heading `Thu 27` and its dishes — and
+    nothing else on the panel is: it is the day the grid bands and the day `x` and the two lines
+    act on, so the panel answers the part of the calendar you are pointing at. Marking only the
+    heading left four lines of the same weight as every other day. **Today keeps `· today` and
+    gives up the accent** when the cursor is elsewhere: it already says itself on the grid with a
+    bright underlined date, which is the same division of labour there — the band is the cursor,
+    today is a date. The
     swatches keep their meal colours, since that is what says which meal a line is. A day with no menu rows is left out, which is what the weekend is; a day the ERP has a
     menu on but calls shut is **dimmed rather than dropped**, since hiding the odd one out
     hides a fact.
