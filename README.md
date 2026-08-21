@@ -1,6 +1,6 @@
 # tsk
 
-A keyboard-only client for Strativ's ERP360 (Odoo 16), in the terminal. Four screens, no
+A keyboard-only client for Strativ's ERP360 (Odoo 16), in the terminal. Five screens, no
 browser and no mouse:
 
 - **Tasks** — the tasks assigned to you, each expanding into its timesheet lines. Log, edit
@@ -79,6 +79,10 @@ binary, no CGO.
   slots hueless, weekends and office holidays bare, and the week's menu pinned down the right.
   `b` books today, tomorrow, the week ahead or a range you type; `c` cancels the same way and
   the calendar shows the day as it will be; `x` clears one day whole. `<` / `>` step months.
+- **The office directory, in the terminal.** `e` opens a row per colleague — name and job title
+  in two columns — and `l` opens one into their email, phone, department, team lead, project
+  managers, time off approver, stack manager and the projects they are on, as pills. `/` filters
+  on any of that text; `esc` clears it. Read once, cached on disk, `r` re-reads.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
@@ -265,7 +269,7 @@ for the keys the current screen takes.
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
-| `d` / `o` / `m` / `t` | dashboard / time off / meals / tasks (`2` / `3` / `4` / `1` too) |
+| `d` / `o` / `m` / `e` | dashboard / time off / meals / employees (`2` / `3` / `4` / `5` too) |
 | `r` | re-fetch tasks from the ERP |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
@@ -315,7 +319,7 @@ for the keys the current screen takes.
 | `c` | check in, or check out (asks; `y` only) |
 | `C` | confirm this month's hour logs (asks) |
 | `r` | re-read the month from the ERP |
-| `t` | back to the tasks (`1` too) |
+| `t` / `o` / `m` / `e` | tasks / time off / meals / employees (`1` / `3` / `4` / `5` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -341,7 +345,7 @@ for the keys the current screen takes.
 | `s` `c` `a` `p` | show only sick / casual / annual / paternity |
 | `esc` | clear the filter (the same letter again does too) |
 | `r` | re-read the year from the ERP |
-| `t` / `d` / `m` | tasks / dashboard / meals (`1` / `2` / `4` too) |
+| `t` / `d` / `m` / `e` | tasks / dashboard / meals / employees (`1` / `2` / `4` / `5` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -369,7 +373,7 @@ for the keys the current screen takes.
 | `x` | clear this day, every meal on it (asks; `y` only) |
 | `<` / `>` | previous / next month — `>` stops at the current one |
 | `r` | re-read the month from the ERP |
-| `t` / `d` / `o` | tasks / dashboard / time off (`1` / `2` / `3` too) |
+| `t` / `d` / `o` / `e` | tasks / dashboard / time off / employees (`1` / `2` / `3` / `5` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -472,7 +476,7 @@ quit      = []                  # an empty list unbinds it; ctrl+c always quits
 ```
 
 Any action can also be rebound **on one screen only**, with a `[keys.<tab>]` table —
-`tasks`, `dash`, `time`, `meal`:
+`tasks`, `dash`, `time`, `meal`, `emp`:
 
 ```toml
 [keys]
@@ -492,11 +496,12 @@ never fires there:
 | Screen | Actions it uses |
 |---|---|
 | `[keys.tasks]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `edit` `add` `delete` `refresh` `set_key` `search` `clear_search` `clear_query` `focus` `next` `prev` `clear_field` `accept` `cancel` `quit` |
-| `[keys.dash]` | `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `clock` `refresh` `search` `clear_search` `quit` |
+| `[keys.dash]` | `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `clock` `confirm_hours` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `clear_field` `accept` `cancel` on the WFH request line |
 | `[keys.time]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `accept` `new_leave` `back` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` on the request line |
 | `[keys.meal]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `book_meal` `drop_meal` `delete` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the booking line |
+| `[keys.emp]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
 
-`help` (`?`), the four tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab`) and the confirm
+`help` (`?`), the five tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab` `emp_tab`) and the confirm
 keys (`yes` `yes_only` `no`) work on every screen, so they belong in the global `[keys]` table
 rather than in one screen's.
 
@@ -537,6 +542,9 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `serp.meal.booking` / `serp.meal.type` | the month's meals, booking and cancelling them, and the days nothing is served |
 | JSON-RPC `serp.meal.menu` | what is on the menu that week |
 | JSON-RPC `hr.leave` / `hr.leave.type` | time off: the year's requests, the balances, filing one |
+| JSON-RPC `serp_attendance.wfh_request` | filing a work-from-home request when a check in is refused |
+| JSON-RPC `confirm_hour_logs` | telling the ERP a month's hour logs are done |
+| JSON-RPC `hr.employee.public` | the office directory, and one person's own detail |
 
 Worth knowing:
 
@@ -567,10 +575,12 @@ on a Mac puts everything in `~/.config/tsk/` instead.
 | File | What |
 |---|---|
 | `tasks.json` | cached tasks and hours, so it works offline |
+| `employees.json` | the office directory, read once and shown from here |
 | `config.toml` | your keybindings (optional) |
 | `pass` entry `tsk/api-key` | API key on line one, `db:` below it (Option A only) |
 
-`tasks.json` holds real hours and task names — worth keeping out of any repo or paste.
+`tasks.json` holds real hours and task names, and `employees.json` your colleagues' work
+emails and phone numbers — both worth keeping out of any repo or paste.
 
 ## Troubleshooting
 
