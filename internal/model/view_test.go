@@ -445,3 +445,63 @@ func indexOfCaret(line string) int {
 	}
 	return -1
 }
+
+// An expanded table says which key fills it: the label sits over the column heads with its
+// own key in the accent, and it steps aside for the inputs that key opens — advertising `a`
+// above the row `a` just drew would name a key already pressed.
+func TestAddALineLabel(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const accent = "255;192;0" // #FFC000, the a
+
+	shut := preview(t, 120)
+	if strings.Contains(shut.View(), "add a line") {
+		t.Error("a collapsed task advertises a key that would not add to it")
+	}
+
+	open := send(t, shut, runes("l"))
+	lines := strings.Split(open.View(), "\n")
+	label, head := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "dd a line") { // hinted() splits the a into its own span
+			label = i
+		}
+		if head < 0 && strings.Contains(l, "DESCRIPTION") {
+			head = i
+		}
+	}
+	if label < 0 || head < 0 {
+		t.Fatalf("label at %d, head at %d:\n%s", label, head, open.View())
+	}
+	last := -1
+	for i, l := range lines {
+		if strings.Contains(l, "Spike") { // the oldest row of the task preview() expands
+			last = i
+		}
+	}
+	if last < 0 || label < last {
+		t.Errorf("the label is at %d and the last row at %d, want it under the table", label, last)
+	}
+	// Flush with the DATE column: a label hanging a column to the left of the table it is
+	// about reads as belonging to the task line above it.
+	if a, b := strings.Index(plain(lines[label]), "add a line"),
+		strings.Index(plain(lines[head]), "DATE"); a != b {
+		t.Errorf("the label starts at cell %d and DATE at %d:\n%s\n%s", a, b,
+			plain(lines[label]), plain(lines[head]))
+	}
+	if !strings.Contains(lines[label], accent) {
+		t.Errorf("the label does not pick out its key:\n%q", lines[label])
+	}
+
+	// Pressed, the label goes and the inputs stand in the place it pointed at.
+	adding := send(t, open, runes("a"))
+	if strings.Contains(adding.View(), "add a line") {
+		t.Errorf("the label survived the key it names:\n%s", adding.View())
+	}
+	// An edit is the same: `a` cannot fire while the fields hold the keyboard.
+	if v := send(t, open, special(tea.KeyEnter)).View(); strings.Contains(v, "add a line") {
+		t.Errorf("the label stayed up over an edit:\n%s", v)
+	}
+}

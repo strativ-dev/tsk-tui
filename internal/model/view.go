@@ -2782,9 +2782,9 @@ func (m Model) listLines() ([]string, int) {
 			continue
 		}
 
+		editing := m.mode == ModeInsert && onTask
 		add(theme.Blur.Render(m.tableHead()))
 
-		editing := m.mode == ModeInsert && onTask
 		// A new entry is typed at the top of the table, where it will land.
 		if editing && m.kind == insertNew {
 			add(row(m.insertLine(), true))
@@ -2807,7 +2807,16 @@ func (m Model) listLines() ([]string, int) {
 			}
 		}
 		if len(t.Rows) == 0 && !editing {
-			add(theme.Blur.Render(theme.Dim.Render("    no entries yet — a to add one")))
+			add(theme.Blur.Render(theme.Dim.Render(tableIndent + "no entries yet")))
+		}
+		// The label under the table names the key that fills it, in the date column the
+		// row it adds will start in: an expanded task with no rows, or a cursor still on
+		// the task line, gives nothing else away about how a line gets there. It steps
+		// aside for the inputs a opens — they are the answer to it, and both at once
+		// would advertise a key already pressed.
+		if !editing {
+			add(theme.Blur.Render(tableIndent +
+				hinted("add a line", m.k().Add, theme.Dim, theme.HintKey)))
 		}
 		add("")
 	}

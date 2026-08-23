@@ -1174,7 +1174,14 @@ Table (`ModeTable`)
 - `j` / `k` — next / previous row
 - `g` / `G` — first / last row; `ctrl+f` / `ctrl+b` — half a screen
 - `enter` — edit the focused row in place (→ `ModeInsert`, kind=edit)
-- `a` — new entry at the top, prefilled with today's date (→ `ModeInsert`, kind=new)
+- `a` — new entry at the top, prefilled with today's date (→ `ModeInsert`, kind=new).
+  An **`add a line` label sits under the table** with its key in the accent
+  (`listLines`, through `hinted`), indented to `tableIndent` so it starts in the **date
+  column** the row it adds will start in: an expanded task with no rows, or a cursor still
+  on the task line, gives nothing else away about how a line gets there. It **steps aside
+  for the inputs** — while `ModeInsert` is on this task the label is gone, since
+  advertising `a` beside the row `a` just drew would name a key already pressed, and the
+  empty state above it is `no entries yet` rather than repeating the key.
 - `x` — delete the focused row (→ `ModeConfirm`). `d` is the dashboard tab, and a key
   that unlinks an hour log must not sit one keystroke from a tab switch. The modal
   names it —
