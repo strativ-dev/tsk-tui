@@ -50,18 +50,14 @@ const (
 	// in muted ink on a dim band is exactly what a weekend looks like.
 	LeaveOther = lipgloss.Color("#FFFFFF")
 
-	// The meal calendar's palette, from docs/meal-calendar-palette.html. One hue per meal,
-	// warmest first: morning amber, the hot main meal, then something green.
-	MealBreakfast = lipgloss.Color("#E8A33D")
-	MealLunch     = lipgloss.Color("#DD5F45")
-	MealSnacks    = lipgloss.Color("#93C572")
-	// The same three hues at ~45% toward the background, from the palette. A day already
-	// eaten keeps its meal's colour and loses the brightness: history reads as history, but
-	// a month of past days still says which meals were on. The palette earmarks these for
-	// staged edits, which are told apart by their dashed glyphs rather than by hue.
-	MealBreakfastPast = lipgloss.Color("#8A6428")
-	MealLunchPast     = lipgloss.Color("#85392A")
-	MealSnacksPast    = lipgloss.Color("#587643")
+	// The meal calendar's palette, from docs/meal-calendar-palette.html, taken a step up in
+	// saturation: two cells is the whole of what a meal gets to say, and the design's own
+	// hues are mixed for a page of white space rather than for a pair of blocks on a dark
+	// terminal. One hue per meal, warmest first: morning amber, the hot main meal, then
+	// something green.
+	MealBreakfast = lipgloss.Color("#FFAE2B")
+	MealLunch     = lipgloss.Color("#FF5540")
+	MealSnacks    = lipgloss.Color("#7FD44F")
 
 	// MealOpen is a slot nobody has taken: faint and deliberately hueless, so the booked
 	// bars beside it are the only coloured thing on the day.
@@ -111,19 +107,11 @@ func MealColor(name string) lipgloss.Color {
 	return White
 }
 
-// MealPastColor is a meal already eaten: the same hue, dimmed. An unknown type falls back
-// to the quiet grey, since there is no dim version of a colour we do not have.
-func MealPastColor(name string) lipgloss.Color {
-	switch MealColor(name) {
-	case MealBreakfast:
-		return MealBreakfastPast
-	case MealLunch:
-		return MealLunchPast
-	case MealSnacks:
-		return MealSnacksPast
-	}
-	return MealQuiet
-}
+// MealPastColor is a meal already eaten: the quiet grey, whatever the meal was. A day behind
+// us cannot be booked or cancelled, which is exactly what that grey means everywhere else on
+// this screen — a weekend, a holiday, anything past — and it leaves the hues to the days the
+// keys can still act on. It stays a function of the name so the rule has one place to live.
+func MealPastColor(string) lipgloss.Color { return MealQuiet }
 
 // MealBooked is a meal that is on: a solid bar in its own colour, the one coloured thing on
 // a day.

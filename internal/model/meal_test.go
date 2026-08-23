@@ -74,12 +74,12 @@ func TestMealDayStates(t *testing.T) {
 
 	if soon := mealSoon(); soon != "" {
 		// A meal still to come is the full hue: that is a choice, not history.
-		want := theme.MealBooked(theme.MealColor("Lunch")).Render("━━")
+		want := theme.MealBooked(theme.MealColor("Lunch")).Render(mealBarOn)
 		if !strings.Contains(grid, want) {
 			t.Errorf("no full-hue lunch bar for %s:\n%s", soon, plain(grid))
 		}
 	}
-	if !strings.Contains(grid, theme.MealSlot.Render("──")) {
+	if !strings.Contains(grid, theme.MealSlot.Render(mealBarOff)) {
 		t.Error("no open slot on the calendar — every day cannot be fully booked")
 	}
 	// The closed day's own row holds its date and nothing else.
@@ -252,10 +252,11 @@ func TestMealWalksDays(t *testing.T) {
 	}
 }
 
-// A day already eaten keeps its meal's hue, dimmed: a month of past days still says which
-// meals were on. is_locked_for_user is not what decides that — locked means the booking can
-// no longer be changed, which is true of tomorrow's lunch after this morning's cutoff.
-func TestMealPastKeepsItsHue(t *testing.T) {
+// A day already eaten goes grey: it cannot be booked or cancelled, which is what that grey
+// says everywhere else on this screen, and it leaves the three hues to the days the keys can
+// still act on. is_locked_for_user is not what decides it — locked means the booking can no
+// longer be changed, which is true of tomorrow's lunch after this morning's cutoff.
+func TestMealPastGoesGrey(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(restore)
@@ -266,13 +267,73 @@ func TestMealPastKeepsItsHue(t *testing.T) {
 		t.Skip("the first working day of this month has not passed yet")
 	}
 	grid := strings.Join(mealGridLines(m), "\n")
-	if want := theme.MealBooked(theme.MealPastColor("Breakfast")).Render("━━"); !strings.Contains(grid, want) {
-		t.Errorf("a past breakfast lost its hue entirely:\n%s", plain(grid))
+	if want := theme.MealBooked(theme.MealQuiet).Render(mealBarOn); !strings.Contains(grid, want) {
+		t.Errorf("a past booking is not drawn in the quiet grey:\n%s", plain(grid))
 	}
-	if grey := theme.MealQuietInk.Render("━━"); strings.Contains(grid, grey) {
-		t.Error("a booked meal is drawn in the weekend grey")
+	// Still a block, not the open slot's rule: the meal was eaten, and a day it was booked
+	// on must not read as one nobody ate on.
+	if slot := theme.MealSlot.Render(mealBarOff); strings.Count(grid, slot) == 0 {
+		t.Error("no open slot on the grid at all — the fixture cannot say anything")
 	}
 	_ = past
+}
+
+// The weekday over the cursor's column takes the accent: the band behind the cell is two
+// cells of a slightly lighter background, and on a narrow grid that is not much to find a
+// column by. It outranks the weekend's quiet style, and it goes while a line owns the keys.
+func TestMealHeadMarksTheCursorColumn(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const accent = "255;192;0" // #FFC000
+
+	// accented is the weekday whose head carries the accent, "" if none does.
+	accented := func(m Model) string {
+		for _, d := range []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"} {
+			for _, span := range strings.Split(m.mealHeads(), "\x1b[0m") {
+				if strings.Contains(span, d) && strings.Contains(span, accent) {
+					return d
+				}
+			}
+		}
+		return ""
+	}
+
+	m := mealModel(t, 120, 44)
+	names := []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	want := names[m.mealCursorColumn()]
+	if got := accented(m); got != want {
+		t.Errorf("the accent is on %q, want the cursor's own column %q", got, want)
+	}
+
+	// One column along: whichever head had it hands it over, so exactly one ever has it.
+	next := send(t, m, runes("l"))
+	if got, w := accented(next), names[next.mealCursorColumn()]; got != w {
+		t.Errorf("after l the accent is on %q, want %q", got, w)
+	}
+	if accented(next) == want {
+		t.Error("the accent did not move with the cursor")
+	}
+
+	// A weekend column wins it too: the cursor can be parked there, and the column it is in
+	// is the one thing on this row worth saying.
+	sat := m
+	for sat.mealCursorColumn() != 5 {
+		sat = send(t, sat, runes("l"))
+		if sat.mealCursor() == sat.mealDays() && sat.mealCursorColumn() != 5 {
+			t.Skip("this month's last day is reached before a Saturday")
+		}
+	}
+	if got := accented(sat); got != "sat" {
+		t.Errorf("a cursor on a Saturday leaves the accent on %q", got)
+	}
+
+	// The booking line owns the keyboard, so the head stops advertising a cursor the keys are
+	// not on — the same rule the meal labels and the clock button follow.
+	if got := accented(send(t, m, runes("b"))); got != "" {
+		t.Errorf("the head kept its accent under the booking line: %q", got)
+	}
 }
 
 // mealCursorOn walks the cursor onto one day, the way the keys would.
@@ -612,9 +673,9 @@ func TestCancelMealPreviewsTheDay(t *testing.T) {
 		t.Fatalf("no scope covers %s", day)
 	}
 
-	slot := theme.MealSlot.Render("──")
-	lunch := theme.MealBooked(theme.MealColor("Lunch")).Render("━━")
-	breakfast := theme.MealBooked(theme.MealColor("Breakfast")).Render("━━")
+	slot := theme.MealSlot.Render(mealBarOff)
+	lunch := theme.MealBooked(theme.MealColor("Lunch")).Render(mealBarOn)
+	breakfast := theme.MealBooked(theme.MealColor("Breakfast")).Render(mealBarOn)
 
 	// Everything ticked: the day empties.
 	all := c.bookBar(day, m.mealCell(mealGap), mealGap)

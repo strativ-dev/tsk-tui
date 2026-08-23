@@ -3189,7 +3189,7 @@ func trunc(s string, n int) string {
 
 const (
 	// A bar is two cells, one per meal, with a space between them — so a day's content is
-	// `━━ ━━ ━━` at three meals — and the gap after it is what stops a week of booked days
+	// `▬▬ ▬▬ ▬▬` at three meals — and the gap after it is what stops a week of booked days
 	// from reading as one long stripe. The design's own proportion: a weekday column is
 	// eleven cells at three meals.
 	mealBar    = 2
@@ -3199,6 +3199,20 @@ const (
 	// at seven cells is what buys the five weekday columns their width on an 80-cell
 	// terminal.
 	mealQuietCol = 7
+)
+
+// A booked meal is a thick bar and an open slot a light rule: the two are told apart by
+// weight before any colour is read, which is what a colourblind reader has left. The bar is
+// about double the design's own heavy rule (`━━`, an eighth of a cell) — at the two cells a
+// day gives it that read as a hairline on a dark terminal, and the hue it carries is the only
+// thing on the day. Two glyphs that are not this were tried: a full block (`██`) filled the
+// whole cell, so a week of booked days read as a wall of colour rather than as one bar a
+// meal; and the quarter block (`▂▂`) sits on the bottom of its cell, which put the bar under
+// its own row instead of on the line the open slots are drawn on. This one is **centred**,
+// like the rule it replaces, so booked and open days line up across a week.
+const (
+	mealBarOn  = "▬▬"
+	mealBarOff = "──"
 )
 
 // mealCell is how wide one weekday column is: the bars, the spaces between them, and the
@@ -3251,7 +3265,7 @@ func (m Model) mealHead() []string {
 	swatches := make([]string, 0, len(m.mealTypes))
 	named := make([]string, 0, len(m.mealTypes))
 	for _, t := range m.mealTypes {
-		sw := theme.MealBooked(theme.MealColor(t.Name)).Render("━━")
+		sw := theme.MealBooked(theme.MealColor(t.Name)).Render(mealBarOn)
 		swatches = append(swatches, sw)
 		named = append(named, sw+theme.Dim.Render(" "+strings.ToLower(firstWord(t.Name))))
 	}
@@ -3288,20 +3302,41 @@ func (m Model) mealHead() []string {
 
 // mealHeads is the weekday row over the columns. The two days the canteen never serves on
 // are dimmer than the five it does, which is the same thing the dates below them say.
+//
+// The cursor's own column takes the accent at the top of the screen: the band behind its cell
+// is two cells of a slightly lighter background, which on a narrow grid is not much to find a
+// column by, and the menu panel already marks the same day the same way. It outranks the quiet
+// style, since the cursor can be parked on a weekend and the column it is in is the one thing
+// on this row worth saying — and it goes while a line owns the keyboard (`ModeBook`), the way
+// the meal labels and the clock button give up theirs.
 func (m Model) mealHeads() string {
 	if m.cols() < gutter+5*m.mealCell(mealMinGap)+2*mealQuietCol {
 		return ""
 	}
-	gap := m.mealGapFor()
+	gap, held := m.mealGapFor(), -1
+	if m.mode != ModeBook {
+		held = m.mealCursorColumn()
+	}
 	var b strings.Builder
 	for i, d := range []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"} {
 		style, w := theme.Dim, m.mealCell(gap)
 		if i >= 5 {
 			style, w = theme.MealQuietInk, mealQuietCol
 		}
+		if i == held {
+			style = theme.TitleFocus
+		}
 		b.WriteString(style.Render(pad(d, w)))
 	}
 	return theme.Blur.Render(strings.TrimRight(b.String(), " "))
+}
+
+// mealCursorColumn is which of the seven columns the cursor is in — its weekday, Monday
+// first, the same offset the grid lays its own weeks out by.
+func (m Model) mealCursorColumn() int {
+	at := m.mealViewed()
+	day := time.Date(at.Year(), at.Month(), m.mealCursor(), 0, 0, 0, 0, time.Local)
+	return (int(day.Weekday()) + 6) % 7
 }
 
 // mealLines is the month itself: one block per week — the dates, then their bars, then a
@@ -3523,11 +3558,11 @@ func (m Model) mealDay(d int, iso string, w, gap int, today, past, cursor bool) 
 			// what decides this: locked means the booking can no longer be changed, which is
 			// true of tomorrow's lunch after this morning's cutoff — and greying that read
 			// as a meal that had already happened.
-			cells = append(cells, band(theme.MealBooked(theme.MealPastColor(t.Name))).Render("━━"))
+			cells = append(cells, band(theme.MealBooked(theme.MealPastColor(t.Name))).Render(mealBarOn))
 		case ok:
-			cells = append(cells, band(theme.MealBooked(theme.MealColor(t.Name))).Render("━━"))
+			cells = append(cells, band(theme.MealBooked(theme.MealColor(t.Name))).Render(mealBarOn))
 		default:
-			cells = append(cells, band(theme.MealSlot).Render("──"))
+			cells = append(cells, band(theme.MealSlot).Render(mealBarOff))
 		}
 	}
 	bar := strings.Join(cells, band(lipgloss.NewStyle()).Render(" "))
@@ -3702,7 +3737,7 @@ func (m Model) menuLine(t api.MealType, mn api.MealMenu, w int, cursor bool) str
 	if cursor {
 		ink = theme.HintKey
 	}
-	return theme.MealBooked(theme.MealColor(t.Name)).Render("━━") + " " +
+	return theme.MealBooked(theme.MealColor(t.Name)).Render(mealBarOn) + " " +
 		ink.Render(truncShaped(dish, w-3))
 }
 
@@ -3866,27 +3901,27 @@ func (m Model) bookBar(iso string, w, gap int) string {
 			_, held := booked[t.ID]
 			switch {
 			case held && m.book.on[t.ID]:
-				cells = append(cells, theme.MealSlot.Render("──"))
+				cells = append(cells, theme.MealSlot.Render(mealBarOff))
 			case held && past:
-				cells = append(cells, theme.MealBooked(theme.MealPastColor(t.Name)).Render("━━"))
+				cells = append(cells, theme.MealBooked(theme.MealPastColor(t.Name)).Render(mealBarOn))
 			case held:
-				cells = append(cells, theme.MealBooked(theme.MealColor(t.Name)).Render("━━"))
+				cells = append(cells, theme.MealBooked(theme.MealColor(t.Name)).Render(mealBarOn))
 			default:
-				cells = append(cells, theme.MealSlot.Render("──"))
+				cells = append(cells, theme.MealSlot.Render(mealBarOff))
 			}
 			continue
 		}
 		switch {
 		case m.book.on[t.ID]:
-			cells = append(cells, theme.MealBooked(theme.MealColor(t.Name)).Render("━━"))
+			cells = append(cells, theme.MealBooked(theme.MealColor(t.Name)).Render(mealBarOn))
 		case len(booked) > 0:
 			if _, held := booked[t.ID]; held {
-				cells = append(cells, theme.MealQuietInk.Render("━━"))
+				cells = append(cells, theme.MealQuietInk.Render(mealBarOn))
 				continue
 			}
-			cells = append(cells, theme.MealSlot.Render("──"))
+			cells = append(cells, theme.MealSlot.Render(mealBarOff))
 		default:
-			cells = append(cells, theme.MealSlot.Render("──"))
+			cells = append(cells, theme.MealSlot.Render(mealBarOff))
 		}
 	}
 	return fitCell(strings.Join(cells, " "), w)

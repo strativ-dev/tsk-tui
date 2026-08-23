@@ -726,24 +726,43 @@ save modal, which are not built — `b` books outright instead.
     not at the narrowest one: at a single cell between days a week of bars runs together into
     one stripe, which is what the gap is for. So `mealPanelMin` 28 to `mealPanelMax` 44, and
     the panel shows from about 92 cells; the 80-cell month is untouched.
-- **The bar vocabulary is the design's own** (`view.go: mealDay`): a booked meal is `━━` in
-  its type's colour, an open slot is `──` and hueless, and a day the canteen is shut carries
-  **no bars at all** — the empty row is what says nothing was on offer, the same way the
-  hour chart's band does for a day nothing was expected of.
-- **A day already eaten keeps its meal's hue, dimmed** (`theme.MealPastColor`, the palette's
-  same three hues at ~45% toward the background). Drawn in the weekend grey instead, a month
-  whose bookings are all behind it read as a month nobody ate in — which is every month by
-  the time you look back at it. The palette earmarks those dims for staged edits; those are
-  told apart by their dashed glyphs, not by hue.
+- **The bar vocabulary is a thick bar and a light rule** (`view.go: mealDay`,
+  `mealBarOn`/`mealBarOff`): a booked meal is `▬▬` in its type's colour, an open slot is `──`
+  and hueless, and a day the canteen is shut carries **no bars at all** — the empty row is
+  what says nothing was on offer, the same way the hour chart's band does for a day nothing
+  was expected of. The two glyphs are told apart by **weight before any colour is read**,
+  which is what a colourblind reader has left. The design draws the booked one as a heavy
+  rule (`━━`, an eighth of a cell); at the two cells a day gives it, that read as a hairline
+  on a dark terminal and the hue it carries had almost no ink to sit in, so the bar is about
+  **double it** — and **centred in its cell**, like the rule it replaces, so a booked day and
+  an open one line up across a week. Two others were tried: a full block (`██`) filled the
+  whole cell, and a week of booked days read as a wall of colour rather than as one bar a
+  meal; the quarter block (`▂▂`) is the right weight but sits on the bottom of its cell,
+  which hung the bar under its own row.
+- **A day already eaten goes grey** (`theme.MealPastColor`, which is `MealQuiet` whatever the
+  meal was): a day behind us cannot be booked or cancelled, and that grey is what says exactly
+  that everywhere else on this screen — a weekend, a holiday, anything past. So the three hues
+  belong to the days the keys can still act on, which is the question the calendar is for. It
+  keeps the **block**, so a past booking still reads as a meal that was eaten rather than as an
+  open slot. It was the same hue dimmed first (the palette's `~45% toward the background`
+  tier), and a month of muted hues beside a month of bright ones read as two palettes rather
+  than as past and present.
 - **`is_locked_for_user` is not what greys a bar.** Locked means the booking can no longer be
   changed, which is true of tomorrow's lunch after this morning's cutoff — greying that read
   as a meal that had already happened. It decides what `x` may cancel, nothing about colour.
 - **Colours by type name** (`theme.MealColor`), as `LeaveColor` does and for the same
-  reason — the ids are per database, the palette is per meaning: breakfast `#E8A33D`, lunch
-  `#DD5F45`, snacks `#93C572`, iftar the violet, anything else white.
+  reason — the ids are per database, the palette is per meaning: breakfast `#FFAE2B`, lunch
+  `#FF5540`, snacks `#7FD44F`, iftar the violet, anything else white. Each one is a step up in
+  saturation from the design's own hex: the palette is mixed for a page of white space, and two
+  cells on a dark terminal need the stronger tint to read as a colour at all.
 - **The band marks the cursor, not today** (`theme.MealBand`): `x` acts on the cursor, so
   that is what has to be visible; today says itself with a bright underlined date, and the
-  cursor's own date is bold. `Model.mealHold` is the day it is pinned to — 0 follows today,
+  cursor's own date is bold. The **weekday over the cursor's column takes the accent** as well
+  (`mealHeads`, `mealCursorColumn`): the band is two cells of a slightly lighter background,
+  which on a narrow grid is not much to find a column by, and the menu panel already marks the
+  same day the same way. It outranks the weekend's quiet style — the cursor can be parked
+  there — and it goes while a line owns the keyboard (`ModeBook`), the way the meal labels and
+  the clock button give up theirs. `Model.mealHold` is the day it is pinned to — 0 follows today,
   or the 1st in a month today is not in — and `h`/`l` walk a day, `j`/`k` and `ctrl+f`/`b` a
   week, `g`/`G` the ends of the month, clamped, since wrapping would land on a month this
   screen has not read. They are the same four bindings the task list moves by.
@@ -769,7 +788,7 @@ save modal, which are not built — `b` books outright instead.
   a background wrapped around the line dies at the first span that sets its own, which is the
   same trap the month panels on the time off calendar avoid.
 - **The cell arithmetic is the design's**: a bar is two cells, one space between bars, so a
-  day is `━━ ━━ ━━` at three meals, and the **gap after it is what stops a week of booked
+  day is `▬▬ ▬▬ ▬▬` at three meals, and the **gap after it is what stops a week of booked
   days reading as one long stripe**. Five weekday columns of eleven and two weekend columns
   of **seven** — a closed day never holds bars, so it needs only its date — is 69 cells, and
   that is what fits the month on an 80-cell terminal. Narrower ones shed the gap to 2 then 1
