@@ -1196,9 +1196,11 @@ Table (`ModeTable`)
 - `a` — new entry at the top, prefilled with today's date (→ `ModeInsert`, kind=new).
   An **`add a line` label sits under the table** with its key in the accent
   (`listLines`, through `hinted`), indented to `tableIndent` so it starts in the **date
-  column** the row it adds will start in: an expanded task with no rows, or a cursor still
-  on the task line, gives nothing else away about how a line gets there. It **steps aside
-  for the inputs** — while `ModeInsert` is on this task the label is gone, since
+  column** the row it adds will start in: an expanded task with no rows gives nothing else
+  away about how a line gets there. It belongs to the task the keys are **actually in**
+  (`inTable`) — not to every open one — since `a` pressed from the list adds to whichever
+  task the cursor is on, and a screen of open tasks said so several times over. It **steps
+  aside for the inputs** too: while `ModeInsert` is on this task the label is gone, since
   advertising `a` beside the row `a` just drew would name a key already pressed, and the
   empty state above it is `no entries yet` rather than repeating the key.
 - `x` — delete the focused row (→ `ModeConfirm`). `d` is the dashboard tab, and a key
@@ -1209,7 +1211,10 @@ Table (`ModeTable`)
 - `/` — date jump prompt (→ `ModeJump`); inside a task it moves the cursor rather than
   opening the day modal, and matches part by part — `/12` is the 12th of any month
 - `h` — collapse the task, focus the task line (→ `ModeList`)
-- `esc` — focus the task line without collapsing
+- `esc` — the same: the rows are the thing `esc` undoes here, as it undoes every other
+  thing a key opened. It left the task open first, and a table sitting behind the list's
+  own cursor advertised an `a` that would have added its row to whichever task the cursor
+  walked onto
 - `q` — ask before quitting, as in the list (→ `ModeConfirm`); `n` comes back to these
   rows rather than collapsing the task
 - `i` — **collapse the task** and focus the search input

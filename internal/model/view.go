@@ -2810,11 +2810,12 @@ func (m Model) listLines() ([]string, int) {
 			add(theme.Blur.Render(theme.Dim.Render(tableIndent + "no entries yet")))
 		}
 		// The label under the table names the key that fills it, in the date column the
-		// row it adds will start in: an expanded task with no rows, or a cursor still on
-		// the task line, gives nothing else away about how a line gets there. It steps
-		// aside for the inputs a opens — they are the answer to it, and both at once
-		// would advertise a key already pressed.
-		if !editing {
+		// row it adds will start in. It belongs to the task the keys are actually in:
+		// walking the list past a task left open advertises an `a` that would add a row
+		// to whichever task the cursor is on instead, and a screen of open tasks said it
+		// several times over. It steps aside for the inputs a opens too — they are the
+		// answer to it, and both at once would advertise a key already pressed.
+		if inTable {
 			add(theme.Blur.Render(tableIndent +
 				hinted("add a line", m.k().Add, theme.Dim, theme.HintKey)))
 		}

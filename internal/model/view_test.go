@@ -504,4 +504,36 @@ func TestAddALineLabel(t *testing.T) {
 	if v := send(t, open, special(tea.KeyEnter)).View(); strings.Contains(v, "add a line") {
 		t.Errorf("the label stayed up over an edit:\n%s", v)
 	}
+
+	// A task left open with the keys back on the list belongs to nobody: `a` there would add
+	// a row to whichever task the cursor walked onto, so no open table advertises it.
+	walking := open
+	walking.mode = ModeList
+	if v := walking.View(); strings.Contains(v, "add a line") {
+		t.Errorf("an open table advertises `a` while the list has the keys:\n%s", v)
+	}
+}
+
+// esc collapses the task, as h does: the rows are the thing esc undoes here, and a table left
+// open behind the list's own cursor advertised an `a` that would not have added to it.
+func TestEscCollapsesTheTask(t *testing.T) {
+	m := send(t, preview(t, 120), runes("l"))
+	if m.mode != ModeTable {
+		t.Fatalf("mode = %v, want the rows", m.mode)
+	}
+	id := m.filtered()[m.cursor].ID
+	if !m.expanded[id] {
+		t.Fatal("l did not expand the task")
+	}
+
+	shut := send(t, m, special(tea.KeyEsc))
+	if shut.mode != ModeList {
+		t.Errorf("mode = %v, want the list", shut.mode)
+	}
+	if shut.expanded[id] {
+		t.Error("esc left the task open")
+	}
+	if strings.Contains(shut.View(), "DESCRIPTION") {
+		t.Error("the table is still on screen")
+	}
 }

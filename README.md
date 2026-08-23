@@ -299,7 +299,7 @@ for the keys the current screen takes.
 | `x` | delete the focused row (asks; `y` only) |
 | `/` | jump to a date within this task |
 | `h` | collapse and go back to the task line |
-| `esc` | back to the task line, still expanded |
+| `esc` | collapse and go back to the task line |
 | `i` | collapse and focus the search field |
 | `ctrl+u` | collapse, clear the search, focus it |
 | `q` | quit (asks first; `n` returns to these rows) |

@@ -1526,11 +1526,11 @@ func (m Model) updateTable(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeJump
 		return m, textinput.Blink
 
-	case key.Matches(msg, m.k().Collapse):
+	case key.Matches(msg, m.k().Collapse), key.Matches(msg, m.k().Back):
+		// esc collapses as h does: the rows are the thing esc undoes here, the same as it
+		// undoes every other thing a key opened. Left open with the keys back on the task
+		// line, the table sat there advertising `a` for a row the keys could not add.
 		delete(m.expanded, t.ID)
-		m.mode = ModeList
-
-	case key.Matches(msg, m.k().Back):
 		m.mode = ModeList
 
 	case key.Matches(msg, m.k().Quit):
