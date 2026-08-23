@@ -1132,7 +1132,12 @@ One row between the count and the table's own heads, and the whole request is on
   comes back to the line with everything on it; the line stays as typed until the ERP answers, and
   only an id closes it — which then **re-reads the table**, so the new row appears where the ERP
   says it is.
-- **`✕` and `esc` close it outright** — nothing has been filed, so there is nothing to lose.
+- **`✕` closes it outright** — nothing has been filed, so there is nothing to lose — and **`esc`
+  asks first** (`confirmDropReq`, `y`/`n`): it is the key pressed by accident, and a category's
+  worth of typed fields is not one keystroke to put back. `n` comes back to the line with
+  everything on it. A line still exactly as `n` opened it closes without asking: nothing is on it
+  until a category is chosen — the fields **are** the category's — so that is the whole of "has
+  this been filled in".
 - **`n` is the same binding the time off request opens with** (`keys.NewLeave`), so a rebind moves
   both: `n` means "file a new one" on whichever screen files something.
 - The write is one `create` (`api.FileRequisition`), with the properties sent as the **whole

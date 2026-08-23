@@ -437,7 +437,7 @@ for the keys the current screen takes.
 | `tab` / `shift+tab` | next / previous field |
 | `enter` | next field; on ✓ it asks before filing, on ✕ it closes the line |
 | `ctrl+u` | clear the focused field |
-| `esc` | close the line, nothing filed |
+| `esc` | discard the line (asks first, once a category is chosen) |
 
 The fields are the category's own, so the form is empty until you pick one and changes when you
 pick another. It sits under the table, one field a line in the same boxed style as the time off

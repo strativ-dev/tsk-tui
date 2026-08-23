@@ -567,23 +567,70 @@ func TestNewReqTickAsksAndRefuses(t *testing.T) {
 	}
 }
 
-// ✕ and esc close the line outright — nothing has been filed — and the label comes back.
+// ✕ closes the line outright — nothing has been filed, so there is nothing to lose — and the
+// label comes back.
 func TestNewReqLineClosesWithoutAsking(t *testing.T) {
 	m := formModel(t, "Software Requisition")
 	x := m
 	for x.req.field != x.reqXField() {
 		x = send(t, x, special(tea.KeyTab))
 	}
-	for _, shut := range []Model{
-		send(t, x, special(tea.KeyEnter)),
-		send(t, m, special(tea.KeyEsc)),
-	} {
-		if shut.req.open || shut.mode == ModeConfirm {
-			t.Errorf("the line is still open: mode = %v", shut.mode)
-		}
-		if !strings.Contains(plain(shut.View()), "new requisition") {
-			t.Error("the label did not come back")
-		}
+	shut := send(t, x, special(tea.KeyEnter))
+	if shut.req.open || shut.mode == ModeConfirm {
+		t.Errorf("the line is still open: mode = %v", shut.mode)
+	}
+	if !strings.Contains(plain(shut.View()), "new requisition") {
+		t.Error("the label did not come back")
+	}
+}
+
+// esc asks, because everything on the line goes with it: it is the key pressed by accident,
+// and a category's worth of typed fields is not one keystroke to put back. A line still as `n`
+// opened it has nothing to lose and closes outright.
+func TestNewReqEscAsksBeforeDiscarding(t *testing.T) {
+	typed := send(t, formModel(t, "Software Requisition"), special(tea.KeyTab), runes("Figma"))
+
+	asked := send(t, typed, special(tea.KeyEsc))
+	if asked.mode != ModeConfirm || asked.cKind != confirmDropReq {
+		t.Fatalf("esc did not ask: mode = %v, kind = %v", asked.mode, asked.cKind)
+	}
+	if !strings.Contains(asked.cPrompt, "Discard") {
+		t.Errorf("prompt = %q", asked.cPrompt)
+	}
+	// Reversible, so y or n — not the y-only a destructive prompt takes.
+	if asked.confirmKeys().Help().Key != asked.k().Yes.Help().Key {
+		t.Error("the prompt refuses n")
+	}
+	if !asked.req.open {
+		t.Error("the line was thrown away before the answer")
+	}
+
+	// n comes back to the line with everything still on it.
+	back := send(t, asked, runes("n"))
+	if back.mode != ModeReqForm || !back.req.open {
+		t.Fatalf("n left mode = %v, open = %v", back.mode, back.req.open)
+	}
+	if got := back.req.inputs[0].Value(); got != "Figma" {
+		t.Errorf("the field holds %q after n", got)
+	}
+
+	// y takes the line, the category and every field with it.
+	gone := send(t, asked, runes("y"))
+	if gone.req.open || gone.mode == ModeReqForm || gone.req.cat >= 0 {
+		t.Errorf("y left the line: open = %v, cat = %d", gone.req.open, gone.req.cat)
+	}
+	if !strings.Contains(plain(gone.View()), "new requisition") {
+		t.Error("the label did not come back")
+	}
+
+	// Nothing chosen yet: the line is exactly what `n` opened, so esc asks about nothing.
+	bare := send(t, reqModel(t, 200, 34), runes("n"),
+		api.ReqCategoriesMsg{Categories: sampleCats()})
+	if bare.req.cat >= 0 {
+		t.Fatalf("a category was chosen before anything was pressed: %d", bare.req.cat)
+	}
+	if shut := send(t, bare, special(tea.KeyEsc)); shut.mode == ModeConfirm || shut.req.open {
+		t.Errorf("esc asked about an untouched line: mode = %v", shut.mode)
 	}
 }
 

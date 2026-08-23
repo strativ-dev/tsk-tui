@@ -91,6 +91,7 @@ const (
 	confirmDropForm
 	confirmHourLogs
 	confirmFileReq
+	confirmDropReq
 )
 
 // The new-timeoff line's fields, in tab order. leaveTo is the range's end on a full day and
@@ -2422,7 +2423,17 @@ func (m Model) updateReqForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case key.Matches(msg, m.k().Cancel):
-		return m.closeReqForm()
+		// esc asks once there is anything to lose, the same as it does on the time off line:
+		// it is the key pressed by accident, and a category's worth of typed fields goes with
+		// it. Nothing is on the line until a category is chosen — the fields **are** the
+		// category's — so that is the whole of "has this been filled in", and a line still as
+		// `n` opened it closes outright rather than asking about nothing.
+		if m.req.cat < 0 {
+			return m.closeReqForm()
+		}
+		m.prev, m.mode = ModeReqForm, ModeConfirm
+		m.cKind, m.cPrompt = confirmDropReq, "Discard this requisition?"
+		return m, nil
 
 	case key.Matches(msg, m.k().ClearField):
 		if in := m.reqInput(); in != nil {
@@ -4629,6 +4640,10 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.form = leaveForm{}
 			m.mode, m.err = ModeList, nil
 			return m, nil
+
+		case confirmDropReq:
+			// The same: the category and every field it asked for go with the line.
+			return m.closeReqForm()
 
 		case confirmQuit:
 			return m, tea.Quit
