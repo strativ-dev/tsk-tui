@@ -26,8 +26,8 @@ browser and no mouse:
 
 ![tsk filtering 22 tasks down to three by typing "discuss" in the search field](screenshot.png)
 
-Written in Go with [Bubble Tea](https://github.com/charmbracelet/bubbletea). One static
-binary, no CGO.
+Written in Go with [Bubble Tea](https://github.com/charmbracelet/bubbletea). One
+self-contained binary, no C dependencies in the source.
 
 ## Contents
 
@@ -117,25 +117,44 @@ binary, no CGO.
 
 ### Download a binary (no Go required)
 
-Grab the executable for your platform from the
-[releases page](https://github.com/strativ-dev/tsk-tui/releases/latest), then:
+One self-contained binary, nothing to install alongside it. Two platforms are built:
+**Linux amd64** and **macOS Apple Silicon (arm64)**. On anything else, build from source below.
+
+#### Linux
 
 ```fish
-chmod +x tsk-linux-amd64      # or tsk-darwin-arm64
-mv tsk-linux-amd64 ~/go/bin/tsk    # anywhere on your PATH works
+curl -fL -o tsk https://github.com/strativ-dev/tsk-tui/releases/latest/download/tsk-linux-amd64
+chmod +x tsk
+mv tsk ~/go/bin/tsk        # anywhere on your PATH works
+tsk
 ```
 
-Each one is a single static binary — no CGO, no shared libraries, nothing else to
-install. Only two platforms are built: Linux amd64 and macOS Apple Silicon (arm64). On
-anything else, build from source below.
+#### macOS (Apple Silicon)
 
-On macOS, Gatekeeper will refuse to run it the first time since it is not notarized:
-`xattr -d com.apple.quarantine tsk-darwin-arm64` clears that.
+```fish
+curl -fL -o tsk https://github.com/strativ-dev/tsk-tui/releases/latest/download/tsk-darwin-arm64
+chmod +x tsk
+xattr -d com.apple.quarantine tsk    # Gatekeeper: the binary is not notarized
+mv tsk /usr/local/bin/tsk            # anywhere on your PATH works
+tsk
+```
+
+Without the `xattr` line macOS refuses to run it the first time — *"cannot be opened because
+the developer cannot be verified"* — since the binaries are not signed or notarized.
+
+`releases/latest/download/…` always resolves to the newest release, so the same command
+upgrades an existing install. To pin a version, put the tag in the path instead:
+`releases/download/v1.4.1/tsk-linux-amd64`. Or take it off the
+[releases page](https://github.com/strativ-dev/tsk-tui/releases/latest) by hand.
+
+The published Linux binary links the system libc (`libc.so.6`, `libresolv.so.2`), so it wants
+a glibc distro — on Alpine or anything musl-only, build from source with `CGO_ENABLED=0`, which
+produces a fully static binary.
 
 ### Build from source
 
 Go 1.22 or newer is the only hard requirement. Linux and macOS are the same commands;
-there is no CGO and nothing platform-specific in the build.
+nothing in the build is platform-specific, and no C toolchain is needed.
 
 ```fish
 git clone git@github.com:tasnim-strativ/tsk-tui.git
@@ -545,7 +564,7 @@ quit      = []                  # an empty list unbinds it; ctrl+c always quits
 ```
 
 Any action can also be rebound **on one screen only**, with a `[keys.<tab>]` table —
-`tasks`, `dash`, `time`, `meal`, `emp`, `req`:
+`tasks`, `dash`, `time`, `meal`, `emp`, `req`, `proj`:
 
 ```toml
 [keys]
@@ -573,10 +592,8 @@ never fires there:
 | `[keys.proj]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `mine` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
 
 `help` (`?`), the seven tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab` `emp_tab`
-`req_tab` `proj_tab`)
-and the confirm
-keys (`yes` `yes_only` `no`) work on every screen, so they belong in the global `[keys]` table
-rather than in one screen's.
+`req_tab` `proj_tab`) and the confirm keys (`yes` `yes_only` `no`) work on every screen, so they
+belong in the global `[keys]` table rather than in one screen's.
 
 Keep only the lines you want to change — anything absent keeps its default, and **no
 config file at all is perfectly fine**. Action names are listed by `--print-keys`.
