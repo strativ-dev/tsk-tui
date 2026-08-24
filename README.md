@@ -1,6 +1,6 @@
 # tsk
 
-A keyboard-only client for Strativ's ERP360 (Odoo 16), in the terminal. Six screens, no
+A keyboard-only client for Strativ's ERP360 (Odoo 16), in the terminal. Seven screens, no
 browser and no mouse:
 
 - **Tasks** — the tasks assigned to you, each expanding into its timesheet lines. Log, edit
@@ -19,6 +19,10 @@ browser and no mouse:
   the stage in green, red or amber by what it means, and a tick where it was urgent. `l` opens a
   row into what its category asked for, and `n` files a new one — the fields come from the
   category you choose.
+- **Projects** — the projects you are on, a row each: the name, the teams on it, and how many
+  tasks it holds; `a` switches to every open project in the office. `l` opens one into its project
+  manager and everyone on its teams, as a table of names and work emails; `/` filters the list.
+  Cached on disk, re-read with `R`.
 
 ![tsk filtering 22 tasks down to three by typing "discuss" in the search field](screenshot.png)
 
@@ -95,6 +99,11 @@ binary, no CGO.
 - **File one without the web UI.** `n` opens a form under the table: pick a category and it
   becomes that category's own questions, one a line — a software name, a device to replace, a
   deadline, a box to tick — plus urgent and a note. ✓ shows you exactly what it is about to send.
+- **What you are working on, and who is on it with you.** `p` lists the projects you are on —
+  the ones you manage or whose teams you are in — with the teams and the task count, and `a`
+  switches to all 89 the office has open. `l` opens a row into the project manager and a table of
+  everyone on its teams with their work emails. `/` filters on any of that text. Cached on disk,
+  `R` re-reads.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
@@ -281,7 +290,7 @@ for the keys the current screen takes.
 | `l` | expand the task, focus its rows |
 | `h` | collapse |
 | `/` | date jump — lists that day across every task |
-| `d` `o` `m` `e` `r` | dashboard / time off / meals / employees / requisitions (`2`–`6` too) |
+| `d` `o` `m` `e` `r` `p` | dashboard / time off / meals / employees / requisitions / projects (`2`–`7` too) |
 | `R` | re-fetch tasks from the ERP |
 | `K` | replace the stored API key |
 | `i` | focus the search field |
@@ -331,7 +340,7 @@ for the keys the current screen takes.
 | `c` | check in, or check out (asks; `y` only) |
 | `C` | confirm this month's hour logs (asks) |
 | `R` | re-read the month from the ERP |
-| `t` `o` `m` `e` `r` | tasks / time off / meals / employees / requisitions (`1`, `3`–`6` too) |
+| `t` `o` `m` `e` `r` `p` | tasks / time off / meals / employees / requisitions / projects (`1`, `3`–`7` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -357,7 +366,7 @@ for the keys the current screen takes.
 | `s` `c` `a` `p` | show only sick / casual / annual / paternity |
 | `esc` | clear the filter (the same letter again does too) |
 | `R` | re-read the year from the ERP |
-| `t` `d` `m` `e` `r` | tasks / dashboard / meals / employees / requisitions (`1`, `2`, `4`–`6` too) |
+| `t` `d` `m` `e` `r` `p` | tasks / dashboard / meals / employees / requisitions / projects (`1`, `2`, `4`–`7` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -385,7 +394,7 @@ for the keys the current screen takes.
 | `x` | clear this day, every meal on it (asks; `y` only) |
 | `<` / `>` | previous / next month — `>` stops at the current one |
 | `R` | re-read the month from the ERP |
-| `t` `d` `o` `e` `r` | tasks / dashboard / time off / employees / requisitions (`1`–`3`, `5`, `6` too) |
+| `t` `d` `o` `e` `r` `p` | tasks / dashboard / time off / employees / requisitions / projects (`1`–`3`, `5`–`7` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -442,6 +451,26 @@ for the keys the current screen takes.
 The fields are the category's own, so the form is empty until you pick one and changes when you
 pick another. It sits under the table, one field a line in the same boxed style as the time off
 form, with ✓ and ✕ lined up under the values.
+
+**Projects** (`p` or `7`)
+
+| Key | Does |
+|---|---|
+| `j` / `k` | next / previous project |
+| `g` / `G` | first / last |
+| `ctrl+f` / `ctrl+b` | half a screen |
+| `a` | all projects / only yours |
+| `l` | open its manager and its people; `h` closes |
+| `/` | filter the list — any key filters, `enter` keeps it |
+| `esc` | clear the filter and collapse everything — from the prompt or the list |
+| `R` | re-read them from the ERP |
+| `?` | show or hide the key list |
+| `q` | quit (asks first) |
+
+Read only, and it opens on your own — the ones you manage or whose teams you are in. The people
+are read once per project when you open it, cached with the list so a restart does not ask again,
+and the table is sorted by name; the manager is on screen straight away, since it comes with the
+list.
 
 **Confirm prompts**
 
@@ -541,8 +570,10 @@ never fires there:
 | `[keys.meal]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `book_meal` `drop_meal` `delete` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the booking line |
 | `[keys.emp]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
 | `[keys.req]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `back` `new_leave` `refresh` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the new-requisition line |
+| `[keys.proj]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `mine` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
 
-`help` (`?`), the six tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab` `emp_tab` `req_tab`)
+`help` (`?`), the seven tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab` `emp_tab`
+`req_tab` `proj_tab`)
 and the confirm
 keys (`yes` `yes_only` `no`) work on every screen, so they belong in the global `[keys]` table
 rather than in one screen's.
@@ -588,6 +619,8 @@ The REST API and JSON-RPC each cover part of the job:
 | JSON-RPC `confirm_hour_logs` | telling the ERP a month's hour logs are done |
 | JSON-RPC `hr.employee.public` | the office directory, and one person's own detail |
 | JSON-RPC `serp.general.requisition` | your requisitions, their stage, the properties each category asked for, and filing one |
+| JSON-RPC `project.project` + `serp_project.team` | the open projects, their manager, their teams and their task counts |
+| JSON-RPC `res.users` | the names and work emails of the people on a project's teams |
 | JSON-RPC `serp.general.requisition.category` | the categories you can file under, and the fields each one asks |
 
 Worth knowing:
@@ -620,11 +653,12 @@ on a Mac puts everything in `~/.config/tsk/` instead.
 |---|---|
 | `tasks.json` | cached tasks and hours, so it works offline |
 | `employees.json` | the office directory, read once and shown from here |
+| `projects.json` | the open projects, their teams and their managers, same idea |
 | `config.toml` | your keybindings (optional) |
 | `pass` entry `tsk/api-key` | API key on line one, `db:` below it (Option A only) |
 
-`tasks.json` holds real hours and task names, and `employees.json` your colleagues' work
-emails and phone numbers — both worth keeping out of any repo or paste.
+`tasks.json` holds real hours and task names, and `employees.json` and `projects.json` your
+colleagues' work emails and phone numbers — all three worth keeping out of any repo or paste.
 
 ## Troubleshooting
 

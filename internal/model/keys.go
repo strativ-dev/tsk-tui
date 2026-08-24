@@ -25,7 +25,8 @@ type keyMap struct {
 	Top, Bottom, HalfDown, HalfUp  key.Binding
 	TasksTab, DashTab, TimeTab     key.Binding
 	MealTab, BookMeal, DropMeal    key.Binding
-	EmpTab, ReqTab                 key.Binding
+	EmpTab, ReqTab, ProjTab        key.Binding
+	Mine                           key.Binding
 	Help, Clock, NewLeave          key.Binding
 	ConfirmHours                   key.Binding
 	PrevMonth, NextMonth           key.Binding
@@ -98,6 +99,15 @@ func defaultKeys() keyMap {
 		EmpTab: key.NewBinding(key.WithKeys("e", "5"), key.WithHelp("e", "employee")),
 		// r, the initial of the word, which cost refresh its own key — see Refresh above.
 		ReqTab: key.NewBinding(key.WithKeys("r", "6"), key.WithHelp("r", "requisitions")),
+		// p, the initial of the word, free of every other tab key. The list is read only, so
+		// nothing on that screen competes for it.
+		ProjTab: key.NewBinding(key.WithKeys("p", "7"), key.WithHelp("p", "projects")),
+		// The projects tab's all/mine toggle. a is the tasks tab's add-an-entry key, and the
+		// two never meet: nothing on the project list adds anything, so the switch in that
+		// handler is the whole of what decides it — and a is not a tab key, so it is free
+		// wherever a screen has no use for Add. The label flips with the state, so the help
+		// text here is only the fallback one.
+		Mine: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all projects")),
 		// The book-meal line, b for the word it opens. Inside the line b is breakfast's own
 		// tick — the line owns the keyboard, so the two never meet.
 		BookMeal: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "book meal")),
@@ -155,7 +165,9 @@ var (
 )
 
 // TabNames is the name each tab answers to in the config file, in bar order.
-func TabNames() []string { return []string{"tasks", "dash", "time", "meal", "emp", "req"} }
+func TabNames() []string {
+	return []string{"tasks", "dash", "time", "meal", "emp", "req", "proj"}
+}
 
 func tabByName(name string) (Tab, bool) {
 	switch name {
@@ -171,6 +183,8 @@ func tabByName(name string) (Tab, bool) {
 		return TabEmp, true
 	case "req":
 		return TabReq, true
+	case "proj":
+		return TabProj, true
 	}
 	return 0, false
 }
@@ -272,7 +286,8 @@ func CheckKeys() error {
 	}{
 		{"tasks_tab", keys.TasksTab}, {"dash_tab", keys.DashTab},
 		{"time_tab", keys.TimeTab}, {"meal_tab", keys.MealTab},
-		{"emp_tab", keys.EmpTab}, {"req_tab", keys.ReqTab}, {"help", keys.Help},
+		{"emp_tab", keys.EmpTab}, {"req_tab", keys.ReqTab},
+		{"proj_tab", keys.ProjTab}, {"help", keys.Help},
 	} {
 		isTabAction[t.name] = true
 		for _, k := range t.b.Keys() {
@@ -339,7 +354,7 @@ const keysTOMLHeader = `# tsk keymap — every default, so this file changes not
 # misspelling is refused at startup rather than silently never matching.
 #
 # Per screen: a [keys.<tab>] table rebinds an action on that screen only, and leaves it
-# alone everywhere else. The screens are tasks, dash, time and meal.
+# alone everywhere else. The screens are tasks, dash, time, meal, emp, req and proj.
 #
 #     [keys.meal]
 #     delete = ["d"]        # d cancels the day's meals here; x still deletes a row
@@ -360,6 +375,7 @@ const tabKeysTOMLFooter = `
 # [keys.time]
 # [keys.emp]
 # [keys.req]
+# [keys.proj]
 # [keys.meal]
 # delete = ["d"]
 `
@@ -444,7 +460,7 @@ func (k keyMap) help(m Mode) []key.Binding {
 		return []key.Binding{key.NewBinding(key.WithHelp(k.Back.Help().Key, "close"))}
 	case ModeReqForm:
 		return []key.Binding{k.Next, k.Prev, k.Cycle, k.ClearField, k.Accept, k.Cancel}
-	case ModeEmpSearch:
+	case ModeEmpSearch, ModeProjSearch:
 		return []key.Binding{
 			key.NewBinding(key.WithHelp("any key", "filter the list")),
 			key.NewBinding(key.WithHelp("enter", "keep it, back to the list")),

@@ -65,6 +65,7 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | `TabMeal` | `m` · `4` | this month's canteen meals, one bar per meal per day |
 | `TabEmp` | `e` · `5` | the office directory, a row per person, filtered by a `/` prompt |
 | `TabReq` | `r` · `6` | the requisitions you filed, a table, each row opening into its own fields |
+| `TabProj` | `p` · `7` | your projects (`a` for all), a row each; `l` opens one into its manager and its people |
 
 - The bar **gives up its words before it wraps** (`tabBar`, the `short` tier): five labels want
   63 cells, and the bar is the first line of every screen — wrapped, it pushes the whole UI down
@@ -82,7 +83,7 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 - **No footer names a tab key.** The bar picks each tab's letter out of its own label, so a
   `t tasks` or `d dashboard` hint below spends a footer slot saying the same thing twice — the
   meal tab never had one, and the task list, the chart and the calendar have given theirs up.
-- **Digits are aliases in bar order** (`1`, `2`, `3`, `4`). They are matched in the same place as
+- **Digits are aliases in bar order** (`1` … `7`). They are matched in the same place as
   the letters, so the excluded typing modes protect them: a query of `2` and a `/12` date
   prompt both keep their digits.
 - Tab keys are matched **before** the mode handlers, but **not** while a field is taking
@@ -1147,6 +1148,154 @@ One row between the count and the table's own heads, and the whole request is on
   stage column then says. **Nothing retries** — a timed-out create that landed would ask the
   office for the same thing twice.
 
+## Projects (`TabProj`)
+
+The office's open projects, one row each: the name, the teams on it, and how many tasks it
+holds. It **opens on your own** and `a` toggles to all of them; `l` opens a row into who runs it
+and everyone on its teams, `/` filters the list. `p` to open, `t` to go back. **Read only.**
+
+- **Two reads, one message** (`api.FetchProjects` → `ProjectsMsg`), for the reason the employee
+  detail needs its second: `project.project` `search_read` answers `team_ids` as a **many2many**,
+  which Odoo sends as bare ids, and nothing on the model carries their names. The web client
+  makes exactly the same pair of calls.
+  - The domain and the order are the ERP's own list view — `is_closed = false`, ordered
+    `sequence asc, name asc, id asc` — so the screen reads in the order the kanban shows, and
+    `projLimit` (200) caps it the way that view's own 80 does.
+  - **`task_count`, not `project_task_count`.** Both exist; the first is Odoo's own field and
+    what the kanban card counts, where the serp one also counts what is closed — 237 against
+    181 on AI Transformation, and the card says 181.
+  - **The teams come back in one call for the whole list**, keyed by id, rather than one call a
+    project: 89 projects mention about 50 distinct teams. And by **`search_read`, not `read`** —
+    `read` raises on an id the caller may not see, where a domain simply leaves it out, and a
+    project whose team is invisible should still be on screen with the teams it can show.
+  - `serp_project.team` is **not exposed on the MCP**, so its contract was read over RPC: `name`
+    and `display_name` hold the same string, `user_ids` is the ERP's own **Members**, and an
+    ordinary API key may read it.
+  - **The manager costs no call.** `user_id` is the ERP's own *Project Manager* and a many2one,
+    so it arrives as an `[id, name]` pair with the list. Odoo sends `false` for a project with
+    none, which is what `odooRef` is for.
+  - **`Mine` is worked out where the ids are**, not on render: the ERP has no "my projects"
+    field, and the question it answers — is this one of mine — is *the manager is me* or *I am
+    on one of its teams*. `uid` is what the login answered with, so it costs no call, and the
+    answer keeps in the cache. On this database it is 9 of 89.
+  - **`user_ids` comes along with the team names** rather than being fetched when a row opens:
+    it is one more field on a call this screen already makes, where per-project it would be a
+    call per open. The ids stay ids until somebody asks — `store.Project.Members` is the union
+    over the project's teams, distinct and in the ERP's order, since a person on two of them is
+    one person.
+
+### Opening a row (`l`)
+
+`l` opens the row under the cursor into the manager and a table of the people on its teams; `h`
+closes it.
+
+- **One call, and only on open** (`api.FetchProjectMembers` → `ProjectMembersMsg`): a
+  `res.users` `search_read` of that project's own member ids for `name` and `email` — the same
+  call the web client makes to put names to a many2many, and `search_read` again so a user the
+  caller cannot see is left out instead of failing the table.
+- **Read once per project, and kept on disk with it** (`store.Project.People`): a team's
+  membership does not change between two openings of a terminal, which is the whole reason the
+  list is cached, so the people go on the cached record and a restart does not ask again. A
+  second `l` asks nothing either way (`projMembers` is the live index, `projPulling` the reads in
+  flight), and closing a row keeps what it read.
+  - **`ProjectsLoadedMsg` seeds `projMembers` from what the cache holds**, which is what stops
+    the first `l` after a restart going back to the ERP.
+  - **A refresh carries them over, and only while the member ids are unchanged** (`keepPeople`):
+    `R` re-reads the list, which the ERP does answer, but not the people, which cost a read per
+    project — so what is in hand stands unless that project's `Members` moved, where the names
+    beside them would be somebody else's.
+- **Ordered by name**, not by the order the ids arrived in: this is a table somebody reads down,
+  where a project's `team_ids` order says something and a union of two teams' members says
+  nothing.
+- **The manager's label is a column head** (`MANAGER`), in the same style as the table's own
+  `NAME`/`EMAIL`, since it is the same kind of thing: a label over a value. **`TEAM MEMBERS`**
+  sits under it and names the table below, and it stands whatever that table turns out to hold —
+  a wait and an empty answer are both about the members, so both read under the same heading.
+- **The manager is on screen before the read lands**, since it came with the list. A project
+  whose teams have nobody on them says `no members on its teams` and **costs no call** — the
+  refusal happens here, the way every other screen refuses what the endpoint would.
+- **The emails are a column, not chips** (`projDetailLines`): a chip per address read as a row of
+  tags where the question is "who is on this", and two facts a person read down two columns is a
+  table. Sized from the rows themselves (`projMemberColumns`), so a list of short names does not
+  pay for a column it never fills, and the **name** keeps its cells first — an email is
+  recoverable from a name and a cut name is not.
+
+### Whose projects (`a`)
+
+- **It opens on yours.** 89 open projects with nine of them yours is a screen answering "what
+  does the office run" before "what am I on", so `Model.projMine` starts **true** and `a` toggles
+  it. The toggle costs no call — the ERP already said which are mine when it answered the list —
+  so it works off the cache and offline.
+- **One label, `all projects`, with its key picked out** (`projFilterLabel`), on the right of the
+  head before the count. One rather than a name per state because **the key has to sit inside the
+  word it is on**: "my projects" holds no `a`, so `hinted` spelled the key out after it and the
+  row read as `my projects a`. The label takes the **accent whole** while all of them are on
+  screen — the frame-says-focus, fill-says-chosen idiom the request lines use — and the count
+  beside it (`2 of 4` against `4 open projects`) is what says which half you are looking at.
+- **`a`, which is the tasks tab's add-an-entry key.** Nothing on the project list adds anything,
+  so the switch in that handler is the whole of what decides it, and `a` is not a tab key — the
+  one thing `CheckKeys` refuses. `keys.Mine` is the action, so a rebind moves both the key and
+  the label.
+- **Toggling resets the cursor and shuts every open row**: the row under the cursor is a
+  different project on the other side of it.
+- A key owner on none of them gets `none of these are yours — a for all of them` rather than the
+  query's own "no project matches that": the toggle is what emptied the screen, so the message
+  names the key that fills it.
+
+### The filter (`/`)
+
+- **A prompt, not a field** (`ModeProjSearch`), exactly as on the directory: it costs the list no
+  rows while nothing is being typed, and renders above the status line. `esc` drops it, `enter`
+  keeps it and hands the rows the keyboard.
+- **The query shows in the accent beside the title** while it is on but not being typed
+  (`projHead`), and the count becomes `2 of 89` — a short list needs a reason on screen.
+- **Its own input** (`Model.projQuery`), not the task list's: that one filters tasks, and one
+  input shared between them would filter the other screen by whatever was typed here.
+  `ModeProjSearch` is excluded from the tab-key and `?` block, so a name can hold a `p` and a
+  `t`.
+- **The match is on the name, the teams and the manager joined** (`projRows`): "who runs Coeo"
+  and "what is the DevOps team on" are the same question asked of different fields. Derived on
+  render, never a second slice kept in step.
+- **`esc` clears the filter and shuts every open row** (`clearProjFilter`), from the prompt and
+  from the list — the same key whichever half of the screen has the keyboard, taking the screen
+  back to what `p` opens on. The directory's own rule, and there is no `ctrl+u` here for the
+  same reason.
+- **The row is the task list's own shape** (`view.go: projRow`): the name, the teams in a chip,
+  and the task count against the right edge where a task's entry count sits — it answers the
+  same kind of question, so it reads the same way.
+  - **Two fixed columns** (`projColumns`), the directory's own idea rather than the task line's
+    proportional one: the name gets `projNameCells` (60) and the teams the rest, so **every chip
+    starts on the same cell** and they read as a column instead of two ragged edges. 60 holds all
+    but the longest names here — "Value-Driven Engagement, Internal Meetings & Tasks" is 50. A
+    narrow terminal takes the cells off the **teams** first, down to `projMinTeams`, and only
+    then off the name, since the name is what the row is for.
+  - **The count is reserved at its widest over the whole list** (`projCountCells`), not measured
+    per row — the same rule the query field follows against the progress cluster. Sized row by
+    row, `1315 tasks` and `9 tasks` moved the columns two cells apart on a terminal narrow enough
+    for the name to be giving up cells.
+  - **No caret.** The task list and the directory carry one because their rows open; nothing
+    opens here, and a `▸` that does nothing is the glyph lying. The indent is theirs, so the
+    names line up across the tabs.
+  - The held row takes the accent whole, name and chip together — the rule the directory's rows
+    follow, since a name in the accent beside a chip still in the tag's teal reads as two rows
+    overlapping.
+- **Cached on disk** (`store.ProjectsPath`, `projects.json`), the directory's rule rather than
+  the requisitions': a project's teams, its manager and whether it is one of yours do not change
+  between two openings of a terminal. `Init` loads the file, `p` shows whatever it holds, and
+  only an empty cache fetches; every answer from the ERP is written back. `R` re-reads and the
+  rows stay up while it does — a failed re-read keeps the list it had, and a cache that will not
+  parse is not an error on screen, it just means the tab fetches.
+  - **Its own file**, not a second key in `tasks.json` or in `employees.json`: a write of one
+    must not be able to lose another.
+  - The task count is the one figure that goes stale between reads. That is what `R` is for, and
+    a count a few hours old still answers "how big is this project".
+- `j`/`k`/`g`/`G`/`ctrl+f`/`ctrl+b` move the cursor, the same bindings every other list uses.
+- Opening it needs the key owner's **email**, exactly as every other RPC screen: `projWanted` is
+  set, the day total is fetched, and the list continues when `DayHoursMsg.UserEmail` lands.
+- `projLoading` and `projPulling` are both in `busy()`, and the count in the head, the filtered
+  rows and the table's own columns are all **derived on render**, never stored. The maps inside
+  the model are **copied on write** (`withVal`, `withoutKey`) — the trap `ticksWith` documents.
+
 ## Modes
 
 One `Mode` field on the root model. Only the active mode consumes keys.
@@ -1165,6 +1314,7 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeWFH` | the WFH request line on `TabDash`, opened by the ERP refusing a check in |
 | `ModeEmpSearch` | the employee tab's own query field; its own input, so it cannot filter tasks |
 | `ModeReqForm` | the new-requisition line on `TabReq`; owns every key, so a purpose can hold a `t` |
+| `ModeProjSearch` | the projects tab's own query field; its own input, so it cannot filter tasks |
 
 ## Keymap
 

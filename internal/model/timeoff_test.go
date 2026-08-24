@@ -20,7 +20,9 @@ import (
 // o opens the calendar and reads the year; t comes back, and the tab bar says which
 // screen is up.
 func TestTimeTabOpensAndReads(t *testing.T) {
-	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
+	// Wide enough for the summary that rides on the tab bar's row: seven tabs take 90 cells
+	// of it, and below that the bar keeps its own width and the summary is dropped.
+	m := send(t, New(), tea.WindowSizeMsg{Width: 120, Height: 30},
 		store.KeyMsg{Key: "k", DB: "db"})
 	m.login = "user@example.com" // the sync that carries the email has already landed
 
@@ -48,7 +50,7 @@ func TestTimeTabOpensAndReads(t *testing.T) {
 		}
 	}
 	// The days taken ride on the tab bar's own row, so they need a terminal the bar leaves
-	// room on — six tabs take 76 cells of it.
+	// room on — seven tabs take 90 cells of it.
 	if wide := plain(timeModel(t, 140, 30).View()); !strings.Contains(wide, "days taken") {
 		t.Errorf("the year's total is missing on a wide terminal:\n%s", wide)
 	}
@@ -78,7 +80,7 @@ func TestTimeTabOpensAndReads(t *testing.T) {
 // The year on screen stays up while a re-read is in flight, with the loader beside its
 // title: a calendar blanked mid-read loses the answer it already had.
 func TestTimeRefreshKeepsTheYearUp(t *testing.T) {
-	m := timeModel(t, 100, 30)
+	m := timeModel(t, 120, 30) // wide enough for the title beside the tab bar
 	m.login = "user@example.com"
 
 	m, cmd := sendCmd(t, m, runes("R"))

@@ -153,6 +153,19 @@ const (
 	// The card is as wide as its widest line and no wider, capped: stretched to a 200-cell
 	// terminal a card of four short lines reads as a banner.
 	empCardCells = 52
+	// A project row is two fixed columns and a count on the right edge, the same idea as an
+	// employee row: the name gets 60 cells, so every chip starts on the same cell and the
+	// teams read as a column rather than as a ragged edge. 60 holds all but the longest names
+	// here ("Value-Driven Engagement, Internal Meetings & Tasks" is 50).
+	projNameCells = 60
+	// Narrower than this a chip has no room to be one, so the name gives up cells instead —
+	// but the name loses them last, since it is what the row is for.
+	projMinTeams = 12
+	// An open row's own block: indented under the name, one label column for the manager, and
+	// the widest a member's name column is worth drawing ("Rafee Mizan Khan Chowdhury Niloy").
+	projIndent     = "     "
+	projLabelCells = 10
+	projMemberName = 34
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -214,6 +227,8 @@ func (m Model) View() string {
 		// Above the status line, like the date jump's own prompt: it belongs to the moment it
 		// is being typed, and the header says the filter is on once the prompt has closed.
 		tail = append(tail, theme.Blur.Render(m.empQuery.View()))
+	case ModeProjSearch:
+		tail = append(tail, theme.Blur.Render(m.projQuery.View()))
 	}
 	// Flattened and cut to the width: a server message can arrive with newlines in it,
 	// and a status line that wraps costs the list a row it was not given.
@@ -273,6 +288,9 @@ func (m Model) View() string {
 	if m.tab == TabReq {
 		head = append(head, m.reqHead()...)
 	}
+	if m.tab == TabProj {
+		head = append(head, m.projHead()...)
+	}
 
 	// The body takes the rows left between header and footer, and is padded out to
 	// them, which pins the status line and the key hints to the bottom of the screen.
@@ -289,6 +307,9 @@ func (m Model) View() string {
 	}
 	if m.tab == TabReq {
 		body, focus = m.reqLines()
+	}
+	if m.tab == TabProj {
+		body, focus = m.projLines()
 	}
 	if m.tab == TabDash {
 		body, focus = m.dashLines(budget)
@@ -424,6 +445,7 @@ func (m Model) tabBar() string {
 		{TabMeal, "meal", m.k().MealTab},
 		{TabEmp, "employee", m.k().EmpTab},
 		{TabReq, "requisitions", m.k().ReqTab},
+		{TabProj, "projects", m.k().ProjTab},
 	}
 
 	bar := func(short bool) string {
@@ -1126,6 +1148,212 @@ func center(s string, w int) string {
 }
 
 // header is the caret, the boxed query field, and the day's progress cluster.
+// --- projects ----------------------------------------------------------------
+
+// projHead is the list's own header: what it is, and how many projects are open.
+func (m Model) projHead() []string {
+	left := theme.Header.Render("PROJECTS")
+	if q := strings.TrimSpace(m.projQuery.Value()); q != "" {
+		// A filter that is on but not being typed still has to be visible, or the list is
+		// short for a reason nothing on screen explains. In the accent, beside the title: the
+		// same mark the directory's own header uses.
+		left += theme.Dim.Render("  /") + theme.MatchText.Render(trunc(oneLine(q), 24))
+	}
+	// The toggle sits before the count, on the right: it says what pressing `a` gives you
+	// rather than what is on screen — the clock button's own rule — and the count beside it is
+	// what says which of the two you are looking at.
+	right := m.projFilterLabel() + "   " + m.projCount()
+	if m.projLoading {
+		// The list stays on screen while it is re-read, so the loader sits beside the count
+		// rather than replacing the rows — the same as the directory and the chart's month.
+		right = m.spin.View() + " " + right
+	}
+	return []string{
+		theme.Blur.Render(spread(left, right, m.cols()-gutter)),
+		"",
+	}
+}
+
+// projFilterLabel is the all/mine toggle: one label, `all projects`, with its key picked out —
+// and the **whole** label takes the accent while it is on, which is the "frame says where the
+// keys are, fill says the value is chosen" idiom the request lines use.
+//
+// One label rather than a name per state, because the key has to be inside the word it is on:
+// "my projects" holds no `a`, so hinted() spelled the key out after it and the row read as
+// "my projects a".
+func (m Model) projFilterLabel() string {
+	if !m.projMine {
+		return hinted("all projects", m.k().Mine, theme.MatchText, theme.HintKey)
+	}
+	return hinted("all projects", m.k().Mine, theme.Dim, theme.HintKey)
+}
+
+// projCount is how many rows the filter leaves out of how many there are — the whole number
+// alone when nothing is filtered, since "89 of 89" answers a question nobody asked.
+func (m Model) projCount() string {
+	shown, all := len(m.projRows()), len(m.projs)
+	switch {
+	case all == 0:
+		return ""
+	case shown == all:
+		return theme.Dim.Render(fmt.Sprintf("%d open %s", all, plural(all, "project", "projects")))
+	}
+	return theme.Dim.Render(fmt.Sprintf("%d of %d", shown, all))
+}
+
+// projLines is the body: one row per project, shaped like the task list — the name, the teams
+// on it in a chip, and the task count on the right edge, which is where a task's own entry
+// count sits.
+func (m Model) projLines() ([]string, int) {
+	rows := m.projRows()
+	if len(rows) == 0 {
+		switch {
+		case m.projLoading:
+			return []string{theme.Blur.Render(
+				m.spin.View() + theme.Dim.Render(" reading the projects…"))}, -1
+		case len(m.projs) == 0:
+			return []string{theme.Blur.Render(
+				theme.Dim.Render("no projects yet — R to read them"))}, -1
+		}
+		if strings.TrimSpace(m.projQuery.Value()) == "" && m.projMine {
+			// The toggle is what emptied it, not the query, so it names the key that fills it.
+			return []string{theme.Blur.Render(theme.Dim.Render("none of these are yours — ") +
+				theme.HintKey.Render(m.k().Mine.Help().Key) +
+				theme.Dim.Render(" for all of them"))}, -1
+		}
+		return []string{theme.Blur.Render(theme.Dim.Render("no project matches that"))}, -1
+	}
+
+	var out []string
+	focus := -1
+	held := min(m.projHold, len(rows)-1)
+	for i, p := range rows {
+		if i == held {
+			focus = len(out)
+		}
+		out = append(out, m.projRow(p, i == held))
+		if m.projOpen[p.ID] {
+			out = append(out, m.projDetailLines(p)...)
+		}
+		out = append(out, "") // one blank line between projects, as between tasks
+	}
+	return out, focus
+}
+
+// projDetailLines is the open row's own block: who runs the project, and everyone on its teams
+// as a table of names and work emails. Indented under the name, the way an employee's own
+// detail is.
+func (m Model) projDetailLines(p store.Project) []string {
+	var out []string
+	if p.Manager != "" {
+		out = append(out, theme.Blur.Render(projIndent+
+			theme.Header.Render(pad("MANAGER", projLabelCells))+theme.DayLabel.Render(p.Manager)))
+	}
+
+	// The section says what the table under it is, and it stands whatever the table turns out
+	// to hold — a wait and an empty answer are both about the members, so both read under it.
+	out = append(out, theme.Blur.Render(projIndent+theme.Header.Render("TEAM MEMBERS")))
+
+	people, have := m.projMembers[p.ID]
+	switch {
+	case len(p.Members) == 0:
+		// Not a wait and not a failure: the ERP says the teams have nobody on them.
+		return append(out, theme.Blur.Render(projIndent+
+			theme.Dim.Render("no members on its teams")))
+	case !have && m.projPulling[p.ID]:
+		return append(out, theme.Blur.Render(projIndent+m.spin.View()+
+			theme.Dim.Render(" reading its people…")))
+	case !have:
+		return append(out, theme.Blur.Render(projIndent+
+			theme.Dim.Render("nothing read yet — l again")))
+	case len(people) == 0:
+		return append(out, theme.Blur.Render(projIndent+
+			theme.Dim.Render("its people are not readable from here")))
+	}
+
+	// A table, because two facts a person read down two columns is a table — one sized to what
+	// it actually holds, so a list of short names does not pay for a column it never fills.
+	nameW, mailW := projMemberColumns(people, m.cols()-gutter-len(projIndent))
+	out = append(out, theme.Blur.Render(projIndent+theme.Header.Render(
+		pad("NAME", nameW)+trunc("EMAIL", mailW))))
+	for _, who := range people {
+		out = append(out, theme.Blur.Render(projIndent+
+			theme.DayLabel.Render(pad(trunc(who.Name, nameW-1), nameW))+
+			theme.Tag.Render(trunc(orDash(who.Email), mailW))))
+	}
+	return out
+}
+
+// projMemberColumns sizes the two columns from the rows themselves, capped, and gives the name
+// its cells first: an email is recoverable from a name here, and a truncated name is not.
+func projMemberColumns(people []store.Member, room int) (name, mail int) {
+	for _, who := range people {
+		name = max(name, lipgloss.Width(who.Name)+2)
+		mail = max(mail, lipgloss.Width(who.Email))
+	}
+	name = min(name, projMemberName)
+	if name+mail > room {
+		mail = room - name
+	}
+	return name, max(mail, 0)
+}
+
+// projRow is one line: caret, name, the teams in a chip, and the task count against the right
+// edge. The same shape as a task line, since it answers the same kind of question — what this
+// is, whose it is, how much is in it.
+func (m Model) projRow(p store.Project, focused bool) string {
+	// No caret: the task list and the directory carry one because their rows open, and there
+	// is nothing to open here. The indent is theirs, so the names line up across the tabs.
+	caret := "   "
+	count := theme.Dim.Render(fmt.Sprintf("%d %s", p.Tasks, plural(p.Tasks, "task", "tasks")))
+
+	ink, chip := theme.DayLabel, theme.Chip
+	if focused {
+		// The accent marks whatever holds the keys, and the whole row takes it — a name in
+		// the accent beside a chip still in the tag's teal reads as two rows overlapping,
+		// which is the rule the directory's own rows follow.
+		ink, chip = theme.TitleFocus, theme.ChipFocus
+	}
+
+	nameW, teamW := m.projColumns()
+	name := ink.Render(pad(trunc(oneLine(p.Name), nameW-1), nameW))
+
+	teams := ""
+	// The chip's own frame and padding are four of its cells, so the names get the rest. A
+	// project with no team draws no chip: an empty one reads as a team called nothing.
+	if names := oneLine(strings.Join(p.Teams, ", ")); names != "" && teamW > 4 {
+		teams = chip.Render(trunc(names, teamW-4))
+	}
+	return row(spread(caret+name+pad(teams, teamW), count, m.cols()-gutter), focused)
+}
+
+// projColumns is what the two columns get: the fixed widths where the terminal holds them, and
+// the team column giving up cells first where it does not — a name is what the row is for, and
+// a chip below projMinTeams has no room to be a chip, so the name pays after that.
+//
+// The count is reserved at its **widest** over the whole list, not measured per row, which is
+// what keeps the chips in one column: sized row by row, "1315 tasks" and "9 tasks" moved the
+// columns two cells apart on a terminal narrow enough for the name to be giving up cells.
+func (m Model) projColumns() (name, teams int) {
+	room := m.cols() - gutter - 3 - m.projCountCells() - 2 // the indent, the count, spread's gap
+	name = projNameCells
+	if teams = room - name; teams >= projMinTeams {
+		return name, teams
+	}
+	name = max(room-projMinTeams, 12)
+	return name, max(room-name, 0)
+}
+
+// projCountCells is the widest task count in the list, so every row lays its columns out
+// against the same right-hand cluster.
+func (m Model) projCountCells() int {
+	n := 0
+	for _, p := range m.projs {
+		n = max(n, lipgloss.Width(fmt.Sprintf("%d %s", p.Tasks, plural(p.Tasks, "task", "tasks"))))
+	}
+	return n
+}
+
 // --- requisitions ------------------------------------------------------------
 
 // The requisitions table's columns, in the order the ERP's own list view puts them. Fixed
@@ -3058,7 +3286,7 @@ func (m Model) footer() string {
 	}
 	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
 		m.mode != ModeLeaves && m.mode != ModeBook && m.mode != ModeWFH &&
-		m.mode != ModeEmpSearch && m.mode != ModeReqForm {
+		m.mode != ModeEmpSearch && m.mode != ModeProjSearch && m.mode != ModeReqForm {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -3070,6 +3298,8 @@ func (m Model) footer() string {
 			label = "-- EMPLOYEE --"
 		case TabReq:
 			label = "-- REQUISITIONS --"
+		case TabProj:
+			label = "-- PROJECTS --"
 		}
 	}
 
@@ -3126,6 +3356,21 @@ func (m Model) footer() string {
 			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "details")),
 			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
 			key.NewBinding(key.WithHelp(m.k().NewLeave.Help().Key, "new requisition")),
+			m.k().Refresh, m.k().Quit, m.k().Help}
+	case m.tab == TabProj:
+		// A filter, a cursor, and a row that opens into its people. Nothing here writes.
+		// The footer names the action, so its hint flips with the state — the clock's own
+		// rule, where the label in the head is the thing being switched.
+		mine := "all projects"
+		if !m.projMine {
+			mine = "only mine"
+		}
+		help = []key.Binding{m.k().Down, m.k().Up, m.k().Top, m.k().HalfDown,
+			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "manager + members")),
+			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
+			key.NewBinding(key.WithHelp(m.k().Mine.Help().Key, mine)),
+			key.NewBinding(key.WithHelp(m.k().Jump.Help().Key, "filter")),
+			key.NewBinding(key.WithHelp(m.k().Back.Help().Key, "clear + collapse")),
 			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabEmp:
 		// A filter and a window over it, and nothing that writes: r is the only key here that

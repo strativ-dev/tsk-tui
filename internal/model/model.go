@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,8 @@ const (
 	// the task list's query filters tasks, and carrying one across would filter the other
 	// screen by whatever was typed here.
 	ModeEmpSearch
+	// ModeProjSearch is the same thing on the projects tab, and its own for the same reason.
+	ModeProjSearch
 )
 
 // Tab is the top-level screen, above modes: the task list and everything reached from
@@ -60,6 +63,7 @@ const (
 	TabMeal
 	TabEmp
 	TabReq
+	TabProj
 )
 
 // k is the keymap this screen reads: the global one, or the tab's own where the config file
@@ -366,6 +370,25 @@ type Model struct {
 	reqWanted  bool
 	reqHold    int
 	reqOpen    map[int]bool
+	// The office's open projects: read once a session, like the requisitions and for the same
+	// reason — a task count moves while people work, so a cache on disk would answer this
+	// screen's only question with yesterday's number. `R` re-reads.
+	projs       []store.Project
+	projLoading bool
+	projWanted  bool
+	projHold    int
+	// projQuery is this tab's own filter — its own input, not the task list's, which filters
+	// tasks. projOpen is the rows showing their manager and their people; projMembers is what
+	// the ERP answered for them, read once per project, and projPulling the reads in flight so
+	// a second `l` cannot ask twice.
+	projQuery textinput.Model
+	// projMine is the all/mine toggle, and it opens **on**: the list is 89 projects and nine
+	// of them are yours, so the screen answers "what am I on" before it answers "what does
+	// the office run".
+	projMine    bool
+	projOpen    map[int]bool
+	projMembers map[int][]store.Member
+	projPulling map[int]bool
 	// The categories a requisition can be filed under, and what each asks for: read once when
 	// the line is first opened, since the office's own list of them does not move in a session.
 	reqCats     []store.ReqCategory
@@ -459,6 +482,16 @@ func New() Model {
 	m.empOpen = map[int]bool{}
 	m.empDetail = map[int]store.EmployeeDetail{}
 	m.empPulling = map[int]bool{}
+	// The projects tab's own filter, on the same terms as the directory's: its own input, and
+	// a prompt rather than a box.
+	m.projQuery = textinput.New()
+	m.projQuery.Prompt = "search: "
+	m.projQuery.PromptStyle = theme.Prompt
+	m.projQuery.Width = 32
+	m.projMine = true
+	m.projOpen = map[int]bool{}
+	m.projMembers = map[int][]store.Member{}
+	m.projPulling = map[int]bool{}
 	m.reqOpen = map[int]bool{}
 	m.req.cat = -1
 	// Field widths mirror the table columns, so the insert row sits in them.
@@ -473,7 +506,8 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, store.Load, store.LoadEmployees, store.LoadKey())
+	return tea.Batch(textinput.Blink, store.Load, store.LoadEmployees, store.LoadProjects,
+		store.LoadKey())
 }
 
 // Update runs the mode handlers and then keeps the two animations in step with the state:
@@ -512,8 +546,8 @@ func clockTick() tea.Cmd {
 func (m Model) busy() bool {
 	return m.syncing || m.dashLoading || m.timeLoading || m.mealLoading || m.applying ||
 		m.mealCancelling || m.booking || m.clocking || m.wfhFiling || m.confirming ||
-		m.empLoading || m.reqLoading || m.filing ||
-		len(m.empPulling) > 0 || len(m.pulling) > 0
+		m.empLoading || m.reqLoading || m.projLoading || m.filing ||
+		len(m.empPulling) > 0 || len(m.projPulling) > 0 || len(m.pulling) > 0
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -635,16 +669,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m, cmd = m.loadReq()
 				cmds = append(cmds, cmd)
 			}
+			if m.projWanted {
+				m, cmd = m.loadProj()
+				cmds = append(cmds, cmd)
+			}
 			if len(cmds) > 0 {
 				return m, tea.Batch(cmds...)
 			}
 		}
 		if msg.Err != nil && (m.dashWanted || m.timeWanted || m.mealWanted || m.empWanted ||
-			m.reqWanted) {
+			m.reqWanted || m.projWanted) {
 			m.dashWanted, m.timeWanted, m.mealWanted = false, false, false
-			m.empWanted, m.reqWanted = false, false
+			m.empWanted, m.reqWanted, m.projWanted = false, false, false
 			m.dashLoading, m.timeLoading, m.syncing, m.clocking = false, false, false, false
 			m.mealLoading, m.empLoading, m.reqLoading = false, false, false
+			m.projLoading = false
 			m.err = msg.Err
 		}
 		return m, nil
@@ -927,6 +966,68 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			len(msg.Rows), plural(len(msg.Rows), "requisition", "requisitions"))
 		return m, nil
 
+	case api.ProjectsMsg:
+		m.projLoading = false
+		if msg.Err != nil {
+			// Whatever was on screen stays, the same as a failed requisition re-read: an
+			// empty list is not the answer "no projects".
+			m.err = msg.Err
+			m.status = "the projects are unchanged: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// The ERP does not answer with the people — that is a read per project — so a refresh
+		// carries over what is already in hand, and only while the member ids are unchanged:
+		// new ids mean the names beside them are somebody else's.
+		m.projs, m.err = keepPeople(m.projs, msg.Projects), nil
+		m.projMembers = map[int][]store.Member{}
+		for _, p := range m.projs {
+			if len(p.People) > 0 {
+				m.projMembers = withVal(m.projMembers, p.ID, p.People)
+			}
+		}
+		m.projHold = min(m.projHold, max(len(m.projRows())-1, 0))
+		m.status = fmt.Sprintf("%d open %s from the ERP",
+			len(msg.Projects), plural(len(msg.Projects), "project", "projects"))
+		return m, store.SaveProjects(msg.Projects)
+
+	case store.ProjectsLoadedMsg:
+		if msg.Err != nil {
+			// A cache that will not parse is not worth a message: the tab fetches instead.
+			return m, nil
+		}
+		m.projs = msg.Projects
+		// The people the cache holds are people already read: seeding the map here is what
+		// stops `l` asking for them again on the first open after a restart.
+		for _, p := range msg.Projects {
+			if len(p.People) > 0 {
+				m.projMembers = withVal(m.projMembers, p.ID, p.People)
+			}
+		}
+		return m, nil
+
+	case api.ProjectMembersMsg:
+		m.projPulling = withoutKey(m.projPulling, msg.ID)
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.status = "could not read that project's people: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		// An empty answer is an answer: a project whose teams have nobody on them says so,
+		// rather than asking again on the next keystroke.
+		m.projMembers = withVal(m.projMembers, msg.ID, msg.Members)
+		m.err = nil
+		// And it goes on the cached record, so a restart does not ask again: this is the same
+		// reason the list itself is on disk.
+		next := make([]store.Project, len(m.projs))
+		copy(next, m.projs)
+		for i := range next {
+			if next[i].ID == msg.ID {
+				next[i].People = msg.Members
+			}
+		}
+		m.projs = next
+		return m, store.SaveProjects(m.projs)
+
 	case api.EmployeeMsg:
 		delete(m.empPulling, msg.ID)
 		if msg.Err != nil {
@@ -1106,7 +1207,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
 			m.mode != ModeAuth && m.mode != ModeForm && m.mode != ModeBook &&
 			m.mode != ModeWFH && m.mode != ModeEmpSearch && m.mode != ModeReqForm &&
-			!claims(m.tab, msg) {
+			m.mode != ModeProjSearch && !claims(m.tab, msg) {
 			switch {
 			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
@@ -1121,6 +1222,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.showEmp()
 			case key.Matches(msg, m.k().ReqTab):
 				return m.showReq()
+			case key.Matches(msg, m.k().ProjTab):
+				return m.showProj()
 			case key.Matches(msg, m.k().TasksTab):
 				m.tab = TabTasks
 				return m, nil
@@ -1165,6 +1268,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.updateEmp(msg)
 			case TabReq:
 				return m.updateReq(msg)
+			case TabProj:
+				return m.updateProj(msg)
 			}
 		}
 
@@ -2183,6 +2288,45 @@ func withKey(in map[int]bool, id int, want bool) map[int]bool {
 	return out
 }
 
+// keepPeople carries the members already read onto a freshly read list, by id and only while
+// that project's member ids are the same. A project the refresh dropped goes with them, and one
+// whose teams changed is left to be read again.
+func keepPeople(old, fresh []store.Project) []store.Project {
+	had := make(map[int]store.Project, len(old))
+	for _, p := range old {
+		had[p.ID] = p
+	}
+	for i, p := range fresh {
+		was, ok := had[p.ID]
+		if ok && len(was.People) > 0 && slices.Equal(was.Members, p.Members) {
+			fresh[i].People = was.People
+		}
+	}
+	return fresh
+}
+
+// withVal and withoutKey are withKey for any value type, and its opposite. Same reason: the
+// model is a value and a map inside it is a reference, so a write in place reaches every copy
+// that still holds the old map.
+func withVal[V any](in map[int]V, id int, v V) map[int]V {
+	out := make(map[int]V, len(in)+1)
+	for k, old := range in {
+		out[k] = old
+	}
+	out[id] = v
+	return out
+}
+
+func withoutKey[V any](in map[int]V, id int) map[int]V {
+	out := make(map[int]V, len(in))
+	for k, v := range in {
+		if k != id {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // holdEmp pins the window to card i, clamped: the ends of the list stop rather than wrap.
 func (m Model) holdEmp(i int) Model {
 	m.empHold = min(max(i, 0), max(len(m.empRows())-1, 0))
@@ -2297,6 +2441,189 @@ func (m Model) reqAt(i int) (store.Requisition, bool) {
 		return store.Requisition{}, false
 	}
 	return m.reqs[i], true
+}
+
+// --- projects ----------------------------------------------------------------
+
+// showProj opens the projects. The cache is what it shows: a project's teams and who runs it do
+// not change between two openings of a terminal, so the list is read once and kept on disk, the
+// same as the directory. `R` is how it is re-read.
+func (m Model) showProj() (tea.Model, tea.Cmd) {
+	m.tab = TabProj
+	if len(m.projs) > 0 || m.projLoading {
+		return m, nil
+	}
+	return m.loadProj()
+}
+
+func (m Model) loadProj() (Model, tea.Cmd) {
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	m.projLoading = true
+	if strings.TrimSpace(m.login) == "" {
+		// The day total's answer carries the email the RPC login needs, exactly as it does
+		// for every other screen that talks RPC.
+		m.projWanted = true
+		return m, api.FetchDayHours(m.key, parse.Today())
+	}
+	m.projWanted = false
+	return m, api.FetchProjects(m.key, m.login, m.db)
+}
+
+// updateProj is the project list: a filter, a cursor over it, and a row that opens into the
+// project manager and the people on its teams. Nothing here writes.
+func (m Model) updateProj(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == ModeProjSearch {
+		return m.updateProjSearch(msg)
+	}
+	switch {
+	case key.Matches(msg, m.k().Down):
+		return m.holdProj(m.projHold + 1), nil
+	case key.Matches(msg, m.k().Up):
+		return m.holdProj(m.projHold - 1), nil
+	case key.Matches(msg, m.k().Top):
+		return m.holdProj(0), nil
+	case key.Matches(msg, m.k().Bottom):
+		return m.holdProj(len(m.projRows()) - 1), nil
+	case key.Matches(msg, m.k().HalfDown):
+		return m.holdProj(m.projHold + m.halfPage(2)), nil
+	case key.Matches(msg, m.k().HalfUp):
+		return m.holdProj(m.projHold - m.halfPage(2)), nil
+
+	case key.Matches(msg, m.k().Expand):
+		// l opens the row and reads its people once: a team's membership does not move while
+		// a terminal is open, so a second l on the same project asks nothing.
+		return m.openProj()
+	case key.Matches(msg, m.k().Collapse):
+		if p, ok := m.projAt(m.projHold); ok {
+			m.projOpen = withoutKey(m.projOpen, p.ID)
+		}
+		return m, nil
+
+	case key.Matches(msg, m.k().Mine):
+		// The one thing on this screen that is not a motion: whose projects are on it. It
+		// costs no call — the ERP already said which are mine when it answered the list.
+		m.projMine = !m.projMine
+		m.projHold, m.projOpen = 0, map[int]bool{}
+		return m, nil
+
+	case key.Matches(msg, m.k().Jump):
+		// / opens the filter, a prompt rather than a field on the screen — the directory's own
+		// rule, and for the same reason: a box that is always there costs the list rows to say
+		// nothing most of the time.
+		m.mode = ModeProjSearch
+		m.projQuery.Focus()
+		return m, textinput.Blink
+
+	case key.Matches(msg, m.k().Back):
+		// The same key whichever half of the screen has the keyboard, exactly as on the
+		// directory: it takes the screen back to what `p` opens on.
+		return m.clearProjFilter(), nil
+
+	case key.Matches(msg, m.k().Refresh):
+		return m.loadProj()
+
+	case key.Matches(msg, m.k().Quit):
+		m.prev, m.mode = m.mode, ModeConfirm
+		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
+		return m, nil
+	}
+	return m, nil
+}
+
+// updateProjSearch is the filter prompt: every key is a character, and the two ways out say
+// what happens to the query — esc drops it, enter keeps it and hands the rows the keyboard.
+func (m Model) updateProjSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Cancel): // checked first: esc is in both sets
+		m = m.clearProjFilter()
+		m.projQuery.Blur()
+		m.mode = ModeList
+		return m, nil
+	case key.Matches(msg, m.k().Focus): // enter: the filter stands
+		m.projQuery.Blur()
+		m.mode = ModeList
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.projQuery, cmd = m.projQuery.Update(msg)
+	// A narrower list means the held row may no longer exist.
+	m.projHold = min(m.projHold, max(len(m.projRows())-1, 0))
+	return m, cmd
+}
+
+// clearProjFilter takes the screen back to what `p` opens on: the whole list, from the top,
+// with every row shut. Clearing the query and leaving five rows open would put the list back
+// and the screen still a screenful of tables.
+func (m Model) clearProjFilter() Model {
+	m.projQuery.SetValue("")
+	m.projQuery.Blur()
+	m.projOpen, m.projHold = map[int]bool{}, 0
+	if m.mode == ModeProjSearch {
+		m.mode = ModeList
+	}
+	return m
+}
+
+// openProj opens the row under the cursor and reads its people the first time. The manager
+// came with the list — a many2one arrives named — so this call is only ever about the members.
+func (m Model) openProj() (tea.Model, tea.Cmd) {
+	p, ok := m.projAt(m.projHold)
+	if !ok {
+		return m, nil
+	}
+	m.projOpen = withKey(m.projOpen, p.ID, true)
+	if _, have := m.projMembers[p.ID]; have || m.projPulling[p.ID] || len(p.Members) == 0 {
+		return m, nil
+	}
+	if strings.TrimSpace(m.key) == "" {
+		m.err = api.ErrNoKey
+		return m, nil
+	}
+	if strings.TrimSpace(m.login) == "" {
+		m.status = "sync first — the ERP login comes with today's total"
+		return m, nil
+	}
+	m.projPulling = withVal(m.projPulling, p.ID, true)
+	return m, api.FetchProjectMembers(m.key, m.login, m.db, p.ID, p.Members)
+}
+
+// projAt is the project on row i of what the filter left.
+func (m Model) projAt(i int) (store.Project, bool) {
+	rows := m.projRows()
+	if i < 0 || i >= len(rows) {
+		return store.Project{}, false
+	}
+	return rows[i], true
+}
+
+// projRows is the rows the query leaves, derived on every render like every other filtered
+// list here. The match is on the name, the teams and the manager joined: "who runs Coeo" and
+// "what is the DevOps team on" are the same question asked of different fields.
+func (m Model) projRows() []store.Project {
+	q := strings.ToLower(strings.TrimSpace(m.projQuery.Value()))
+	if q == "" && !m.projMine {
+		return m.projs
+	}
+	out := make([]store.Project, 0, len(m.projs))
+	for _, p := range m.projs {
+		if m.projMine && !p.Mine {
+			continue
+		}
+		hay := strings.ToLower(p.Name + " " + strings.Join(p.Teams, " ") + " " + p.Manager)
+		if q != "" && !strings.Contains(hay, q) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func (m Model) holdProj(i int) Model {
+	m.projHold = min(max(i, 0), max(len(m.projRows())-1, 0))
+	return m
 }
 
 // --- the new-requisition line ------------------------------------------------
@@ -4679,7 +5006,7 @@ func modeLabel(m Mode) string {
 		return "-- NEW TIMEOFF --"
 	case ModeWFH:
 		return "-- WFH REQUEST --"
-	case ModeEmpSearch:
+	case ModeEmpSearch, ModeProjSearch:
 		return "-- SEARCH --"
 	case ModeReqForm:
 		return "-- NEW REQUISITION --"
