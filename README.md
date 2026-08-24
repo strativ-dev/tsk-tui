@@ -21,8 +21,9 @@ browser and no mouse:
   category you choose.
 - **Projects** — the projects you are on, a row each: the name, the teams on it, and how many
   tasks it holds; `a` switches to every open project in the office. `l` opens one into its project
-  manager and everyone on its teams, as a table of names and work emails; `/` filters the list.
-  Cached on disk, re-read with `R`.
+  manager and everyone on its teams, as a table of names and work emails. `i` filters the list,
+  `/` asks where a person is and answers with the projects they are on. Cached on disk, re-read
+  with `R`.
 
 ![tsk filtering 22 tasks down to three by typing "discuss" in the search field](screenshot.png)
 
@@ -102,8 +103,9 @@ self-contained binary, no C dependencies in the source.
 - **What you are working on, and who is on it with you.** `p` lists the projects you are on —
   the ones you manage or whose teams you are in — with the teams and the task count, and `a`
   switches to all 89 the office has open. `l` opens a row into the project manager and a table of
-  everyone on its teams with their work emails. `/` filters on any of that text. Cached on disk,
-  `R` re-reads.
+  everyone on its teams with their work emails. `i` filters the list on the name, the teams, the
+  manager and the people read so far; `/` asks where a person is and answers with a modal of the
+  matching names grouped under their projects. Cached on disk, `R` re-reads.
 - **Never left wondering if it's working.** A spinner marks every request in flight —
   reading tasks, logging hours, reading the month or the year.
 - **Find a task by typing.** The list narrows as you go.
@@ -480,8 +482,9 @@ form, with ✓ and ✕ lined up under the values.
 | `ctrl+f` / `ctrl+b` | half a screen |
 | `a` | all projects / only yours |
 | `l` | open its manager and its people; `h` closes |
-| `/` | filter the list — any key filters, `enter` keeps it |
-| `esc` | clear the filter and collapse everything — from the prompt or the list |
+| `i` | focus the search field — name, teams, manager, and the people read so far |
+| `/` | find a person: a modal of the matching names, grouped by project (`esc` closes) |
+| `esc` | clear the search and collapse everything |
 | `R` | re-read them from the ERP |
 | `?` | show or hide the key list |
 | `q` | quit (asks first) |
@@ -589,7 +592,7 @@ never fires there:
 | `[keys.meal]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `book_meal` `drop_meal` `delete` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the booking line |
 | `[keys.emp]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
 | `[keys.req]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `back` `new_leave` `refresh` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the new-requisition line |
-| `[keys.proj]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `mine` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
+| `[keys.proj]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `mine` `search` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` in the query field and the find prompt |
 
 `help` (`?`), the seven tab keys (`tasks_tab` `dash_tab` `time_tab` `meal_tab` `emp_tab`
 `req_tab` `proj_tab`) and the confirm keys (`yes` `yes_only` `no`) work on every screen, so they

@@ -304,9 +304,9 @@ func TestProjRowOpensItsPeople(t *testing.T) {
 	}
 }
 
-// / filters the list, and the query stays visible beside the title in the accent — a short list
-// needs a reason on screen. esc drops it and shuts every open row; enter keeps it and hands the
-// rows the keyboard.
+// i focuses the query box in the header — the task list's own key and its own box — and the
+// list narrows as it is typed. esc and enter hand the rows the keyboard back; the query stands
+// until esc is pressed on the list, which is what that key means on this tab.
 func TestProjFilter(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -314,10 +314,16 @@ func TestProjFilter(t *testing.T) {
 
 	const accent = "255;192;0" // #FFC000
 
-	m := send(t, projModel(t, 120, 40), runes("a"), runes("/"))
+	m := send(t, projModel(t, 120, 40), runes("a"), runes("i"))
 	if m.mode != ModeProjSearch {
-		t.Fatalf("/ left the mode at %v", m.mode)
+		t.Fatalf("i left the mode at %v", m.mode)
 	}
+	// The box takes the accent frame while it holds the keys, with the caret in the gutter.
+	box := lineWith(t, m.View(), "❯")
+	if !strings.Contains(box, accent) {
+		t.Errorf("the focused box is not in the accent: %q", box)
+	}
+
 	typed := send(t, m, runes("boo"))
 	if got := typed.projQuery.Value(); got != "boo" {
 		t.Fatalf("the query holds %q", got)
@@ -329,76 +335,201 @@ func TestProjFilter(t *testing.T) {
 	if typed.search.Value() != "" {
 		t.Errorf("the task query holds %q", typed.search.Value())
 	}
+	if v := plain(typed.View()); strings.Contains(v, "AI Sales") {
+		t.Errorf("a row the filter excludes is on screen:\n%s", v)
+	}
 
-	// enter keeps it, and the head says so — in the accent, beside the title.
+	// enter hands the rows the keyboard and the query stands, dim in its box, with the count
+	// beside the title saying what it left.
 	kept := send(t, typed, special(tea.KeyEnter))
 	if kept.mode == ModeProjSearch || kept.projQuery.Value() != "boo" {
 		t.Errorf("enter dropped the filter: mode %v, query %q", kept.mode, kept.projQuery.Value())
 	}
-	head := lineWith(t, kept.View(), "PROJECTS")
-	if !strings.Contains(plain(head), "/boo") {
-		t.Errorf("the head does not show the filter: %q", plain(head))
+	if !strings.Contains(plain(lineWith(t, kept.View(), "boo")), "boo") {
+		t.Error("the query left the box when the keys did")
 	}
-	if !strings.Contains(head, accent) {
-		t.Errorf("the filter is not in the accent: %q", head)
+	if head := plain(lineWith(t, kept.View(), "PROJECTS")); !strings.Contains(head, "1 of 4") {
+		t.Errorf("the head does not count what the filter left: %q", head)
 	}
-	if !strings.Contains(plain(head), "1 of 4") {
-		t.Errorf("the head does not count what the filter left: %q", plain(head))
-	}
-	if v := plain(kept.View()); strings.Contains(v, "AI Sales") {
-		t.Errorf("a row the filter excludes is on screen:\n%s", v)
+	// esc from the field is the same door as enter: it hands the rows back and keeps the query,
+	// since esc on the list is what clears it.
+	if out := send(t, typed, special(tea.KeyEsc)); out.mode == ModeProjSearch ||
+		out.projQuery.Value() != "boo" {
+		t.Errorf("esc from the field: mode %v, query %q", out.mode, out.projQuery.Value())
 	}
 
-	// esc drops the query and shuts the rows, from the list or from the prompt: one keystroke
-	// back to what `p` opens on.
+	// esc on the list drops the query and shuts the rows: one keystroke back to what `p`
+	// opens on.
 	opened := send(t, kept, runes("l"))
 	if !opened.projOpen[858] {
 		t.Fatalf("l did not open the only matching row: %+v", opened.projOpen)
 	}
-	for what, back := range map[string]Model{
-		"the list":   send(t, opened, special(tea.KeyEsc)),
-		"the prompt": send(t, opened, runes("/"), special(tea.KeyEsc)),
-	} {
-		if back.projQuery.Value() != "" {
-			t.Errorf("esc from %s kept the query %q", what, back.projQuery.Value())
-		}
-		if len(back.projOpen) != 0 {
-			t.Errorf("esc from %s left rows open: %+v", what, back.projOpen)
-		}
-		if back.projHold != 0 {
-			t.Errorf("esc from %s left the cursor on %d", what, back.projHold)
-		}
-		if back.mode == ModeProjSearch {
-			t.Errorf("esc from %s stayed in the prompt", what)
-		}
+	back := send(t, opened, special(tea.KeyEsc))
+	if back.projQuery.Value() != "" {
+		t.Errorf("esc kept the query %q", back.projQuery.Value())
+	}
+	if len(back.projOpen) != 0 || back.projHold != 0 {
+		t.Errorf("esc left %+v open with the cursor on %d", back.projOpen, back.projHold)
 	}
 
 	// Nothing matching says so rather than leaving a blank screen.
-	none := send(t, send(t, m, runes("zzz")), special(tea.KeyEnter))
+	none := send(t, m, runes("zzz"), special(tea.KeyEnter))
 	if v := plain(none.View()); !strings.Contains(v, "no project matches that") {
 		t.Errorf("an empty filter result is blank:\n%s", v)
 	}
 
 	// The two filters compose: "boo" matches a project that is not mine, so with the toggle
-	// back on it leaves nothing — and the query is still what the head shows.
-	both := send(t, kept, runes("a"))
-	if len(both.projRows()) != 0 {
+	// back on it leaves nothing.
+	if both := send(t, kept, runes("a")); len(both.projRows()) != 0 {
 		t.Errorf("the toggle did not narrow the query's own rows: %d", len(both.projRows()))
 	}
 }
 
-// The prompt owns the keyboard while it is up: a project name can hold the letters the tabs are.
+// The field owns the keyboard while it has the keys: a project name can hold the letters the
+// tabs are, and a `?`.
 func TestProjFilterOwnsTheKeyboard(t *testing.T) {
-	m := send(t, projModel(t, 120, 40), runes("a"), runes("/"), runes("top dep"))
+	m := send(t, projModel(t, 120, 40), runes("a"), runes("i"), runes("top dep"))
 	if m.tab != TabProj {
 		t.Errorf("typing changed the tab to %v", m.tab)
 	}
 	if got := m.projQuery.Value(); got != "top dep" {
 		t.Errorf("the query holds %q", got)
 	}
-	// ? too: a name with a question mark in it stays typeable.
 	if q := send(t, m, runes("?")); q.showHelp {
-		t.Error("? toggled the key list from inside the prompt")
+		t.Error("? toggled the key list from inside the field")
+	}
+}
+
+// The box is there whether or not it has the keys, and nothing it holds may wrap it onto a
+// second line — a wrapped box would shove the whole list down a row.
+func TestProjSearchBoxFits(t *testing.T) {
+	for _, w := range []int{60, 80, 100, 120, 200} {
+		m := send(t, projModel(t, w, 30), runes("i"),
+			runes(strings.Repeat("long project name ", 20)))
+		if got := len(strings.Split(m.projSearchBox(), "\n")); got != 3 {
+			t.Errorf("at %d cells the box is %d lines", w, got)
+		}
+		for i, line := range strings.Split(m.View(), "\n") {
+			if got := lipgloss.Width(line); got > w {
+				t.Errorf("at %d cells line %d is %d wide: %q", w, i, got, plain(line))
+			}
+		}
+	}
+}
+
+// `/` looks for a person across every project whose people have been read and answers with a
+// modal: the names it found, grouped under the project they are on. esc closes it, and nothing in
+// the list behind it moved.
+func TestProjFindsAPerson(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	const accent = "255;192;0" // #FFC000
+
+	// Two projects with their people read, so the modal has something to group.
+	open := send(t, projModel(t, 120, 40), runes("l"))
+	open = send(t, open, api.ProjectMembersMsg{ID: 849, Members: sampleMembers()})
+	open = send(t, open, runes("j"), runes("l"),
+		api.ProjectMembersMsg{ID: 787, Members: []store.Member{
+			{Name: "Md. Tasnim Alam", Email: "tasnim@strativ.se"},
+			{Name: "Tasnim Mahmood", Email: "tasnim.chowdhury@strativ.se"},
+			{Name: "Reaz Abedin", Email: "reaz@strativ.se"},
+		}})
+
+	m := send(t, open, runes("/"))
+	if m.mode != ModeProjJump {
+		t.Fatalf("/ left the mode at %v", m.mode)
+	}
+	typed := send(t, m, runes("tasnim"))
+	if got := typed.projFindHits(); got != 3 {
+		t.Fatalf("%d people matched, want 3", got)
+	}
+
+	// enter answers with the modal: the query in its head, then a project and the names on it.
+	found := send(t, typed, special(tea.KeyEnter))
+	if found.mode != ModeProjFound {
+		t.Fatalf("enter left the mode at %v", found.mode)
+	}
+	// The modal itself, not the whole screen: the list behind it still has its own rows, and
+	// one of them names the manager this search did not match.
+	modal := found.projFoundModal()
+	v := plain(modal)
+	for _, want := range []string{"tasnim", "3 people on 2 projects",
+		"AI Transformation", "Md. Tasnim Alam", "Tasnim Mahmood"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the modal is missing %q:\n%s", want, v)
+		}
+	}
+	if strings.Contains(v, "Reaz Abedin") {
+		t.Errorf("the modal lists somebody nothing matched:\n%s", v)
+	}
+	// The name is the accent — it is what was searched for — and it sits under its project.
+	if !strings.Contains(lineWith(t, modal, "Tasnim Mahmood"), accent) {
+		t.Error("the found name is not in the accent")
+	}
+	if a, b := rowOf(t, v, "AI Transformation"), rowOf(t, v, "Tasnim Mahmood"); a > b {
+		t.Errorf("a project at %d is below its own people at %d", a, b)
+	}
+	// And the modal is on screen, whole.
+	if !strings.Contains(plain(found.View()), "3 people on 2 projects") {
+		t.Errorf("the modal is not on screen:\n%s", plain(found.View()))
+	}
+
+	// An email is the same question of a different field.
+	if byMail := send(t, m, runes("chowdhury@")); byMail.projFindHits() != 1 {
+		t.Errorf("an email found %d people", byMail.projFindHits())
+	}
+
+	// esc closes it and the list is exactly as it was — nothing opened or moved.
+	shut := send(t, found, special(tea.KeyEsc))
+	if shut.mode == ModeProjFound {
+		t.Error("esc did not close the modal")
+	}
+	if shut.projHold != open.projHold || len(shut.projOpen) != len(open.projOpen) {
+		t.Errorf("the list moved: cursor %d, open %+v", shut.projHold, shut.projOpen)
+	}
+	if strings.Contains(plain(shut.View()), "3 people on") {
+		t.Error("the modal is still on screen")
+	}
+
+	// Nothing matching opens no modal: the status line says so and the list stays put.
+	none := send(t, m, runes("zzz"), special(tea.KeyEnter))
+	if none.mode == ModeProjFound {
+		t.Error("a search with no hits opened a modal")
+	}
+	if !strings.Contains(none.status, "nobody matches") {
+		t.Errorf("status = %q", none.status)
+	}
+
+	// Nothing read yet, nothing to search: the people arrive when a row is opened.
+	fresh := send(t, projModel(t, 120, 40), runes("/"))
+	if fresh.mode == ModeProjJump {
+		t.Error("/ opened the prompt with nobody read")
+	}
+	if !strings.Contains(fresh.status, "no people read yet") {
+		t.Errorf("status = %q", fresh.status)
+	}
+}
+
+// The query field matches the people too, once they have been read: "which projects is Tasnim
+// on" is the same question as "who runs Coeo", asked of a different field.
+func TestProjFilterMatchesPeople(t *testing.T) {
+	m := send(t, projModel(t, 120, 40), runes("l"))
+	m = send(t, m, api.ProjectMembersMsg{ID: 849, Members: sampleMembers()})
+
+	typed := send(t, m, runes("i"), runes("benjamin"))
+	rows := typed.projRows()
+	if len(rows) != 1 || rows[0].ID != 849 {
+		t.Fatalf("the filter left %+v", rows)
+	}
+	// An email works the same way.
+	if byMail := send(t, m, runes("i"), runes("ashik.rafat@")); len(byMail.projRows()) != 1 {
+		t.Errorf("an email left %d rows", len(byMail.projRows()))
+	}
+	// A project whose people have not been read is matched on what it does have.
+	if unread := send(t, m, runes("i"), runes("benjamin")); len(unread.projRows()) != 1 {
+		t.Errorf("a name reached a project whose people are not in hand")
 	}
 }
 

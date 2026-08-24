@@ -227,8 +227,12 @@ func (m Model) View() string {
 		// Above the status line, like the date jump's own prompt: it belongs to the moment it
 		// is being typed, and the header says the filter is on once the prompt has closed.
 		tail = append(tail, theme.Blur.Render(m.empQuery.View()))
-	case ModeProjSearch:
-		tail = append(tail, theme.Blur.Render(m.projQuery.View()))
+	case ModeProjJump:
+		// Above the status line, exactly where the date jump's own prompt goes: it belongs to
+		// the moment it is being typed.
+		tail = append(tail, theme.Blur.Render(m.find.View()))
+	case ModeProjFound:
+		tail = append(tail, strings.Split(m.projFoundModal(), "\n")...)
 	}
 	// Flattened and cut to the width: a server message can arrive with newlines in it,
 	// and a status line that wraps costs the list a row it was not given.
@@ -1153,12 +1157,6 @@ func center(s string, w int) string {
 // projHead is the list's own header: what it is, and how many projects are open.
 func (m Model) projHead() []string {
 	left := theme.Header.Render("PROJECTS")
-	if q := strings.TrimSpace(m.projQuery.Value()); q != "" {
-		// A filter that is on but not being typed still has to be visible, or the list is
-		// short for a reason nothing on screen explains. In the accent, beside the title: the
-		// same mark the directory's own header uses.
-		left += theme.Dim.Render("  /") + theme.MatchText.Render(trunc(oneLine(q), 24))
-	}
 	// The toggle sits before the count, on the right: it says what pressing `a` gives you
 	// rather than what is on screen — the clock button's own rule — and the count beside it is
 	// what says which of the two you are looking at.
@@ -1168,10 +1166,41 @@ func (m Model) projHead() []string {
 		// rather than replacing the rows — the same as the directory and the chart's month.
 		right = m.spin.View() + " " + right
 	}
-	return []string{
-		theme.Blur.Render(spread(left, right, m.cols()-gutter)),
-		"",
+	// The query field first, as on the task list: a box across the width with the caret in the
+	// gutter while it has the keys. The count line under it says what the query left.
+	out := strings.Split(m.projSearchBox(), "\n")
+	return append(out, theme.Blur.Render(spread(left, right, m.cols()-gutter)), "")
+}
+
+// projSearchBox is the query field, the task list's own box without the progress cluster beside
+// it: the caret marks focus and keeps its cells when it goes, so nothing shifts, and a query
+// that is on but not being typed into renders dim rather than with a cursor.
+func (m Model) projSearchBox() string {
+	caret := "   "
+	if m.mode == ModeProjSearch {
+		caret = theme.Prompt.Render(" ❯ ")
 	}
+	field := m.projQuery.View()
+	if m.mode != ModeProjSearch && m.projQuery.Value() != "" {
+		field = theme.Dim.Render(m.projQuery.Value())
+	}
+	frame := theme.SearchBox
+	if m.mode == ModeProjSearch {
+		frame = theme.SearchBoxFocus
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Center, caret,
+		frame.Width(m.projBoxWidth()).Render(field))
+}
+
+// projBoxWidth is the box, and projFieldWidth the input inside it: the box's own two padding
+// cells and the cursor cell the input draws after its Width, so no query can wrap the box onto
+// a second line and shove the list down.
+func (m Model) projBoxWidth() int {
+	return max(m.cols()-caretCol-4, 24)
+}
+
+func (m Model) projFieldWidth() int {
+	return max(m.projBoxWidth()-3, 16)
 }
 
 // projFilterLabel is the all/mine toggle: one label, `all projects`, with its key picked out —
@@ -1256,6 +1285,9 @@ func (m Model) projDetailLines(p store.Project) []string {
 
 	people, have := m.projMembers[p.ID]
 	switch {
+	case have && len(people) > 0:
+		// People in hand answer first: a refresh that moved the ids should not turn a table
+		// already on screen into "no members".
 	case len(p.Members) == 0:
 		// Not a wait and not a failure: the ERP says the teams have nobody on them.
 		return append(out, theme.Blur.Render(projIndent+
@@ -3211,6 +3243,45 @@ func (m Model) authModal() string {
 	return theme.Modal.Render(strings.Join(lines, "\n"))
 }
 
+// projFoundModal is what `/` on the projects tab answers with: the people it found, grouped
+// under the project they are on. The modal **is** the answer, exactly as the day modal is for a
+// date jump — nothing in the list behind it opens or moves, so there is nothing to go back to
+// and esc simply closes it.
+func (m Model) projFoundModal() string {
+	groups := m.projFoundRows()
+	people := 0
+	for _, g := range groups {
+		people += len(g.people)
+	}
+
+	lines := []string{theme.Title.Render(oneLine(m.projFind)) + theme.Dim.Render(fmt.Sprintf(
+		"   %d %s on %d %s", people, plural(people, "person", "people"),
+		len(groups), plural(len(groups), "project", "projects")))}
+
+	// A search with more than this behind it is not one worth reading in a modal; the count in
+	// the head still tells the truth about what was left out.
+	const most = 16
+	room := min(m.cols()-gutter-6, projMemberName+projLabelCells)
+	shown := 0
+	for _, g := range groups {
+		if shown >= most {
+			lines = append(lines, theme.Dim.Render(fmt.Sprintf("… %d more", people-shown)))
+			break
+		}
+		lines = append(lines, "", theme.DayLabel.Render(trunc(g.project, room)))
+		for _, who := range g.people {
+			if shown == most {
+				break
+			}
+			// The name in the accent: it is what was searched for, and the project above it is
+			// the answer to "where".
+			lines = append(lines, "  "+theme.MatchText.Render(trunc(who, room-2)))
+			shown++
+		}
+	}
+	return theme.Modal.Render(strings.Join(lines, "\n"))
+}
+
 // dayModal lists what a date jump found: one line per entry, with the task it belongs
 // to and its hours, then the day's total. It answers "where did the day go" without
 // opening a single task, which is the whole point of asking.
@@ -3286,7 +3357,8 @@ func (m Model) footer() string {
 	}
 	if m.mode != ModeConfirm && m.mode != ModeAuth && m.mode != ModeForm &&
 		m.mode != ModeLeaves && m.mode != ModeBook && m.mode != ModeWFH &&
-		m.mode != ModeEmpSearch && m.mode != ModeProjSearch && m.mode != ModeReqForm {
+		m.mode != ModeEmpSearch && m.mode != ModeProjSearch &&
+		m.mode != ModeProjJump && m.mode != ModeProjFound && m.mode != ModeReqForm {
 		switch m.tab {
 		case TabDash:
 			label = "-- DASHBOARD --"
@@ -3369,7 +3441,9 @@ func (m Model) footer() string {
 			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "manager + members")),
 			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
 			key.NewBinding(key.WithHelp(m.k().Mine.Help().Key, mine)),
-			key.NewBinding(key.WithHelp(m.k().Jump.Help().Key, "filter")),
+			key.NewBinding(key.WithHelp(m.k().Search.Help().Key, "search")),
+			key.NewBinding(key.WithHelp(m.k().Jump.Help().Key, "find a person")),
+
 			key.NewBinding(key.WithHelp(m.k().Back.Help().Key, "clear + collapse")),
 			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.tab == TabEmp:

@@ -48,8 +48,16 @@ const (
 	// the task list's query filters tasks, and carrying one across would filter the other
 	// screen by whatever was typed here.
 	ModeEmpSearch
-	// ModeProjSearch is the same thing on the projects tab, and its own for the same reason.
+	// ModeProjSearch is the projects tab's own query field — a box in its header, focused with
+	// i, exactly as the task list's is. Its own mode and its own input: the task query filters
+	// tasks, and carrying one across would filter the other screen by whatever was typed here.
 	ModeProjSearch
+	// ModeProjJump is `/` on the projects tab: a prompt that looks for a person across every
+	// project whose people are in hand, the way the date jump looks for a day across the tasks.
+	ModeProjJump
+	// ModeProjFound is the modal that answers it: the matches, grouped under the project they
+	// are on. esc closes it and nothing else in it needs a key, since it destroys nothing.
+	ModeProjFound
 )
 
 // Tab is the top-level screen, above modes: the task list and everything reached from
@@ -385,7 +393,13 @@ type Model struct {
 	// projMine is the all/mine toggle, and it opens **on**: the list is 89 projects and nine
 	// of them are yours, so the screen answers "what am I on" before it answers "what does
 	// the office run".
-	projMine    bool
+	projMine bool
+	// projFind is the last member search, kept after the prompt closes so the marks survive
+	// scrolling — the same rule the date jump's own marks follow.
+	projFind string
+	// find is the prompt that search is typed into — its own input again, since the query box
+	// above it filters projects and this one looks inside them.
+	find        textinput.Model
 	projOpen    map[int]bool
 	projMembers map[int][]store.Member
 	projPulling map[int]bool
@@ -485,9 +499,16 @@ func New() Model {
 	// The projects tab's own filter, on the same terms as the directory's: its own input, and
 	// a prompt rather than a box.
 	m.projQuery = textinput.New()
-	m.projQuery.Prompt = "search: "
+	m.projQuery.Prompt = "" // the ❯ caret sits outside the box, as on the task list
 	m.projQuery.PromptStyle = theme.Prompt
-	m.projQuery.Width = 32
+	m.projQuery.Placeholder = "search a project"
+	m.projQuery.Width = 32 // resized from the terminal, like the task query
+	// The member prompt: `/` inside an open project, above the status line where the date
+	// jump's own prompt renders.
+	m.find = textinput.New()
+	m.find.Prompt = "find "
+	m.find.PromptStyle = theme.Prompt
+	m.find.Width = 32
 	m.projMine = true
 	m.projOpen = map[int]bool{}
 	m.projMembers = map[int][]store.Member{}
@@ -577,6 +598,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.search.Width = m.searchFieldWidth()
+		m.projQuery.Width = m.projFieldWidth()
 		m.fields[fieldDesc].Width = fieldWidth(m.descWidth())
 		if m.form.open {
 			m.form.desc.Width = m.leaveDescWidth()
@@ -1207,7 +1229,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode != ModeSearch && m.mode != ModeInsert && m.mode != ModeJump &&
 			m.mode != ModeAuth && m.mode != ModeForm && m.mode != ModeBook &&
 			m.mode != ModeWFH && m.mode != ModeEmpSearch && m.mode != ModeReqForm &&
-			m.mode != ModeProjSearch && !claims(m.tab, msg) {
+			m.mode != ModeProjSearch && m.mode != ModeProjJump &&
+			m.mode != ModeProjFound && !claims(m.tab, msg) {
 			switch {
 			case key.Matches(msg, m.k().Help):
 				m.showHelp = !m.showHelp
@@ -2478,6 +2501,12 @@ func (m Model) updateProj(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.mode == ModeProjSearch {
 		return m.updateProjSearch(msg)
 	}
+	if m.mode == ModeProjJump {
+		return m.updateProjJump(msg)
+	}
+	if m.mode == ModeProjFound {
+		return m.updateProjFound(msg)
+	}
 	switch {
 	case key.Matches(msg, m.k().Down):
 		return m.holdProj(m.projHold + 1), nil
@@ -2509,12 +2538,24 @@ func (m Model) updateProj(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projHold, m.projOpen = 0, map[int]bool{}
 		return m, nil
 
-	case key.Matches(msg, m.k().Jump):
-		// / opens the filter, a prompt rather than a field on the screen — the directory's own
-		// rule, and for the same reason: a box that is always there costs the list rows to say
-		// nothing most of the time.
+	case key.Matches(msg, m.k().Search):
+		// i focuses the query box in the header, the same key that reaches the task list's own.
+		// Only i: Focus is esc **and** enter, and esc belongs to the list, where it clears.
 		m.mode = ModeProjSearch
 		m.projQuery.Focus()
+		return m, textinput.Blink
+
+	case key.Matches(msg, m.k().Jump):
+		// / looks for a person across every project whose people are in hand — read once when
+		// its row was opened, and kept, so this reaches more than what is on screen. Nothing
+		// read yet is the one case it cannot answer.
+		if !m.projAnyPeople() {
+			m.status = "no people read yet — " + m.k().Expand.Help().Key + " opens a project"
+			return m, nil
+		}
+		m.mode = ModeProjJump
+		m.find.SetValue("")
+		m.find.Focus()
 		return m, textinput.Blink
 
 	case key.Matches(msg, m.k().Back):
@@ -2533,16 +2574,12 @@ func (m Model) updateProj(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateProjSearch is the filter prompt: every key is a character, and the two ways out say
-// what happens to the query — esc drops it, enter keeps it and hands the rows the keyboard.
+// updateProjSearch is the query field: every key filters, live, and esc or enter hands the rows
+// the keyboard back — the task list's own two ways out. The query stands either way; it is the
+// list's own esc that clears it, which is what that key means on this tab.
 func (m Model) updateProjSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, m.k().Cancel): // checked first: esc is in both sets
-		m = m.clearProjFilter()
-		m.projQuery.Blur()
-		m.mode = ModeList
-		return m, nil
-	case key.Matches(msg, m.k().Focus): // enter: the filter stands
+	case key.Matches(msg, m.k().Cancel), key.Matches(msg, m.k().Focus):
 		m.projQuery.Blur()
 		m.mode = ModeList
 		return m, nil
@@ -2554,13 +2591,110 @@ func (m Model) updateProjSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateProjJump is `/` inside an open project: it finds a person by name or email and marks
+// every row that matches, the way the date jump marks the lines it found. The marks stand after
+// the prompt closes, so they survive scrolling; enter on an empty prompt clears them.
+func (m Model) updateProjJump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.k().Cancel):
+		m.find.Blur()
+		m.mode = ModeList
+		return m, nil
+	case key.Matches(msg, m.k().Focus):
+		m.projFind = strings.TrimSpace(m.find.Value())
+		m.find.Blur()
+		if m.projFind == "" {
+			m.mode, m.status = ModeList, ""
+			return m, nil
+		}
+		if m.projFindHits() == 0 {
+			// Nothing to open a modal on: the status line says so and the list stays put.
+			m.mode = ModeList
+			m.status = "nobody matches " + oneLine(m.projFind)
+			return m, nil
+		}
+		// The modal is the answer, the same as the date jump's own: nothing in the list opens
+		// or moves.
+		m.mode, m.status = ModeProjFound, ""
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.find, cmd = m.find.Update(msg)
+	// Live, like every other filter here: the marks follow the query as it is typed.
+	m.projFind = strings.TrimSpace(m.find.Value())
+	return m, cmd
+}
+
+// updateProjFound is the modal: esc closes it and nothing else in it needs a key, since it
+// destroys nothing and the list behind it never moved.
+func (m Model) updateProjFound(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.k().Cancel) || key.Matches(msg, m.k().Focus) {
+		m.mode = ModeList
+	}
+	return m, nil
+}
+
+// projAnyPeople says whether any project has had its people read, which is the whole of what `/`
+// has to search: they arrive when a row is opened and are kept from then on.
+func (m Model) projAnyPeople() bool {
+	for _, p := range m.projs {
+		if len(m.projMembers[p.ID]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// projFound is the matches, grouped under the project they are on — what the modal renders, and
+// derived on every render like every other figure here.
+type projFound struct {
+	project string
+	people  []string
+}
+
+func (m Model) projFoundRows() []projFound {
+	var out []projFound
+	for _, p := range m.projs {
+		var hit []string
+		for _, who := range m.projMembers[p.ID] {
+			if m.onProjFind(who) {
+				hit = append(hit, who.Name)
+			}
+		}
+		if len(hit) > 0 {
+			out = append(out, projFound{project: p.Name, people: hit})
+		}
+	}
+	return out
+}
+
+// onProjFind marks a person: the query matched against the name and the email together, since
+// "who is tasnim" and "who has a strativ.se address" are the same question of different fields.
+func (m Model) onProjFind(who store.Member) bool {
+	q := strings.ToLower(strings.TrimSpace(m.projFind))
+	if q == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(who.Name+" "+who.Email), q)
+}
+
+// projFindHits counts the people the search found, derived rather than kept: a project whose
+// row is opened after the search joins on its own.
+func (m Model) projFindHits() int {
+	n := 0
+	for _, g := range m.projFoundRows() {
+		n += len(g.people)
+	}
+	return n
+}
+
 // clearProjFilter takes the screen back to what `p` opens on: the whole list, from the top,
 // with every row shut. Clearing the query and leaving five rows open would put the list back
 // and the screen still a screenful of tables.
 func (m Model) clearProjFilter() Model {
 	m.projQuery.SetValue("")
 	m.projQuery.Blur()
-	m.projOpen, m.projHold = map[int]bool{}, 0
+	m.projFind, m.projOpen, m.projHold = "", map[int]bool{}, 0
 	if m.mode == ModeProjSearch {
 		m.mode = ModeList
 	}
@@ -2612,13 +2746,32 @@ func (m Model) projRows() []store.Project {
 		if m.projMine && !p.Mine {
 			continue
 		}
-		hay := strings.ToLower(p.Name + " " + strings.Join(p.Teams, " ") + " " + p.Manager)
-		if q != "" && !strings.Contains(hay, q) {
+		if q != "" && !strings.Contains(m.projHay(p), q) {
 			continue
 		}
 		out = append(out, p)
 	}
 	return out
+}
+
+// projHay is everything a project can be found by, lowercased: its name, its teams, its manager
+// and **the people on it** — "who runs Coeo", "what is the DevOps team on" and "which projects is
+// Tasnim on" are the same question asked of different fields. The people only count once they
+// have been read, which is what the cache is for.
+func (m Model) projHay(p store.Project) string {
+	var b strings.Builder
+	b.WriteString(p.Name)
+	b.WriteByte(' ')
+	b.WriteString(strings.Join(p.Teams, " "))
+	b.WriteByte(' ')
+	b.WriteString(p.Manager)
+	for _, who := range m.projMembers[p.ID] {
+		b.WriteByte(' ')
+		b.WriteString(who.Name)
+		b.WriteByte(' ')
+		b.WriteString(who.Email)
+	}
+	return strings.ToLower(b.String())
 }
 
 func (m Model) holdProj(i int) Model {
@@ -5008,6 +5161,8 @@ func modeLabel(m Mode) string {
 		return "-- WFH REQUEST --"
 	case ModeEmpSearch, ModeProjSearch:
 		return "-- SEARCH --"
+	case ModeProjJump, ModeProjFound:
+		return "-- FIND --"
 	case ModeReqForm:
 		return "-- NEW REQUISITION --"
 	}

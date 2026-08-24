@@ -65,7 +65,7 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | `TabMeal` | `m` · `4` | this month's canteen meals, one bar per meal per day |
 | `TabEmp` | `e` · `5` | the office directory, a row per person, filtered by a `/` prompt |
 | `TabReq` | `r` · `6` | the requisitions you filed, a table, each row opening into its own fields |
-| `TabProj` | `p` · `7` | your projects (`a` for all), a row each; `l` opens one into its manager and its people |
+| `TabProj` | `p` · `7` | your projects (`a` for all); `l` opens one into its people, `/` finds one |
 
 - The bar **gives up its words before it wraps** (`tabBar`, the `short` tier): five labels want
   63 cells, and the bar is the first line of every screen — wrapped, it pushes the whole UI down
@@ -1152,7 +1152,8 @@ One row between the count and the table's own heads, and the whole request is on
 
 The office's open projects, one row each: the name, the teams on it, and how many tasks it
 holds. It **opens on your own** and `a` toggles to all of them; `l` opens a row into who runs it
-and everyone on its teams, `/` filters the list. `p` to open, `t` to go back. **Read only.**
+and everyone on its teams, `i` focuses a query field over the list and `/` finds a person across
+the projects whose people have been read. `p` to open, `t` to go back. **Read only.**
 
 - **Two reads, one message** (`api.FetchProjects` → `ProjectsMsg`), for the reason the employee
   detail needs its second: `project.project` `search_read` answers `team_ids` as a **many2many**,
@@ -1242,24 +1243,69 @@ closes it.
   query's own "no project matches that": the toggle is what emptied the screen, so the message
   names the key that fills it.
 
-### The filter (`/`)
+### The query field (`i`)
 
-- **A prompt, not a field** (`ModeProjSearch`), exactly as on the directory: it costs the list no
-  rows while nothing is being typed, and renders above the status line. `esc` drops it, `enter`
-  keeps it and hands the rows the keyboard.
-- **The query shows in the accent beside the title** while it is on but not being typed
-  (`projHead`), and the count becomes `2 of 89` — a short list needs a reason on screen.
+- **A box in the header, not a prompt** (`projSearchBox`, `ModeProjSearch`) — the task list's own
+  field without the progress cluster beside it, and `i` is the key that reaches it there too. The
+  caret sits in the gutter while it has the keys and **keeps its cells when it goes**, so nothing
+  shifts; a query that is on but not being typed into renders dim rather than with a cursor.
+  It costs the list three rows, which is what a field that is always on screen costs — the
+  directory keeps its prompt for exactly that reason, and this screen was asked for the box.
+- **Only `i` opens it, never `Focus`.** That binding is `esc` **and** `enter`, and `esc` belongs
+  to the list, where it clears — matched first it swallowed the key and the list could not be put
+  back.
+- **`esc` and `enter` both hand the rows the keyboard back** and the query stands, since `esc` on
+  the **list** is what clears it (`clearProjFilter`, which shuts every open row and the marks too,
+  taking the screen back to what `p` opens on). There is no `ctrl+u`: that clears the *task* query
+  everywhere else, and a second meaning for it on one screen is a key that does two things.
+- **The width comes from the terminal** (`projBoxWidth`/`projFieldWidth`, set on `WindowSizeMsg`),
+  so no query can wrap the box onto a second line and shove the list down — the same trap the task
+  list's own field documents.
 - **Its own input** (`Model.projQuery`), not the task list's: that one filters tasks, and one
   input shared between them would filter the other screen by whatever was typed here.
   `ModeProjSearch` is excluded from the tab-key and `?` block, so a name can hold a `p` and a
   `t`.
-- **The match is on the name, the teams and the manager joined** (`projRows`): "who runs Coeo"
-  and "what is the DevOps team on" are the same question asked of different fields. Derived on
-  render, never a second slice kept in step.
-- **`esc` clears the filter and shuts every open row** (`clearProjFilter`), from the prompt and
-  from the list — the same key whichever half of the screen has the keyboard, taking the screen
-  back to what `p` opens on. The directory's own rule, and there is no `ctrl+u` here for the
-  same reason.
+- **The match is on the name, the teams, the manager and the people** (`projRows`, `projHay`):
+  "who runs Coeo", "what is the DevOps team on" and "which projects is Tasnim on" are the same
+  question asked of different fields. The people only count once they have been read, which is
+  what the cache is for. Derived on render, never a second slice kept in step.
+- The count beside the title becomes `2 of 89` — a short list needs a reason on screen.
+
+### Finding a person (`/`)
+
+`/` asks "where is this person" and **answers with a modal** — the names it found, grouped under
+the project they are on. The same division of labour the task list has: its query box narrows the
+list, and its `/` opens a modal that reports across the whole of it.
+
+```
+tasnim   3 people on 2 projects
+
+AI Transformation
+  Md. Tasnim Alam
+
+Value-Driven Engagement, Internal Meetings & Tasks
+  Md. Tasnim Alam
+  Tasnim Mahmood
+```
+
+- **A prompt** (`ModeProjJump`, `Model.find`), above the status line where the date jump's own
+  renders, and its own input again — the box in the header filters the list, this one reports on
+  the people in it. The match is the name and the email together.
+- **The modal is the answer** (`ModeProjFound`, `view.go: projFoundModal`): nothing in the list
+  behind it opens or moves, so `esc` simply closes it and there is nothing to put back. Its head
+  counts the people and the projects, and a search with more than `most` hits ends in `… N more`
+  rather than a modal taller than the screen — the head still says how many there were.
+- **The name is in the accent and the project above it is not**: the name is what was searched
+  for, and the project is the answer to "where".
+- **It searches every project whose people are in hand**, not only the open ones: the people are
+  read when a row is opened and **kept** — on disk, with the list — so this reaches further than
+  what is on screen and costs no call. Nothing read yet is the one case it cannot answer, and it
+  says `no people read yet — l opens a project` rather than opening a prompt that could match
+  nothing.
+- **A search with no hits opens no modal**: the status line says `nobody matches …` and the list
+  stays put, since an empty modal is a keystroke to dismiss for no information.
+- The rows are **derived on render** (`projFoundRows`), so a project opened after the search joins
+  the answer on its own.
 - **The row is the task list's own shape** (`view.go: projRow`): the name, the teams in a chip,
   and the task count against the right edge where a task's entry count sits — it answers the
   same kind of question, so it reads the same way.
@@ -1315,6 +1361,8 @@ One `Mode` field on the root model. Only the active mode consumes keys.
 | `ModeEmpSearch` | the employee tab's own query field; its own input, so it cannot filter tasks |
 | `ModeReqForm` | the new-requisition line on `TabReq`; owns every key, so a purpose can hold a `t` |
 | `ModeProjSearch` | the projects tab's own query field; its own input, so it cannot filter tasks |
+| `ModeProjJump` | `/` on the projects tab: the prompt that looks for a person |
+| `ModeProjFound` | the modal answering it: the names found, grouped by project; `esc` closes |
 
 ## Keymap
 
