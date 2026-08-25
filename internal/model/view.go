@@ -163,9 +163,12 @@ const (
 	projMinTeams = 12
 	// An open row's own block: indented under the name, one label column for the manager, and
 	// the widest a member's name column is worth drawing ("Rafee Mizan Khan Chowdhury Niloy").
-	projIndent     = "     "
-	projLabelCells = 10
-	projMemberName = 34
+	// What the found-people modal spends before a name: its own frame, the pinned head and the
+	// blank under it, and the status line it sits above.
+	projFoundChrome = 6
+	projIndent      = "     "
+	projLabelCells  = 10
+	projMemberName  = 34
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -3249,37 +3252,64 @@ func (m Model) authModal() string {
 // and esc simply closes it.
 func (m Model) projFoundModal() string {
 	groups := m.projFoundRows()
-	people := 0
+	// Distinct people, not hits: somebody on three of these projects is one person, and the
+	// count is there to say how many the search found.
+	who := map[string]bool{}
 	for _, g := range groups {
-		people += len(g.people)
+		for _, name := range g.people {
+			who[name] = true
+		}
 	}
 
-	lines := []string{theme.Title.Render(oneLine(m.projFind)) + theme.Dim.Render(fmt.Sprintf(
-		"   %d %s on %d %s", people, plural(people, "person", "people"),
-		len(groups), plural(len(groups), "project", "projects")))}
+	head := theme.Title.Render(oneLine(m.projFind)) + theme.Dim.Render(fmt.Sprintf(
+		"   %d %s found in %d %s", len(who), plural(len(who), "person", "people"),
+		len(groups), plural(len(groups), "project", "projects")))
 
-	// A search with more than this behind it is not one worth reading in a modal; the count in
-	// the head still tells the truth about what was left out.
-	const most = 16
-	room := min(m.cols()-gutter-6, projMemberName+projLabelCells)
-	shown := 0
-	for _, g := range groups {
-		if shown >= most {
-			lines = append(lines, theme.Dim.Render(fmt.Sprintf("… %d more", people-shown)))
-			break
+	wide := min(m.cols()-gutter-6, projMemberName+projLabelCells)
+	var body []string
+	for i, g := range groups {
+		if i > 0 {
+			body = append(body, "")
 		}
-		lines = append(lines, "", theme.DayLabel.Render(trunc(g.project, room)))
-		for _, who := range g.people {
-			if shown == most {
-				break
-			}
+		body = append(body, theme.DayLabel.Render(trunc(g.project, wide)))
+		for _, name := range g.people {
 			// The name in the accent: it is what was searched for, and the project above it is
 			// the answer to "where".
-			lines = append(lines, "  "+theme.MatchText.Render(trunc(who, room-2)))
-			shown++
+			body = append(body, "  "+theme.MatchText.Render(trunc(name, wide-2)))
 		}
 	}
-	return theme.Modal.Render(strings.Join(lines, "\n"))
+
+	// A search across the office finds more people than a modal holds, so the names scroll
+	// under a pinned head, ctrl+f and ctrl+b moving them. Its own slice rather than window():
+	// that one keeps a **cursor** centred, so the first press moved nothing on screen, where
+	// here projFoundAt is the top line and every press scrolls by what it says it does.
+	room := m.projFoundRoom()
+	top := min(m.projFoundAt, max(len(body)-room, 0))
+	end := min(top+room, len(body))
+	view := append([]string{}, body[top:end]...)
+	if top > 0 {
+		view[0] = theme.Dim.Render(fmt.Sprintf("  ↑ %d more", top))
+	}
+	if hidden := len(body) - end; hidden > 0 {
+		view[len(view)-1] = theme.Dim.Render(fmt.Sprintf("  ↓ %d more", hidden))
+	}
+	return theme.Modal.Render(strings.Join(append([]string{head, ""}, view...), "\n"))
+}
+
+// projFoundRoom is how many lines of names the modal shows. It is capped at **four fifths of
+// the terminal**, less its own frame and pinned head: a modal as tall as the screen runs off
+// the top, and the list it is about is worth still seeing behind it.
+func (m Model) projFoundRoom() int {
+	// Four fifths of the terminal, but never more than the rows the screen actually has left:
+	// the modal is rendered in the tail, so one taller than that pushes the header off the top.
+	return max(min(m.rows()*4/5, m.rows()-chromeRows)-projFoundChrome, 3)
+}
+
+// projFoundStep is what ctrl+f and ctrl+b move by: half of what the modal itself shows, not
+// half the screen — a screenful is nearly the whole modal, so two presses hit the bottom and
+// the scroll reads as a jump rather than a scroll.
+func (m Model) projFoundStep() int {
+	return max(m.projFoundRoom()/2, 1)
 }
 
 // dayModal lists what a date jump found: one line per entry, with the task it belongs

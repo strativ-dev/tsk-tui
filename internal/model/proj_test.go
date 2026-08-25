@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -455,7 +456,7 @@ func TestProjFindsAPerson(t *testing.T) {
 	// one of them names the manager this search did not match.
 	modal := found.projFoundModal()
 	v := plain(modal)
-	for _, want := range []string{"tasnim", "3 people on 2 projects",
+	for _, want := range []string{"tasnim", "2 people found in 2 projects",
 		"AI Transformation", "Md. Tasnim Alam", "Tasnim Mahmood"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the modal is missing %q:\n%s", want, v)
@@ -472,7 +473,7 @@ func TestProjFindsAPerson(t *testing.T) {
 		t.Errorf("a project at %d is below its own people at %d", a, b)
 	}
 	// And the modal is on screen, whole.
-	if !strings.Contains(plain(found.View()), "3 people on 2 projects") {
+	if !strings.Contains(plain(found.View()), "2 people found in 2 projects") {
 		t.Errorf("the modal is not on screen:\n%s", plain(found.View()))
 	}
 
@@ -489,7 +490,7 @@ func TestProjFindsAPerson(t *testing.T) {
 	if shut.projHold != open.projHold || len(shut.projOpen) != len(open.projOpen) {
 		t.Errorf("the list moved: cursor %d, open %+v", shut.projHold, shut.projOpen)
 	}
-	if strings.Contains(plain(shut.View()), "3 people on") {
+	if strings.Contains(plain(shut.View()), "people found in") {
 		t.Error("the modal is still on screen")
 	}
 
@@ -509,6 +510,87 @@ func TestProjFindsAPerson(t *testing.T) {
 	}
 	if !strings.Contains(fresh.status, "no people read yet") {
 		t.Errorf("status = %q", fresh.status)
+	}
+}
+
+// A search with more names than the modal holds scrolls: ctrl+f and ctrl+b move it by half of
+// what it shows, it stops at both ends, and it never grows past four fifths of the terminal —
+// a modal as tall as the screen pushes the header off the top.
+func TestProjFoundScrolls(t *testing.T) {
+	var many []store.Member
+	for i := range 20 {
+		many = append(many, store.Member{
+			Name:  fmt.Sprintf("Tasnim Number %02d", i),
+			Email: fmt.Sprintf("t%02d@strativ.se", i),
+		})
+	}
+	m := send(t, projModel(t, 100, 24), runes("l"))
+	m = send(t, m, api.ProjectMembersMsg{ID: 849, Members: many})
+	found := send(t, m, runes("/"), runes("tasnim"), special(tea.KeyEnter))
+
+	// Nothing on screen may exceed the terminal, the modal least of all: it is drawn in the
+	// tail, so one row too many costs the header its place.
+	for _, h := range []int{20, 24, 30, 40} {
+		at := send(t, found, tea.WindowSizeMsg{Width: 100, Height: h})
+		if got := len(strings.Split(at.View(), "\n")); got > h {
+			t.Errorf("at %d rows the screen is %d lines", h, got)
+		}
+		if room, cap := at.projFoundRoom(), h*4/5; room > cap {
+			t.Errorf("at %d rows the modal shows %d lines, past the %d cap", h, room, cap)
+		}
+	}
+
+	// It opens at the top, with the tail of the list announced.
+	if found.projFoundAt != 0 {
+		t.Errorf("the modal opened at line %d", found.projFoundAt)
+	}
+	top := plain(found.projFoundModal())
+	if !strings.Contains(top, "Tasnim Number 00") || strings.Contains(top, "Number 19") {
+		t.Errorf("the modal did not open on the first name:\n%s", top)
+	}
+	if !strings.Contains(top, "↓") {
+		t.Errorf("the modal does not say what is below it:\n%s", top)
+	}
+
+	// Every press moves it, which is the whole complaint against centring a cursor here.
+	down := send(t, found, special(tea.KeyCtrlF))
+	if down.projFoundAt != found.projFoundStep() {
+		t.Fatalf("ctrl+f moved to %d, want %d", down.projFoundAt, found.projFoundStep())
+	}
+	if plain(down.projFoundModal()) == top {
+		t.Error("ctrl+f changed nothing on screen")
+	}
+	if v := plain(down.projFoundModal()); !strings.Contains(v, "↑") {
+		t.Errorf("nothing says what scrolled off the top:\n%s", v)
+	}
+
+	// Both ends stop rather than running past the list.
+	end := down
+	for range 10 {
+		end = send(t, end, special(tea.KeyCtrlF))
+	}
+	if end.projFoundAt > end.projFoundLen()-1 {
+		t.Errorf("ctrl+f ran to %d, past the %d lines there are", end.projFoundAt,
+			end.projFoundLen())
+	}
+	if v := plain(end.projFoundModal()); !strings.Contains(v, "Tasnim Number 19") ||
+		strings.Contains(v, "↓") {
+		t.Errorf("the bottom is not the last name:\n%s", v)
+	}
+	back := end
+	for range 10 {
+		back = send(t, back, special(tea.KeyCtrlB))
+	}
+	if back.projFoundAt != 0 {
+		t.Errorf("ctrl+b ran to %d, past the top", back.projFoundAt)
+	}
+
+	// The head counts distinct people and the projects they were found in — it is pinned, so
+	// it is on screen wherever the names are scrolled to.
+	for _, v := range []Model{found, down, end} {
+		if h := plain(v.projFoundModal()); !strings.Contains(h, "20 people found in 1 project") {
+			t.Errorf("the head is missing or wrong at line %d:\n%s", v.projFoundAt, h)
+		}
 	}
 }
 

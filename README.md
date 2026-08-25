@@ -484,6 +484,7 @@ form, with ✓ and ✕ lined up under the values.
 | `l` | open its manager and its people; `h` closes |
 | `i` | focus the search field — name, teams, manager, and the people read so far |
 | `/` | find a person: a modal of the matching names, grouped by project (`esc` closes) |
+| `ctrl+f` / `ctrl+b` | scroll that modal, when it found more names than it can show |
 | `esc` | clear the search and collapse everything |
 | `R` | re-read them from the ERP |
 | `?` | show or hide the key list |

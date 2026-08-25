@@ -397,6 +397,9 @@ type Model struct {
 	// projFind is the last member search, kept after the prompt closes so the marks survive
 	// scrolling — the same rule the date jump's own marks follow.
 	projFind string
+	// projFoundAt is the line the modal's own window is built around: ctrl+f and ctrl+b move
+	// it, since a search with thirty hits does not fit a modal.
+	projFoundAt int
 	// find is the prompt that search is typed into — its own input again, since the query box
 	// above it filters projects and this one looks inside them.
 	find        textinput.Model
@@ -2615,7 +2618,7 @@ func (m Model) updateProjJump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// The modal is the answer, the same as the date jump's own: nothing in the list opens
 		// or moves.
-		m.mode, m.status = ModeProjFound, ""
+		m.mode, m.status, m.projFoundAt = ModeProjFound, "", 0
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -2628,10 +2631,31 @@ func (m Model) updateProjJump(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateProjFound is the modal: esc closes it and nothing else in it needs a key, since it
 // destroys nothing and the list behind it never moved.
 func (m Model) updateProjFound(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if key.Matches(msg, m.k().Cancel) || key.Matches(msg, m.k().Focus) {
+	switch {
+	case key.Matches(msg, m.k().Cancel), key.Matches(msg, m.k().Focus):
 		m.mode = ModeList
+	// A search across the office finds more people than a modal holds, so it scrolls by the
+	// same half-screen keys every list here moves by.
+	case key.Matches(msg, m.k().HalfDown):
+		m.projFoundAt = min(m.projFoundAt+m.projFoundStep(), max(m.projFoundLen()-1, 0))
+	case key.Matches(msg, m.k().HalfUp):
+		m.projFoundAt = max(m.projFoundAt-m.projFoundStep(), 0)
 	}
 	return m, nil
+}
+
+// projFoundLen is how many lines the modal's body comes to — a heading and its names per
+// group, with a blank between groups, which is what projFoundModal lays out. Clamped against
+// so ctrl+f cannot scroll past the last name.
+func (m Model) projFoundLen() int {
+	n := 0
+	for i, g := range m.projFoundRows() {
+		if i > 0 {
+			n++
+		}
+		n += 1 + len(g.people)
+	}
+	return n
 }
 
 // projAnyPeople says whether any project has had its people read, which is the whole of what `/`

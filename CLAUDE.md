@@ -1292,9 +1292,18 @@ Value-Driven Engagement, Internal Meetings & Tasks
   renders, and its own input again — the box in the header filters the list, this one reports on
   the people in it. The match is the name and the email together.
 - **The modal is the answer** (`ModeProjFound`, `view.go: projFoundModal`): nothing in the list
-  behind it opens or moves, so `esc` simply closes it and there is nothing to put back. Its head
-  counts the people and the projects, and a search with more than `most` hits ends in `… N more`
-  rather than a modal taller than the screen — the head still says how many there were.
+  behind it opens or moves, so `esc` simply closes it and there is nothing to put back.
+  - Its head counts **distinct people** and the projects they were found in — `20 people found in
+    1 project`. Distinct, because somebody on three of them is one person, and the count is there
+    to say how many the search found rather than how many rows it drew. The head is **pinned**, so
+    it is on screen wherever the names are scrolled to.
+  - **The names scroll**, `ctrl+f`/`ctrl+b` by half of what the modal shows (`projFoundStep`),
+    clamped at both ends against `projFoundLen`. Its own slice rather than `window()`: that keeps
+    a **cursor centred**, so the first press moved nothing on screen — here `projFoundAt` is the
+    top line and every press scrolls by what it says it does.
+  - **Four fifths of the terminal at most** (`projFoundRoom`), and never more than the rows the
+    screen has left: the modal is drawn in the tail, so one taller than that pushes the header off
+    the top.
 - **The name is in the accent and the project above it is not**: the name is what was searched
   for, and the project is the answer to "where".
 - **It searches every project whose people are in hand**, not only the open ones: the people are
