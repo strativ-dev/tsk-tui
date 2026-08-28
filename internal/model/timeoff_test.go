@@ -151,51 +151,46 @@ func TestMonthLeavesModal(t *testing.T) {
 	}
 }
 
-// The list follows the filter, so it and the calendar under it always say the same thing.
-func TestMonthLeavesFollowsTheFilter(t *testing.T) {
-	m := send(t, timeModel(t, 120, 40), runes("g"), runes("s")) // sick only
-	// The modal itself, not the whole screen: the balance cards behind it name every type.
+// The month's list is every day off in it: there is no filter on this screen any more, so a
+// month with two types in it shows both.
+func TestMonthLeavesListsEveryType(t *testing.T) {
+	m := send(t, timeModel(t, 120, 40), runes("g")) // January, where the fixture's leave is
 	got := plain(send(t, m, special(tea.KeyEnter)).leavesModal())
-	if strings.Contains(got, "casual") {
-		t.Errorf("the list ignored the sick filter:\n%s", got)
+	if !strings.Contains(got, "casual") {
+		t.Errorf("the list is missing the month's own leave:\n%s", got)
 	}
-	if !strings.Contains(got, "sick only") {
-		t.Errorf("the head does not name the filter:\n%s", got)
-	}
-	// January holds only casual leave in the fixture, so with the sick filter on it is empty.
-	if !strings.Contains(got, "nothing booked off this month") {
-		t.Errorf("a filtered month with nothing in it does not say so:\n%s", got)
+	if strings.Contains(got, "only") {
+		t.Errorf("the head still names a filter:\n%s", got)
 	}
 }
 
-// A letter filters by the leave type it starts, the same letter clears it, and so does
-// esc. The types come from the ERP, so nothing here is hardcoded.
-func TestTimeFilterFollowsTheTypes(t *testing.T) {
-	// 140 rather than 100: the days-taken count shares the tab bar's row, and six tabs take
-	// 76 cells of it.
+// The leave types' initials are not keys on this screen: `s`, `c`, `a` and `p` do nothing to
+// the calendar, and the balance cards no longer advertise them.
+func TestTimeTypeLettersDoNothing(t *testing.T) {
 	m := timeModel(t, 140, 30)
-
-	casual := send(t, m, runes("c"))
-	if casual.timeFilter != 4 {
-		t.Fatalf("filter = %d, want the casual type id 4", casual.timeFilter)
+	before := m.View()
+	// Not p: that is the projects tab from every screen, and always was — the tab keys are
+	// matched before anything a screen does with a letter.
+	for _, k := range []string{"s", "c", "a"} {
+		after := send(t, m, runes(k))
+		if after.tab != TabTime || after.mode != m.mode {
+			t.Errorf("%q left the screen at tab %v mode %v", k, after.tab, after.mode)
+		}
+		if after.View() != before {
+			t.Errorf("%q changed the calendar", k)
+		}
 	}
-	if v := plain(casual.View()); !strings.Contains(v, "-- CASUAL TIME OFF --") {
-		t.Errorf("the mode line does not name the filter:\n%s", v)
+	// The count and the mode line say the year, not a type.
+	v := plain(before)
+	if !strings.Contains(v, "days taken") || strings.Contains(v, "casual days taken") {
+		t.Errorf("the count names a type:\n%s", v)
 	}
-	// 3 casual days out of the sample's 7.5, so the count follows the filter too.
-	if v := plain(casual.View()); !strings.Contains(v, "3 casual days taken") {
-		t.Errorf("the count does not follow the filter:\n%s", v)
+	if !strings.Contains(v, "-- TIME OFF --") {
+		t.Errorf("the mode line is not the tab's own:\n%s", v)
 	}
-	if again := send(t, casual, runes("c")); again.timeFilter != 0 {
-		t.Errorf("the same letter twice did not clear the filter")
-	}
-	if esc := send(t, casual, special(tea.KeyEsc)); esc.timeFilter != 0 {
-		t.Errorf("esc did not clear the filter")
-	}
-
-	// A letter no type starts is not a filter, and does not clear one either.
-	if z := send(t, casual, runes("z")); z.timeFilter != 4 {
-		t.Errorf("z cleared the filter; only a type's own letter should")
+	// The footer no longer offers them either.
+	if h := plain(send(t, m, runes("?")).View()); strings.Contains(h, "filter") {
+		t.Errorf("the footer still advertises a filter:\n%s", h)
 	}
 }
 
@@ -205,8 +200,8 @@ func TestTabKeysBeatTheFilters(t *testing.T) {
 	m := timeModel(t, 100, 30)
 	m.timeKinds = append(m.timeKinds, api.LeaveKind{ID: 99, Name: "Toil Time Off"})
 
-	if got := send(t, m, runes("t")); got.tab != TabTasks || got.timeFilter != 0 {
-		t.Errorf("tab = %v, filter = %d — t is the tasks tab everywhere", got.tab, got.timeFilter)
+	if got := send(t, m, runes("t")); got.tab != TabTasks {
+		t.Errorf("tab = %v — t is the tasks tab everywhere", got.tab)
 	}
 	if got := send(t, m, runes("d")); got.tab != TabDash {
 		t.Errorf("tab = %v, want the dashboard", got.tab)
@@ -397,7 +392,7 @@ func TestBalanceCardsFillTheirRow(t *testing.T) {
 
 // A type with nothing left is dim rather than shouting in its own colour, and the one being
 // filtered by is reversed out, so the calendar and the card that explains it read together.
-func TestBalanceCardsMarkZeroAndFilter(t *testing.T) {
+func TestBalanceCardsMarkZero(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(restore)
@@ -408,10 +403,10 @@ func TestBalanceCardsMarkZeroAndFilter(t *testing.T) {
 	if !strings.Contains(figures, "38;2;94;99;110") {
 		t.Errorf("the exhausted balance is not dim:\n%s", figures)
 	}
-	// Filtering annual reverses its figure out on the violet.
-	annual := lineWith(t, send(t, m, runes("a")).View(), wide("8.5"))
-	if !strings.Contains(annual, "48;2;124;107;232") {
-		t.Errorf("the filtering card is not reversed out:\n%s", annual)
+	// Every other figure is its own type's colour, not reversed out of it: nothing on these
+	// cards is selected any more.
+	if strings.Contains(figures, "48;2;124;107;232") {
+		t.Errorf("a balance figure is reversed out:\n%s", figures)
 	}
 }
 
@@ -639,9 +634,6 @@ func TestTimeTakenCountsDays(t *testing.T) {
 	// 3 casual + 0.5 sick + 1 annual pending + 3 annual = 7.5
 	if got := m.timeTaken(); got != 7.5 {
 		t.Errorf("timeTaken = %v, want 7.5", got)
-	}
-	if got := send(t, m, runes("s")).timeTaken(); got != 0.5 {
-		t.Errorf("the sick half day counts %v, want 0.5", got)
 	}
 }
 

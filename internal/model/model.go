@@ -317,10 +317,6 @@ type Model struct {
 	// timeWanted is the calendar waiting on the login, exactly as dashWanted is: RPC
 	// needs the key owner's email, and that only arrives with the REST day total.
 	timeWanted bool
-	// timeFilter limits the calendar to one leave type, by hr.leave.type id; 0 is all of
-	// them. The keys that set it are the types' own initials, so they come from the
-	// answer rather than from the keymap.
-	timeFilter int
 	// timeHold is the month the window is built around, 0 for January, or -1 to follow
 	// today. As on the chart there is no cursor — a calendar is a picture.
 	timeHold int
@@ -3655,10 +3651,6 @@ func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cKind, m.cPrompt = confirmQuit, "Quit tsk?"
 		return m, nil
 
-	case key.Matches(msg, m.k().Back):
-		m.timeFilter = 0 // esc clears the filter, whatever set it
-		return m, nil
-
 	case key.Matches(msg, m.k().Search), key.Matches(msg, m.k().ClearSearch):
 		// Searching is a task-list act, so it takes you back there.
 		m.tab, m.mode = TabTasks, ModeSearch
@@ -3668,16 +3660,6 @@ func (m Model) updateTime(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.search.Focus()
 		return m, textinput.Blink
-	}
-
-	if id, ok := m.filterKind(msg.String()); ok {
-		// The same letter twice clears it, so a filter can be undone with the key that set
-		// it as well as with esc.
-		if m.timeFilter == id {
-			id = 0
-		}
-		m.timeFilter = id
-		return m, nil
 	}
 	return m, nil
 }
@@ -3715,9 +3697,6 @@ func (m Model) monthLeaves() []leaveRow {
 	month, year := time.Month(m.timeMonth()+1), m.timeYearOf()
 	var out []leaveRow
 	for _, l := range m.timeLeaves {
-		if m.timeFilter != 0 && l.KindID != m.timeFilter {
-			continue
-		}
 		from, err := time.Parse("2006-01-02", l.From)
 		if err != nil {
 			continue
@@ -4164,23 +4143,9 @@ func storedToISO(date string) string {
 	return t.Format("2006-01-02")
 }
 
-// filterKind is the leave type a letter selects: the first type whose name starts with it.
-// Nothing is hardcoded — the types come from the ERP, and so do their keys, which is what
-// keeps the balance chips' highlighted initials honest.
-func (m Model) filterKind(s string) (int, bool) {
-	if len([]rune(s)) != 1 {
-		return 0, false
-	}
-	for _, k := range m.timeKinds {
-		if strings.HasPrefix(strings.ToLower(k.Name), strings.ToLower(s)) {
-			return k.ID, true
-		}
-	}
-	return 0, false
-}
-
-// kindByLetter is the index of the first leave type whose name starts with s, the same
-// match the filter chips make — the form needs the index, the filter needs the id.
+// kindByLetter is the index of the first leave type whose name starts with s. Nothing is
+// hardcoded — the types come from the ERP, and so do the letters that pick them on the
+// request line, which is the one place on this screen a letter still means a leave type.
 func (m Model) kindByLetter(s string) (int, bool) {
 	if len([]rune(s)) != 1 {
 		return 0, false
@@ -4250,9 +4215,6 @@ func (m Model) timeMarks() map[string]dayMark {
 		}
 	}
 	for _, l := range m.timeLeaves {
-		if m.timeFilter != 0 && l.KindID != m.timeFilter {
-			continue
-		}
 		for _, d := range daysOf(l.From, l.To) {
 			mark := marks[d]
 			mark.kind, mark.half, mark.period = l.Kind, l.Half, l.Period
@@ -4295,9 +4257,6 @@ func daysOf(from, to string) []string {
 func (m Model) timeTaken() float64 {
 	days := 0.0
 	for _, l := range m.timeLeaves {
-		if m.timeFilter != 0 && l.KindID != m.timeFilter {
-			continue
-		}
 		n := float64(len(daysOf(l.From, l.To)))
 		if l.Half {
 			n *= 0.5

@@ -386,7 +386,9 @@ func TestFootersDoNotRepeatTheTabBar(t *testing.T) {
 		if c.what == "tasks" {
 			m = send(t, m, runes("t"))
 		}
-		footer := plain(send(t, m, runes("?")).footer())
+		// Whitespace-normalised: the footer wraps, and a hint split across two lines is still
+		// the same hint.
+		footer := strings.Join(strings.Fields(plain(send(t, m, runes("?")).footer())), " ")
 		for _, hint := range []string{"t tasks", "d dashboard", "o timeoff", "m meal"} {
 			if strings.Contains(footer, hint) {
 				t.Errorf("the %s footer advertises %q:\n%s", c.what, hint, footer)

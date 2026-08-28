@@ -79,7 +79,7 @@ self-contained binary, no C dependencies in the source.
   as underlined ones. Six months at a time — three a row, two rows — on a terminal 130 by 32
   or bigger; taller ones spend the extra rows on air around the weeks.
 - **Your leave balances, from the ERP.** Four boxes above the calendar — `sick Time Off`,
-  `9`, `DAYS AVAILABLE` — and each type's own initial filters the year down to it.
+  `9`, `DAYS AVAILABLE` — one per leave type.
 - **Ask for time off without leaving the terminal.** `n` opens a one-line form: leave type,
   full or half day, the dates, why. The days light up on the calendar as you type them, and
   ✓ files the request with the ERP after showing you exactly what it is about to send.
@@ -384,8 +384,6 @@ for the keys the current screen takes.
 | `g` / `G` | January / December |
 | `enter` | list this month's time off; `esc` closes |
 | `n` | new time off request |
-| `s` `c` `a` `p` | show only sick / casual / annual / paternity |
-| `esc` | clear the filter (the same letter again does too) |
 | `R` | re-read the year from the ERP |
 | `t` `d` `m` `e` `r` `p` | tasks / dashboard / meals / employees / requisitions / projects (`1`, `2`, `4`–`7` too) |
 | `i` / `ctrl+u` | back to the tasks, in the search field |
@@ -589,7 +587,7 @@ never fires there:
 |---|---|
 | `[keys.tasks]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `edit` `add` `delete` `refresh` `set_key` `search` `clear_search` `clear_query` `focus` `next` `prev` `clear_field` `accept` `cancel` `quit` |
 | `[keys.dash]` | `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `clock` `confirm_hours` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `clear_field` `accept` `cancel` on the WFH request line |
-| `[keys.time]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `accept` `new_leave` `back` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` on the request line |
+| `[keys.time]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `accept` `new_leave` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `back` on the request line |
 | `[keys.meal]` | `collapse` `expand` `down` `up` `top` `bottom` `half_down` `half_up` `prev_month` `next_month` `book_meal` `drop_meal` `delete` `refresh` `search` `clear_search` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the booking line |
 | `[keys.emp]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `jump` `back` `refresh` `quit` — plus `focus` and `cancel` on the filter prompt |
 | `[keys.req]` | `down` `up` `top` `bottom` `half_down` `half_up` `expand` `collapse` `back` `new_leave` `refresh` `quit` — plus `next` `prev` `cycle` `clear_field` `accept` `cancel` on the new-requisition line |

@@ -384,11 +384,11 @@ for the request form, which is not built.
   - Holiday rows are datetimes spanning the working day (04:00–13:00 UTC in Dhaka,
     07:00–16:00 in Sweden), so both ends fall on their own local date and the date part is
     the day itself.
-- **The filters are the leave types' own initials** — `s`, `c`, `a`, `p` here, but nothing
-  is hardcoded: `Model.filterKind` takes the first type whose name starts with the letter,
-  and the chips render the same initial in the accent. They are matched **after** every
-  bound key, so a type named `Toil` cannot shadow the tasks tab. The same letter again
-  clears the filter, and so does `esc`.
+- **No filter by leave type.** `s`, `c`, `a` and `p` were the types' own initials, matched after
+  every bound key; the whole feature is gone, and with it `Model.timeFilter`, the reversed-out
+  balance card, the mode line naming a type and the `esc`-clears-it rule. The year is the year.
+  `Model.kindByLetter` stays — a type's initial still picks it on the **request line**, which is
+  a field that owns the keyboard rather than a shortcut on this screen.
 - **A day off is its type's colour as a band** with the date reversed out of it
   (`view.go: dayCellOf`) — the spec's filled circle, in the two cells a terminal gives a
   date. A **half day bands one of those two cells**: the left for a morning, the right for
@@ -606,10 +606,9 @@ One row between the balances and the calendar, and the whole request is on it:
     so collapsing `19-21 Aug` into one row would answer a different question. A half day says
     which half (`18 Feb (Wed, morning)`), and anything not yet `validate` says `pending` —
     the underline the calendar marks that with has no room in a list.
-  - It **follows the filter** and names it in the head (`sick only`), so the list and the
-    calendar under it can never say different things. Both columns are sized from the rows,
-    so a month with no half day in it does not pay for the word "afternoon", and the rows are
-    derived on render (`monthLeaves`) like every other figure here.
+  - It lists **every type** the month holds — there is no filter to follow any more. Both
+    columns are sized from the rows, so a month with no half day in it does not pay for the word
+    "afternoon", and the rows are derived on render (`monthLeaves`) like every other figure here.
   - Routed **before the tab handlers** (`Model.updateLeaves`), the way the new-timeoff line
     is: otherwise `j`/`k` would walk the months behind a modal whose head names the month it
     is listing. `?` still reaches the help toggle, as on every other modal that is not a
@@ -643,10 +642,10 @@ One row between the balances and the calendar, and the whole request is on it:
     the row would stop short of its own rules.
   - A name too wide for its card falls back to its **first word** — the word carrying the
     key is the one that cannot be cut.
-  - **Nothing left is dim**, not the type's own colour, and the card being **filtered by is
-    reversed out** so the calendar and the card that explains it read together.
-- The initial inside a card is **its own span**, not part of a style wrapping the label: a
-  colour nested inside another does not survive the inner reset.
+  - **Nothing left is dim**, not the type's own colour — a balance of zero is not news in the
+    type's green. Nothing on these cards is selected: there is no filter to select it with.
+  - The name reads with a **lowercased initial** (`sick Time Off`), the type as this office says
+    it rather than as the ERP capitalises it.
 - **One year in hand at a time** (`Model.timeYear`, the cache key as well as the year on
   screen), and `R` re-reads it. `R` does **not** clear `timeYear` — `loadTime` is called
   outright, so nothing needs it cleared, and clearing it blanks the calendar and its totals
@@ -658,8 +657,7 @@ One row between the balances and the calendar, and the whole request is on it:
   whichever asked.
 - The rest of the keys are the shared ones: `R` re-reads, `q` asks before quitting, `i` and
   `ctrl+u` leave for the query field (which filters tasks, so it takes you to that tab), `?`
-  toggles the key list. There is no `j`/`k` and no `x` — nothing here is a list, and nothing
-  here writes.
+  toggles the key list. There is no `x` — nothing here writes.
 - `timeLoading` is in `busy()`, and every figure — the days taken, the per-month counts, the
   marks map — is **derived on render** (`timeMarks`, `timeTaken`), never stored.
 

@@ -2078,11 +2078,7 @@ func (m Model) timeHead() []string {
 
 	right := ""
 	if m.timeYear != 0 {
-		what := "days taken"
-		if k, ok := m.timeKind(m.timeFilter); ok {
-			what = strings.ToLower(firstWord(k.Name)) + " days taken"
-		}
-		right = theme.Dim.Render(days(m.timeTaken()) + " " + what)
+		right = theme.Dim.Render(days(m.timeTaken()) + " days taken")
 		if m.timePending() {
 			// The underline needs saying once, and only on a year that has one.
 			right += theme.Dim.Render("  ·  pending underlined")
@@ -2117,11 +2113,7 @@ func (m Model) timeSummary(room int) string {
 		return fits(room, year, "")
 	}
 
-	what := "days taken"
-	if k, ok := m.timeKind(m.timeFilter); ok {
-		what = strings.ToLower(firstWord(k.Name)) + " days taken"
-	}
-	count := theme.Dim.Render("   " + days(m.timeTaken()) + " " + what)
+	count := theme.Dim.Render("   " + days(m.timeTaken()) + " days taken")
 	note := ""
 	if m.timePending() {
 		// The underline needs saying once, and only on a year that has one.
@@ -2385,24 +2377,21 @@ func (m Model) balanceCards() []string {
 	for i, k := range m.timeKinds {
 		w := widths[i]
 		c := theme.LeaveColor(k.Name)
-		// The full name when the card holds it, the first word when it does not: the word
-		// carrying the key is the one that cannot be cut.
+		// The full name when the card holds it, the first word when it does not — and the
+		// initial lowercased, which is how these cards have always read: "sick Time Off",
+		// the type as this office says it rather than as the ERP capitalises it.
 		label := oneLine(k.Name)
 		if lipgloss.Width(label) > w {
 			label = firstWord(label)
 		}
-		lower := strings.ToLower(label)
-		// The initial is a span of its own — accent, because it is the key that filters by
-		// this type — and a colour nested inside another does not survive the inner reset.
-		names = append(names, center(theme.HintKey.Render(lower[:1])+
-			lipgloss.NewStyle().Foreground(theme.DayInk).Render(label[1:]), w))
+		if r := []rune(label); len(r) > 0 {
+			label = strings.ToLower(string(r[0])) + string(r[1:])
+		}
+		names = append(names, center(
+			lipgloss.NewStyle().Foreground(theme.DayInk).Render(label), w))
 
 		figure := theme.LeaveInk(c).Bold(true)
 		switch {
-		case k.ID == m.timeFilter:
-			// The filtering card is reversed out, so the calendar and the card that explains
-			// it are never read apart.
-			figure = theme.LeaveDay(c)
 		case k.Available == 0:
 			// Nothing left is not news in the type's own colour.
 			figure = lipgloss.NewStyle().Foreground(theme.QuietInk)
@@ -2444,7 +2433,7 @@ func wide(s string) string {
 // timePending is whether anything on the calendar is still waiting on approval.
 func (m Model) timePending() bool {
 	for _, l := range m.timeLeaves {
-		if l.State != "validate" && (m.timeFilter == 0 || l.KindID == m.timeFilter) {
+		if l.State != "validate" {
 			return true
 		}
 	}
@@ -2882,28 +2871,8 @@ func (m Model) monthMoveHelp() key.Binding {
 	return key.NewBinding(key.WithHelp(strings.Join(keysOf, "/"), "month"))
 }
 
-// filterHelp is the footer's entry for the filters: the leave types' own initials, in the
-// order the chips are in, since that is where they are read off. Nothing to show before
-// the types have landed.
-func (m Model) filterHelp() key.Binding {
-	if len(m.timeKinds) == 0 {
-		return key.NewBinding()
-	}
-	letters := make([]string, 0, len(m.timeKinds))
-	for _, k := range m.timeKinds {
-		letters = append(letters, strings.ToLower(firstWord(k.Name)[:1]))
-	}
-	return key.NewBinding(key.WithHelp(strings.Join(letters, " "), "filter"))
-}
-
-// timeLabel is the mode indicator on this tab: the filter, when there is one, since a
-// calendar showing one type of leave and one showing all of them look alike.
-func (m Model) timeLabel() string {
-	if k, ok := m.timeKind(m.timeFilter); ok {
-		return "-- " + strings.ToUpper(oneLine(k.Name)) + " --"
-	}
-	return "-- TIME OFF --"
-}
+// timeLabel is the mode indicator on this tab.
+func (m Model) timeLabel() string { return "-- TIME OFF --" }
 
 // days renders a day count the way a person writes one: 8.5, but 8 rather than 8.0.
 func days(f float64) string {
@@ -3438,12 +3407,8 @@ func (m Model) footer() string {
 		// It moves in months, and the filters are the leave types' own initials, so they
 		// are named by the answer rather than by the keymap. No tab key, for the same reason
 		// the chart and the meal calendar have none.
-		help = []key.Binding{m.k().NewLeave, m.monthMoveHelp(), m.k().Top, m.filterHelp()}
-		if m.timeFilter != 0 {
-			help = append(help, key.NewBinding(
-				key.WithHelp(m.k().Back.Help().Key, "clear filter")))
-		}
-		help = append(help, m.k().Refresh, m.k().Quit, m.k().Help)
+		help = []key.Binding{m.k().NewLeave, m.monthMoveHelp(), m.k().Top,
+			m.k().Refresh, m.k().Quit, m.k().Help}
 	case m.mode == ModeReqForm:
 		// Its own keys, whichever tab is behind it: the line holds the keyboard, and only the
 		// ones the focused field takes — j/k belong to a dropdown or a checkbox and are letters
@@ -4155,10 +4120,6 @@ func (m Model) leavesModal() string {
 
 	head := theme.Title.Render("TIME OFF "+strings.ToUpper(month.Format("Jan 2006"))) +
 		theme.Dim.Render(fmt.Sprintf("   %d %s", len(rows), plural(len(rows), "day", "days")))
-	if k, ok := m.timeKind(m.timeFilter); ok {
-		head += theme.LeaveInk(theme.LeaveColor(k.Name)).
-			Render("   " + strings.ToLower(firstWord(k.Name)) + " only")
-	}
 	lines := []string{head}
 	if len(rows) == 0 {
 		return theme.Modal.Render(head + "\n" +
