@@ -149,9 +149,9 @@ upgrades an existing install. To pin a version, put the tag in the path instead:
 `releases/download/v1.4.1/tsk-linux-amd64`. Or take it off the
 [releases page](https://github.com/strativ-dev/tsk-tui/releases/latest) by hand.
 
-The published Linux binary links the system libc (`libc.so.6`, `libresolv.so.2`), so it wants
-a glibc distro — on Alpine or anything musl-only, build from source with `CGO_ENABLED=0`, which
-produces a fully static binary.
+From v1.5.2 the published binaries are built with `CGO_ENABLED=0` and are fully static, so
+they run on musl distros (Alpine) as well as glibc ones. Earlier releases link the system libc
+(`libc.so.6`, `libresolv.so.2`) and want glibc.
 
 ### Build from source
 
