@@ -471,22 +471,27 @@ func TestDashFitsTheMonthInColumns(t *testing.T) {
 func TestDashSeparatesDaysAndFollowsToday(t *testing.T) {
 	now := time.Now()
 	var days []api.DayLog
-	for d := 1; d <= 28; d++ {
+	// The whole month, not a fixed 28: the window follows today, and a month reported only as
+	// far as the 28th has no today to follow on the 31st.
+	inMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).
+		AddDate(0, 1, -1).Day()
+	for d := 1; d <= inMonth; d++ {
 		days = append(days, api.DayLog{
 			Date:     now.Format("2006-01") + fmt.Sprintf("-%02d", d),
 			Actual:   8,
 			Expected: 8,
 		})
 	}
-	// Tall enough for one day per row and a rule between them.
-	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 70},
+	// Tall enough for one day per row and a rule between them, on a 31-day month: ruled, a
+	// month costs 2n-1 rows, and the rules are the first thing a shorter terminal gives up.
+	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 80},
 		store.KeyMsg{Key: "k", DB: "db"}, runes("d"),
 		api.HourLogsMsg{Month: now.Format("2006-01") + "-01", Days: days})
 
 	if cols, _ := m.dashGrid(); cols != 1 {
-		t.Fatalf("%d columns at 70 rows, want one day per row", cols)
+		t.Fatalf("%d columns at 80 rows, want one day per row", cols)
 	}
-	lines, focus := m.dashLines(58)
+	lines, focus := m.dashLines(2*inMonth - 1)
 	if focus < 0 {
 		t.Fatal("no focus line — the window has nothing to hold")
 	}
@@ -542,7 +547,11 @@ func TestDashShowsTheWholeMonth(t *testing.T) {
 func TestDashFrameStaysPut(t *testing.T) {
 	now := time.Now()
 	var days []api.DayLog
-	for d := 1; d <= 28; d++ {
+	// The whole month, not a fixed 28: the window follows today, and a month reported only as
+	// far as the 28th has no today to follow on the 31st.
+	inMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).
+		AddDate(0, 1, -1).Day()
+	for d := 1; d <= inMonth; d++ {
 		days = append(days, api.DayLog{
 			Date: now.Format("2006-01") + fmt.Sprintf("-%02d", d), Actual: 8, Expected: 8,
 		})

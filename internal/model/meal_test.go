@@ -291,7 +291,7 @@ func TestMealHeadMarksTheCursorColumn(t *testing.T) {
 	// accented is the weekday whose head carries the accent, "" if none does.
 	accented := func(m Model) string {
 		for _, d := range []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"} {
-			for _, span := range strings.Split(m.mealHeads(), "\x1b[0m") {
+			for _, span := range strings.Split(m.mealHeads(true), "\x1b[0m") {
 				if strings.Contains(span, d) && strings.Contains(span, accent) {
 					return d
 				}
@@ -307,8 +307,13 @@ func TestMealHeadMarksTheCursorColumn(t *testing.T) {
 		t.Errorf("the accent is on %q, want the cursor's own column %q", got, want)
 	}
 
-	// One column along: whichever head had it hands it over, so exactly one ever has it.
-	next := send(t, m, runes("l"))
+	// One column along: whichever head had it hands it over, so exactly one ever has it. Back a
+	// day rather than on when the cursor opens on the last of the month, where l cannot move.
+	step := "l"
+	if m.mealCursor() == m.mealDays() {
+		step = "h"
+	}
+	next := send(t, m, runes(step))
 	if got, w := accented(next), names[next.mealCursorColumn()]; got != w {
 		t.Errorf("after l the accent is on %q, want %q", got, w)
 	}
@@ -318,12 +323,11 @@ func TestMealHeadMarksTheCursorColumn(t *testing.T) {
 
 	// A weekend column wins it too: the cursor can be parked there, and the column it is in
 	// is the one thing on this row worth saying.
-	sat := m
+	// From the first of the month, so a Saturday is always within a week of the cursor whatever
+	// day the test runs on.
+	sat := m.holdMeal(1)
 	for sat.mealCursorColumn() != 5 {
 		sat = send(t, sat, runes("l"))
-		if sat.mealCursor() == sat.mealDays() && sat.mealCursorColumn() != 5 {
-			t.Skip("this month's last day is reached before a Saturday")
-		}
 	}
 	if got := accented(sat); got != "sat" {
 		t.Errorf("a cursor on a Saturday leaves the accent on %q", got)
@@ -783,10 +787,12 @@ func mealMsg() api.MealMsg {
 			Type: "Lunch", Menu: "biriyani"})
 	}
 
+	// Two months of weekends, the way get_unusual_days answers: FetchMeals reads two months,
+	// and the next one is on screen whenever this one is nearly over — a weekend the fixture
+	// left open there draws bars in a column that has no room for them.
 	closed := map[string]bool{}
 	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	for d := 1; d <= first.AddDate(0, 1, -1).Day(); d++ {
-		day := time.Date(now.Year(), now.Month(), d, 0, 0, 0, 0, time.Local)
+	for day := first; day.Before(first.AddDate(0, 2, 0)); day = day.AddDate(0, 0, 1) {
 		if day.Weekday() == time.Saturday || day.Weekday() == time.Sunday {
 			closed[day.Format("2006-01-02")] = true
 		}
@@ -914,13 +920,24 @@ func TestMealMenuAccentsTheCursorsDay(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(restore)
 
-	// Walk to a weekday of this week that is not today, so the two marks cannot be confused.
+	// Walk to a weekday that is not today, so the two marks cannot be confused — and one this
+	// month holds, since the cursor is clamped to the month on screen and the last week of it
+	// runs into the next.
 	m := mealMenuModel(t, 120, 34)
 	mon := m.mealWeekStart()
 	var want time.Time
-	for i := range 5 {
-		if day := mon.AddDate(0, 0, i); day.Format("2006-01-02") != time.Now().Format("2006-01-02") {
-			want = day
+	for _, week := range []time.Time{mon, mon.AddDate(0, 0, -7)} {
+		for i := range 5 {
+			day := week.AddDate(0, 0, i)
+			if day.Month() != m.mealViewed().Month() || day.Day() > m.mealDays() {
+				continue
+			}
+			if day.Format("2006-01-02") != time.Now().Format("2006-01-02") {
+				want = day
+				break
+			}
+		}
+		if !want.IsZero() {
 			break
 		}
 	}
@@ -968,6 +985,16 @@ func mealSoon() string {
 	return ""
 }
 
+// mealBookable is a day of this month the cancel keys can act on: the next working day, or
+// today when the month has none left after it — the last day of a month still has to be a day
+// the tests can put a booking on.
+func mealBookable() string {
+	if soon := mealSoon(); soon != "" {
+		return soon
+	}
+	return time.Now().Format("2006-01-02")
+}
+
 // mealGridLines is the month's own rows — the dates and their bars — without the legend
 // above them, whose swatches are full hue whatever the days hold.
 func mealGridLines(m Model) []string {
@@ -984,9 +1011,22 @@ func mealMenuModel(t *testing.T, width, height int) Model {
 	return send(t, m, msg)
 }
 
-// sampleMenus is this week's own days, so the fixture never rots.
+// sampleMenus is this week's own days and last week's, so the fixture never rots — and so a
+// test needing a weekday of this month that is not today has one to reach for in the week
+// nobody is on when today is the last day of the month.
 func sampleMenus() []api.MealMenu {
 	mon := time.Now().AddDate(0, 0, -((int(time.Now().Weekday()) + 6) % 7))
+	out := weekMenus(mon.AddDate(0, 0, -7))
+	// Its own dishes, or a test asking whether the cursor's day is marked and today's is not
+	// would be comparing one Monday's menu against the same string on the other.
+	for i := range out {
+		out[i].Options = "last week's " + out[i].Options
+	}
+	return append(out, weekMenus(mon)...)
+}
+
+// weekMenus is one Monday-to-Friday run of the canteen's own dishes.
+func weekMenus(mon time.Time) []api.MealMenu {
 	dishes := [][3]string{
 		{"paratha, omlet, mug dal", "fried rice, fried chicken, chinese vegetables", "ice-cream"},
 		{"bread, jam, boiled egg", "rui fish curry / fried egg", "chicken haleem, half nan"},
@@ -1071,7 +1111,10 @@ func TestBookMealRangeShowsOnTheCalendar(t *testing.T) {
 	}
 
 	// Both months are on screen, side by side on a terminal this wide.
-	next := time.Now().AddDate(0, 1, 0)
+	// From the first, not from today: AddDate on a 31st rolls a 30-day month over into the
+	// one after it, and the test would then look for a month nobody drew.
+	now := time.Now()
+	next := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0)
 	if v := plain(m.View()); !strings.Contains(v, strings.ToUpper(next.Format("January 2006"))) {
 		t.Errorf("the month the range runs into is not on screen:\n%s", v)
 	}
@@ -1088,10 +1131,97 @@ func TestBookMealRangeShowsOnTheCalendar(t *testing.T) {
 	if v := plain(tight.View()); !strings.Contains(v, strings.ToUpper(next.Format("January 2006"))) {
 		t.Errorf("the stacked month is missing:\n%s", v)
 	}
-	// Closing the line takes the second month with it.
-	if v := plain(send(t, m, special(tea.KeyEsc)).View()); strings.Contains(v,
+	// Closing the line takes the second month with it — unless the month is nearly over, which
+	// is a reason of its own to keep it there (TestMealTailBringsNextMonth).
+	shut := send(t, m, special(tea.KeyEsc))
+	if v := plain(shut.View()); shut.mealDays()-now.Day() >= mealTailDays && strings.Contains(v,
 		strings.ToUpper(next.Format("January 2006"))) {
 		t.Error("the second month outlived the line that brought it")
+	}
+}
+
+// Two months on screen are laid out the same way, week for week: the header names both and
+// pins a weekday row over each, the grids hold nothing but weeks, and a week costs the same
+// rows in both — a barless week costing one row in one grid and two in the other slides the
+// months a line out of step from there on.
+func TestMealTwoMonthsLineUp(t *testing.T) {
+	m := bookCustom(t, mealMenuModel(t, 160, 40))
+	m = send(t, m, special(tea.KeyTab), runes("28"), special(tea.KeyTab), runes("3/9"),
+		special(tea.KeyTab))
+	next, twoUp := m.mealTwoMonths()
+	if !twoUp {
+		t.Fatal("a range into the next month did not put two months side by side")
+	}
+
+	// Both named once, on the header's own line, and this month keeps the keys that step it.
+	head := plain(strings.Join(m.mealHead(), "\n"))
+	for _, want := range []string{
+		"< " + strings.ToUpper(m.mealViewed().Format("January 2006")),
+		strings.ToUpper(next.Format("January 2006")),
+	} {
+		if strings.Count(head, want) != 1 {
+			t.Errorf("the header says %q %d times:\n%s", want, strings.Count(head, want), head)
+		}
+	}
+	// A weekday row over each grid, beginning where that grid begins.
+	heads := ""
+	for _, l := range strings.Split(head, "\n") {
+		if strings.Contains(l, "mon") && strings.Contains(l, "sun") {
+			heads = l
+		}
+	}
+	if strings.Count(heads, "mon") != 2 {
+		t.Fatalf("the weekday row does not cover both months: %q", heads)
+	}
+	if at := lipgloss.Width(heads[:strings.LastIndex(heads, "mon")]); at != gutter+m.monthCells()+2 {
+		t.Errorf("the right month's weekday row starts at %d, want %d",
+			at, gutter+m.monthCells()+2)
+	}
+
+	// Weeks and nothing else in the grids, three lines apiece so the two keep step.
+	left, _ := m.monthGrid(m.mealViewed(), true, true)
+	right, _ := m.monthGrid(next, false, true)
+	for what, grid := range map[string][]string{"this month": left, "the next": right} {
+		if joined := plain(strings.Join(grid, "\n")); strings.Contains(joined, "mon") ||
+			strings.Contains(joined, strings.ToUpper(next.Format("January"))) {
+			t.Errorf("%s carries a head of its own, which the screen would scroll away:\n%s",
+				what, joined)
+		}
+		if len(grid)%3 != 0 {
+			t.Errorf("%s spends %d lines, which is not three a week", what, len(grid))
+		}
+	}
+}
+
+// A month with less than a week left in it brings the next one on screen with nothing typed:
+// a week booked from here lands mostly in that month, and a grid stopping at the 31st cannot
+// show where it went.
+func TestMealTailBringsNextMonth(t *testing.T) {
+	m := mealMenuModel(t, 160, 40)
+	now := time.Now()
+	next := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0)
+
+	at, tail := m.mealSpill()
+	if want := m.mealDays()-now.Day() < mealTailDays; tail != want {
+		t.Fatalf("%d days left after today spills = %v, want %v",
+			m.mealDays()-now.Day(), tail, want)
+	}
+	if tail {
+		if !at.Equal(next) {
+			t.Errorf("spilled into %s, want %s", at.Format("January 2006"),
+				next.Format("January 2006"))
+		}
+		if v := plain(m.View()); !strings.Contains(v,
+			strings.ToUpper(next.Format("January 2006"))) {
+			t.Errorf("the tail of the month did not bring the next one on screen:\n%s", v)
+		}
+	}
+
+	// A past month has no days left in it to run out, and the month after it is one this
+	// screen has not read.
+	past := send(t, m, runes("<"))
+	if _, spill := past.mealSpill(); spill {
+		t.Error("a past month spilled into the next one")
 	}
 }
 

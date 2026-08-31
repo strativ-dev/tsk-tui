@@ -199,8 +199,8 @@ func TestPerTabKeyBeatsTheTabKey(t *testing.T) {
 		t.Fatalf("ApplyTabKeys: %v", err)
 	}
 
-	m := mealCursorOn(t, mealMenuModel(t, 120, 34), mealSoon())
-	m.mealBookings = append(m.mealBookings, api.MealBooking{ID: 900, Date: mealSoon(),
+	m := mealCursorOn(t, mealMenuModel(t, 120, 34), mealBookable())
+	m.mealBookings = append(m.mealBookings, api.MealBooking{ID: 900, Date: mealBookable(),
 		TypeID: m.mealTypes[0].ID, Type: m.mealTypes[0].Name})
 	got := send(t, m, runes("d"))
 	if got.tab != TabMeal {

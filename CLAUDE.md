@@ -893,13 +893,34 @@ Two labels under the calendar, a line each, and the whole request is on whicheve
   ticked meals drawn in their own colours on it, so the ticks read on the grid as well as on
   the row. It comes from the same `bookDays` the request is built from, so the calendar cannot
   mark a day the ✓ would skip.
-- **A range that runs past the end of the month brings the next month with it** (`bookSpill`,
+- **The next month comes on screen when this one stops answering the question** (`mealSpill`,
   `monthGrid`): side by side where two grids fit, stacked underneath where they do not
   (`mealTwoUp`), and the **menu column gives up its cells first** — seeing the days a booking
   covers beats knowing what is on the menu. The spill month carries no cursor and says its own
   name, since the header names the other. `FetchMeals` reads **two months** in its one set of
   calls for exactly this: fetching the second on demand would cost three more round trips and
-  a screen that disagreed with itself until they landed.
+  a screen that disagreed with itself until they landed. Two reasons for it, which are the
+  same reason twice:
+  - **A range typed on the booking line runs into it**, since a mark on a month nobody can see
+    says nothing.
+  - **This month is nearly over** — fewer than `mealTailDays` (6) days left after today, which
+    is exactly when a `week` booked from here lands mostly in the next month. The tail is a
+    fact about **this** month only: a past month has no days left in it to run out, and the
+    month after it is one this screen has not read.
+
+  With two months **side by side** (`mealTwoMonths`), the header names both — `< AUGUST 2026`
+  over the left grid, `SEPTEMBER 2026` over the right, each padded to `monthCells` so it starts
+  where its own grid does — and pins **a weekday row over each**, the right one without the
+  cursor's accent since the keys move in the left month. The **grids then hold weeks and
+  nothing else**: put in the body instead, both names and both weekday rows scrolled off the
+  top on the first keypress, and a month named in the header as well read as a third month
+  nobody could find. Every week there spends a row on its bars whether or not any were served
+  (`monthGrid`'s `paired`) — a barless week, the weekend tail of a month, costing one row in
+  one grid and two in the other slid the two a line out of step from there on.
+  `TestMealTwoMonthsLineUp` holds all of it.
+
+  A month **stacked underneath** rather than beside carries its own name and weekday row, since
+  the header's are at the top of the screen over the other grid.
 - **Nothing a day draws may exceed its own column** (`fitCell`): the weekend columns are
   narrower, since a day the canteen is shut carries no bars, and a Saturday the ERP does serve
   on would otherwise run a cell past its neighbour and wrap the row.
@@ -913,7 +934,8 @@ Two labels under the calendar, a line each, and the whole request is on whicheve
   costs, so the body says `a week needs 61 cells — widen the terminal` and the weekday row
   goes with it, rather than both of them overflowing.
 - **A week the canteen served nothing in costs no row for bars** — the weekend tail of a
-  month — so the grid is 2 rows a week plus the blank, not 3 everywhere.
+  month — so the grid is 2 rows a week plus the blank, not 3 everywhere. Except beside a second
+  month, where the two have to keep step: see `paired` above.
 - **It moves in months, nothing else**: `<` / `>` step `Model.mealOffset`, and `>` refuses
   past `0` — the canteen has nothing to report on a month that has not happened. Stepping
   clears `mealMonth`, so the new month is read; **one month in hand at a time**, the same as

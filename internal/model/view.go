@@ -3514,6 +3514,10 @@ const (
 	// at seven cells is what buys the five weekday columns their width on an 80-cell
 	// terminal.
 	mealQuietCol = 7
+	// How few days may be left after today before the next month comes on screen with this
+	// one. Six, because `week` books today and the six days after it: with fewer than that
+	// left, most of what the line would book is in a month the grid does not draw.
+	mealTailDays = 6
 )
 
 // A booked meal is a thick bar and an open slot a light rule: the two are told apart by
@@ -3556,13 +3560,9 @@ func (m Model) mealGapFor() int {
 	return mealMinGap
 }
 
-// mealHead is the month, the keys that step it, and the legend: one swatch per meal type in
-// the type's own colour, straight off the answer, so an office that starts serving a fourth
-// meal gets a fourth swatch with nothing to edit here.
-func (m Model) mealHead() []string {
-	if m.mealMonth == 0 && !m.mealLoading {
-		return nil
-	}
+// mealTitle is the month on screen and the keys that step it. One place, since it is drawn in
+// the header on its own and over this month's grid when a second month is beside it.
+func (m Model) mealTitle() string {
 	at := m.mealViewed()
 	title := theme.HintKey.Render("< ") +
 		theme.Title.Render(strings.ToUpper(at.Format("January 2006")))
@@ -3571,10 +3571,32 @@ func (m Model) mealHead() []string {
 		// happened, so a key that does nothing does not appear.
 		title += theme.HintKey.Render(" >")
 	}
+	return title
+}
+
+// mealHead is the month, the keys that step it, and the legend: one swatch per meal type in
+// the type's own colour, straight off the answer, so an office that starts serving a fourth
+// meal gets a fourth swatch with nothing to edit here.
+func (m Model) mealHead() []string {
+	if m.mealMonth == 0 && !m.mealLoading {
+		return nil
+	}
+	next, twoUp := m.mealTwoMonths()
+	title := m.mealTitle()
+	// Two months side by side are named on this one line, each over its own grid: the name and
+	// the weekday row stay pinned where they can be read, and the body holds nothing but weeks
+	// — put in the grids instead, both scrolled off the top on the first keypress.
+	if twoUp {
+		title = pad(title, m.monthCells()+2) + theme.Title.Render(
+			strings.ToUpper(next.Format("January 2006")))
+	}
 	if m.mealLoading {
 		// The month on screen is the last one answered, so the loader sits beside its title
 		// rather than replacing it. The empty case has its own spinner in mealLines.
-		title += " " + m.spin.View()
+		if title != "" {
+			title += " "
+		}
+		title += m.spin.View()
 	}
 
 	swatches := make([]string, 0, len(m.mealTypes))
@@ -3609,8 +3631,13 @@ func (m Model) mealHead() []string {
 	out := []string{line, ""}
 	// The weekday row is as wide as the grid, so it goes when the grid does — the body says
 	// what is wrong there rather than both of them overflowing.
-	if heads := m.mealHeads(); heads != "" {
-		out = append(out, heads, "")
+	heads := m.mealHeads(true)
+	if heads != "" && twoUp {
+		// The right month's own row, and no cursor on it: the keys move in the left one.
+		heads = pad(heads, m.monthCells()+2) + m.mealHeads(false)
+	}
+	if heads != "" {
+		out = append(out, theme.Blur.Render(heads), "")
 	}
 	return out
 }
@@ -3624,12 +3651,12 @@ func (m Model) mealHead() []string {
 // style, since the cursor can be parked on a weekend and the column it is in is the one thing
 // on this row worth saying — and it goes while a line owns the keyboard (`ModeBook`), the way
 // the meal labels and the clock button give up theirs.
-func (m Model) mealHeads() string {
+func (m Model) mealHeads(cursor bool) string {
 	if m.cols() < gutter+5*m.mealCell(mealMinGap)+2*mealQuietCol {
 		return ""
 	}
 	gap, held := m.mealGapFor(), -1
-	if m.mode != ModeBook {
+	if cursor && m.mode != ModeBook {
 		held = m.mealCursorColumn()
 	}
 	var b strings.Builder
@@ -3643,7 +3670,9 @@ func (m Model) mealHeads() string {
 		}
 		b.WriteString(style.Render(pad(d, w)))
 	}
-	return theme.Blur.Render(strings.TrimRight(b.String(), " "))
+	// Bare, with no gutter of its own: two of these are padded and joined when two months are
+	// on screen, and a border wrapped around each would land in the middle of the row.
+	return strings.TrimRight(b.String(), " ")
 }
 
 // mealCursorColumn is which of the seven columns the cursor is in — its weekday, Monday
@@ -3677,21 +3706,32 @@ func (m Model) mealLines() ([]string, int) {
 			trunc("a week needs 61 cells — widen the terminal", m.cols()-gutter)))}, -1
 	}
 
+	// The next month comes with this one when the days run out — a booking range crossing into
+	// it, or a month with less than a week left in it. Side by side where the width holds two
+	// grids, stacked underneath where it does not, and **both are titled and headed the same
+	// way** so their weeks begin on the same line: one grid pushed two rows down the other
+	// reads as a month with a hole in its first week.
 	at := m.mealViewed()
-	lines, focus := m.monthGrid(at, true)
-
-	// A booking range that runs past the end of the month brings the next month with it: the
-	// days it covers are marked, and marks on a month that is not on screen say nothing.
-	// Side by side where the width holds two grids, stacked underneath where it does not.
-	if next, ok := m.bookSpill(); ok {
-		spill, _ := m.monthGrid(next, false)
-		if m.mealTwoUp() {
-			lines = m.sideBySide(lines, spill)
+	next, spill := m.mealSpill()
+	beside := spill && m.mealTwoUp()
+	lines, focus := m.monthGrid(at, true, beside)
+	if spill {
+		other, _ := m.monthGrid(next, false, beside)
+		if beside {
+			lines = m.sideBySide(lines, other)
 		} else {
-			lines = append(append(lines, ""), spill...)
+			lines = append(append(lines, ""), other...)
 		}
 	}
 	return lines, focus
+}
+
+// mealTwoMonths is the month beside this one, and whether there is room to draw it there. The
+// one place the question is asked: the header pins two titles and two weekday rows on it, the
+// body lays the grids out by it, and the menu column gives up its cells for it.
+func (m Model) mealTwoMonths() (time.Time, bool) {
+	next, spill := m.mealSpill()
+	return next, spill && m.mealTwoUp()
 }
 
 // mealTwoUp says whether two month grids fit beside each other, with the menu column and the
@@ -3734,15 +3774,27 @@ func (m Model) sideBySide(left, right []string) []string {
 	return out
 }
 
-// bookSpill is the month a booking range runs into, when it runs into one. Only the next
-// month: the ERP takes bookings 30 days out, so a range can cross one month boundary and no
-// more, and the read already covers that month.
-func (m Model) bookSpill() (time.Time, bool) {
+// mealSpill is the next month, when this one no longer answers the question on its own. Only
+// ever the next one: the ERP takes bookings 30 days out, so nothing on this screen can reach
+// past one month boundary, and FetchMeals already reads that month.
+//
+// Two reasons for it, and they are the same reason twice. A booking range **typed** on the
+// line runs into it, so the days it covers are marked on a month that is on screen — marks on
+// one that is not say nothing. Or **this month is nearly over**: with fewer than six days left
+// after today, a week booked from here lands mostly in the next month, and a calendar that
+// stops at the 31st cannot show where it went.
+func (m Model) mealSpill() (time.Time, bool) {
+	at := m.mealViewed()
+	next := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0)
+
+	// The tail of the month is a fact about **this** month only: a past month has no days left
+	// in it to run out, and its next month is one this screen has not read.
+	if m.mealOffset == 0 && m.mealDays()-time.Now().Day() < mealTailDays {
+		return next, true
+	}
 	if !m.book.open {
 		return time.Time{}, false
 	}
-	at := m.mealViewed()
-	next := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0)
 	for _, iso := range m.bookDays() {
 		d, err := time.Parse("2006-01-02", iso)
 		if err != nil {
@@ -3756,8 +3808,17 @@ func (m Model) bookSpill() (time.Time, bool) {
 }
 
 // monthGrid draws one month: a week to a row of dates, its bars under it, and a blank line
-// between. head puts the month's name over it, which the month in the header does not need.
-func (m Model) monthGrid(at time.Time, main bool) ([]string, int) {
+// between.
+//
+// paired says a second month is drawn beside this one. Both grids then hold weeks and nothing
+// else — the header pins their names and weekday rows, where they cannot scroll away — and
+// every week spends a row on its bars whether or not any were served, since a barless week
+// costing one row in one grid and two in the other slides the months a line out of step from
+// there on.
+//
+// A month **stacked underneath** rather than beside carries its own name and weekday row: the
+// header's pair is up at the top of the screen, over the other grid.
+func (m Model) monthGrid(at time.Time, main, paired bool) ([]string, int) {
 	gap := m.mealGapFor()
 	first := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.Local)
 	days := first.AddDate(0, 1, -1).Day()
@@ -3765,16 +3826,18 @@ func (m Model) monthGrid(at time.Time, main bool) ([]string, int) {
 	lead := (int(first.Weekday()) + 6) % 7
 	today, cursor := time.Now().Format("2006-01-02"), m.mealCursor()
 	if !main {
-		// The cursor belongs to the month the keys move in; the month a range spilled into
-		// carries no cursor and says its own name instead, since the header names the other.
+		// The cursor belongs to the month the keys move in; the month beside it carries none.
 		cursor = 0
 	}
 
 	var lines []string
 	focus := -1
-	if !main {
+	if !main && !paired {
 		lines = append(lines, theme.Blur.Render(theme.Title.Render(
 			strings.ToUpper(at.Format("January 2006")))), "")
+		if heads := m.mealHeads(false); heads != "" {
+			lines = append(lines, theme.Blur.Render(heads), "")
+		}
 	}
 	for start := 1 - lead; start <= days; start += 7 {
 		dates, bars, served := make([]string, 0, 7), make([]string, 0, 7), false
@@ -3804,8 +3867,8 @@ func (m Model) monthGrid(at time.Time, main bool) ([]string, int) {
 		}
 		lines = append(lines, theme.Blur.Render(strings.TrimRight(strings.Join(dates, ""), " ")))
 		// A week the canteen served nothing in — the weekend tail of a month — costs no row
-		// for bars that would all be blank.
-		if served {
+		// for bars that would all be blank, unless a second month is keeping step beside it.
+		if served || paired {
 			lines = append(lines,
 				theme.Blur.Render(strings.TrimRight(strings.Join(bars, ""), " ")))
 		}
@@ -3932,10 +3995,10 @@ func (m Model) mealPanelCells() int {
 		return 0
 	}
 	panel := min(room, mealPanelMax)
-	// A booking range that crosses into the next month wants both grids side by side, and the
-	// days it covers are worth more than what is on the menu — so the column goes when the
-	// two cannot both fit, and stays when they can.
-	if _, spill := m.bookSpill(); spill && m.twoUpWithout(0) && !m.twoUpWithout(panel) {
+	// A second month on screen wants both grids side by side, and the days a booking can reach
+	// are worth more than what is on the menu — so the column goes when the two cannot both
+	// fit, and stays when they can.
+	if _, spill := m.mealSpill(); spill && m.twoUpWithout(0) && !m.twoUpWithout(panel) {
 		return 0
 	}
 	return panel
