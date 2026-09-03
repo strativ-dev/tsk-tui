@@ -4595,6 +4595,13 @@ func (m Model) openMealForm(drop bool) (tea.Model, tea.Cmd) {
 	f.from.SetValue(parse.Today())
 	f.to.SetValue(parse.Today())
 	f.fresh = [2]bool{true, true}
+	if drop {
+		// The cancel line opens on the first scope with something in it. today is the right
+		// default for booking — you book in the morning — and the wrong one here: the ERP
+		// locks a day's meals at its own cutoff, so by mid-morning today is the one day that
+		// cannot be cancelled, and the line opened on three empty boxes with nothing to press.
+		f.scope = m.dropScope()
+	}
 	// Every meal ticked: booking all of them is the common case, and unticking one is a
 	// keystroke where ticking three is three. On the cancel line only what is **there** to
 	// cancel is ticked, since the rest cannot be.
@@ -4603,7 +4610,30 @@ func (m Model) openMealForm(drop bool) (tea.Model, tea.Cmd) {
 		m.book.on[t.ID] = !drop || m.dropAvailable(t.ID)
 	}
 	m.err = nil
+	// Nothing ticked on a cancel line means nothing in reach can be cancelled, and three boxes
+	// reading `none` say that without saying why. The cutoff is the why.
+	if drop && len(m.bookTypes()) == 0 {
+		m.status = "nothing you can still cancel in the week ahead — " +
+			"the ERP locks a day's meals at its cutoff"
+	}
 	return m, textinput.Blink
+}
+
+// dropScope is the scope the cancel line opens on: the first of today, tomorrow and the week
+// ahead that holds a meal this key can still cancel, so the line opens ticked rather than
+// asking for three keystrokes. The week is the fallback, since its boxes reading `none` is the
+// widest way of saying there is nothing.
+func (m Model) dropScope() int {
+	for _, scope := range []int{scopeToday, scopeTomorrow, scopeWeek} {
+		probe := m
+		probe.book = mealForm{open: true, drop: true, scope: scope}
+		for _, t := range m.mealTypes {
+			if probe.dropAvailable(t.ID) {
+				return scope
+			}
+		}
+	}
+	return scopeWeek
 }
 
 // closeBookMeal takes the line back to its label. Nothing has been filed, so nothing asks:

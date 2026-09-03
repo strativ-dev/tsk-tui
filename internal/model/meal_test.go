@@ -604,8 +604,11 @@ func TestCancelMealLine(t *testing.T) {
 		t.Errorf("status = %q", got.status)
 	}
 
-	// ✓ refuses a scope with nothing of yours in it.
-	ok := drop
+	// ✓ refuses a scope with nothing of yours in it. Nothing booked anywhere in reach, since
+	// the line now opens on whichever scope has something.
+	bare := m
+	bare.mealBookings = nil
+	ok := send(t, bare, runes("c"))
 	for ok.book.field != ok.bookOKField() {
 		ok = send(t, ok, special(tea.KeyTab))
 	}
@@ -701,6 +704,49 @@ func TestCancelMealPreviewsTheDay(t *testing.T) {
 	}
 	if got := strings.Count(bar, slot); got != 1 {
 		t.Errorf("%d open slots, want just the lunch one", got)
+	}
+}
+
+// The cancel line opens on the first scope that has something to cancel. today is the wrong
+// default here: the ERP locks a day's meals at its own cutoff, so by mid-morning today is the
+// one day that cannot be cancelled — and the line opened on three empty boxes.
+func TestCancelMealOpensOnAScopeWithSomething(t *testing.T) {
+	m := mealMenuModel(t, 120, 34)
+	today := time.Now().Format("2006-01-02")
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	m.mealBookings = nil
+	// Today's, past their cutoff, and tomorrow's, still changeable.
+	for i, ty := range m.mealTypes {
+		m.mealBookings = append(m.mealBookings, api.MealBooking{ID: 800 + i, Date: today,
+			TypeID: ty.ID, Type: ty.Name, Locked: true})
+	}
+	m.mealBookings = append(m.mealBookings, api.MealBooking{ID: 900, Date: tomorrow,
+		TypeID: m.mealTypes[0].ID, Type: m.mealTypes[0].Name})
+	if m.mealClosed[tomorrow] {
+		t.Skip("the canteen is shut tomorrow, so there is nothing to open on")
+	}
+
+	c := send(t, m, runes("c"))
+	if c.book.scope != scopeTomorrow {
+		t.Errorf("the line opened on scope %d, want tomorrow's", c.book.scope)
+	}
+	if !c.book.on[m.mealTypes[0].ID] {
+		t.Errorf("ticks = %v, want the meal it can cancel", c.book.on)
+	}
+	if strings.Contains(c.status, "cutoff") {
+		t.Errorf("status = %q, want nothing said about a line that has something", c.status)
+	}
+
+	// Nothing in reach at all: the widest scope, and the cutoff is why rather than three
+	// boxes reading `none` and no reason.
+	locked := m
+	locked.mealBookings = locked.mealBookings[:len(locked.mealBookings)-1]
+	empty := send(t, locked, runes("c"))
+	if empty.book.scope != scopeWeek {
+		t.Errorf("nothing to cancel opened on scope %d, want the week", empty.book.scope)
+	}
+	if !strings.Contains(empty.status, "cutoff") {
+		t.Errorf("status = %q, want the cutoff named", empty.status)
 	}
 }
 

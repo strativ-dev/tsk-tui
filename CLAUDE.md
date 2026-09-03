@@ -836,6 +836,13 @@ Two labels under the calendar, a line each, and the whole request is on whicheve
   ticked meal that is booked is drawn as the **open slot it is about to become**, and one left
   unticked keeps its own colour because it is staying. Ticking lunch takes the lunch bar off
   the day, which is the whole question the tick is answering.
+- **The cancel line opens on the first scope that has something in it** (`dropScope`): today,
+  then tomorrow, then the week. `today` is the booking line's right default — you book in the
+  morning — and the wrong one here, since the ERP **locks a day's meals at its own cutoff**: by
+  mid-morning today is the one day that cannot be cancelled, and the line opened on three empty
+  boxes with nothing to press. With nothing cancellable anywhere in reach it opens on the
+  **week**, the widest way of saying so, and the status line names the cutoff — three boxes
+  reading `none` say there is nothing without saying why.
 - **A meal with nothing to cancel in the scope is disabled** (`dropAvailable`): dim box, dim
   name, no accent on its letter, and `none` beside it. Its key says `no lunch booked on those
   days` rather than moving a tick that could not act on anything. The line **opens ticking only
