@@ -670,6 +670,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// be, if d and o were pressed before the first sync answered.
 			var cmds []tea.Cmd
 			var cmd tea.Cmd
+			// The clock is read **here**, on the login that makes it readable, rather than
+			// when d opens the chart: it costs three round trips — a login, the employee
+			// behind it, then the open session — and on this ERP that is about three seconds
+			// with the check in button sitting dim for all of it. Started at launch it
+			// overlaps the task list instead, and the button is live by the time the tab is.
+			if !m.attKnown && !m.clocking && strings.TrimSpace(m.db) != "" {
+				cmds = append(cmds, api.FetchAttendance(m.key, m.login, m.db, m.attEmp))
+			}
 			if m.dashWanted {
 				m, cmd = m.loadDash()
 				cmds = append(cmds, cmd)
@@ -872,6 +880,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.key = ""
 			return m.askKey(msg.Err.Error()), textinput.Blink
 		case msg.Err != nil:
+			// A read that failed while the clock is not on screen says nothing worth saying:
+			// the launch prefetch above is nobody's request, and its refusal on the task list
+			// would read as something the task list did. A toggle always reports.
+			if !msg.Toggled && m.tab != TabDash {
+				return m, nil
+			}
 			// The clock is the ERP's, so a failed call changes nothing here.
 			m.err = msg.Err
 			m.status = "attendance unchanged: " + oneLine(msg.Err.Error())

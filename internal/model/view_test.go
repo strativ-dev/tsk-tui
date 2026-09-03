@@ -357,7 +357,10 @@ func TestTableColumnsAlignWithStyling(t *testing.T) {
 
 	var table []string
 	for _, line := range strings.Split(m.View(), "\n") {
-		if strings.Contains(line, "DATE") || strings.Contains(line, "/08/26") {
+		// The fixture's own dates, not a literal month: "/08/26" found today's two rows only
+		// while today was in August, and the test then had a head and one row to compare.
+		if strings.Contains(line, "DATE") || strings.Contains(line, parse.Today()) ||
+			strings.Contains(line, "11/08/26") {
 			table = append(table, line)
 		}
 	}

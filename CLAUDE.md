@@ -232,6 +232,18 @@ Check in and out without leaving the terminal — top-right of the chart, `WFH  
 - **The prompt states facts, not a prediction**: `Check out now? (in since 11:05 AM, 5:12)`.
   `cPrompt` is frozen when it is built and the server stamps its own time, so a promised
   "check out at 4:17 PM" would be a lie two minutes later.
+- **The clock is read at launch, not on the way into the chart.** Three round trips answer it —
+  `common.login`, the `hr.employee` behind the uid, then the open `hr.attendance` — which is
+  about **3 seconds** on this ERP, and until they land the button is dim and `c` refuses. So the
+  read is fired from the **`DayHoursMsg` that carries the login** (the same answer the chart,
+  the calendar and the meal month wait on), where it overlaps the task list, and the tab opens
+  on a button that already works. `loadDash` still re-reads on the way in — that is freshness,
+  and `attKnown` is already true, so nothing goes dim for it. Once per session: the prefetch is
+  guarded on `!attKnown`, and skipped with no `db`, where RPC cannot be reached at all.
+- **A failed read the clock is not on screen for says nothing** (`AttendanceMsg`, the `msg.Err`
+  branch): the launch read is nobody's request, and `attendance unchanged: …` on the task list
+  reads as something the task list did. A **toggle** always reports, wherever the keys are, and
+  so does any failure while `TabDash` is up.
 - **`c` needs a state it has read.** A toggle fired against an unknown state could check you
   out when you meant in, so `Model.toggleClock` — the one path both the key and the modal go
   through — refuses until `attKnown` and `attEmp` are set, and says `reading attendance…`

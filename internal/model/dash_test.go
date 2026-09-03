@@ -12,6 +12,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/tasnimAlam/tsk/internal/api"
+	"github.com/tasnimAlam/tsk/internal/parse"
 	"github.com/tasnimAlam/tsk/internal/store"
 )
 
@@ -431,12 +432,70 @@ func TestDashFitsTheTerminal(t *testing.T) {
 	}
 }
 
+// The clock is read on the login that makes it readable, not when d opens the chart: three
+// round trips is about three seconds of a dim check in button, and started at launch they
+// overlap the task list instead.
+func TestAttendanceIsReadOnLogin(t *testing.T) {
+	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
+		store.KeyMsg{Key: "k", DB: "db"})
+	if m.attKnown {
+		t.Fatal("the clock is known before anything answered")
+	}
+	got, cmd := sendCmd(t, m, api.DayHoursMsg{Date: parse.Today(),
+		UserEmail: "user@example.com"})
+	if cmd == nil {
+		t.Error("the login landed and the clock was not read")
+	}
+
+	// Once, and only while it is unknown: the chart's own read on the way in is enough after
+	// that, and a second one here would answer a question already answered.
+	got.attKnown = true
+	if _, again := sendCmd(t, got, api.DayHoursMsg{Date: parse.Today(),
+		UserEmail: "user@example.com"}); again != nil {
+		t.Error("the clock was read again with an answer already in hand")
+	}
+
+	// And never without a database: RPC cannot be reached, so the read would only produce an
+	// error nobody asked for.
+	noDB := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
+		store.KeyMsg{Key: "k"})
+	if _, cmd := sendCmd(t, noDB, api.DayHoursMsg{Date: parse.Today(),
+		UserEmail: "user@example.com"}); cmd != nil {
+		t.Error("the clock was read with no database to read it from")
+	}
+}
+
+// A read that failed while the clock is not on screen says nothing: the launch read is
+// nobody's request, and its refusal on the task list would read as the task list's own.
+func TestAQuietAttendanceFailureStaysQuiet(t *testing.T) {
+	m := send(t, New(), tea.WindowSizeMsg{Width: 100, Height: 30},
+		store.KeyMsg{Key: "k", DB: "db"})
+	quiet := send(t, m, api.AttendanceMsg{Err: errors.New("odoo is asleep")})
+	if quiet.err != nil || strings.Contains(quiet.status, "attendance unchanged") {
+		t.Errorf("err = %v, status = %q", quiet.err, quiet.status)
+	}
+	// On the chart it is the answer to something you can see, so it reports.
+	loud := send(t, dashModel(t, 100, 30), api.AttendanceMsg{Err: errors.New("odoo is asleep")})
+	if loud.err == nil || !strings.Contains(loud.status, "attendance unchanged") {
+		t.Errorf("err = %v, status = %q", loud.err, loud.status)
+	}
+	// A toggle always reports, wherever the keys are: it is a write somebody pressed.
+	pressed := send(t, m, api.AttendanceMsg{Toggled: true, Err: errors.New("odoo is asleep")})
+	if pressed.err == nil {
+		t.Error("a refused toggle said nothing")
+	}
+}
+
 // The whole month fits one screen: the days run down as many columns as the rows on offer
 // need, every one of them keeping its own label and its own printed hours.
 func TestDashFitsTheMonthInColumns(t *testing.T) {
 	now := time.Now()
+	// The month's own length: 31 days of a 30-day month put a label on a day in the next one,
+	// which is not on this chart at all.
+	inMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).
+		AddDate(0, 1, -1).Day()
 	var days []api.DayLog
-	for d := 1; d <= 31; d++ {
+	for d := 1; d <= inMonth; d++ {
 		days = append(days, api.DayLog{
 			Date:     now.Format("2006-01") + fmt.Sprintf("-%02d", d),
 			Actual:   8,
@@ -454,15 +513,15 @@ func TestDashFitsTheMonthInColumns(t *testing.T) {
 	}
 	// Every day is labelled, and every one carries its hours. The label is matched whole —
 	// a bare "26" would also find AUGUST 2026, and "2" the axis.
-	for d := 1; d <= 31; d++ {
+	for d := 1; d <= inMonth; d++ {
 		date := now.AddDate(0, 0, d-now.Day())
 		label := strings.ToLower(date.Format("Mon")) + " " + date.Format("_2")
 		if day := lineWith(t, view, label); !strings.Contains(day, "8:00") {
 			t.Errorf("%s has no hours on it:\n%s", label, day)
 		}
 	}
-	if cols, rows := m.dashGrid(); cols < 2 || cols*rows < 31 {
-		t.Errorf("grid is %dx%d, too small for 31 days at 24 rows", cols, rows)
+	if cols, rows := m.dashGrid(); cols < 2 || cols*rows < inMonth {
+		t.Errorf("grid is %dx%d, too small for %d days at 24 rows", cols, rows, inMonth)
 	}
 }
 

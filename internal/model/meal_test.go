@@ -1090,10 +1090,8 @@ func TestBookMealRangeShowsOnTheCalendar(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(restore)
 
-	// A range from the 28th into the next month, typed the way the keys do it.
-	m := bookCustom(t, mealMenuModel(t, 160, 40))
-	m = send(t, m, special(tea.KeyTab), runes("28"), special(tea.KeyTab), runes("3/9"),
-		special(tea.KeyTab))
+	// A range from the end of this month into the next, typed the way the keys do it.
+	m := bookAcrossMonths(t, bookCustom(t, mealMenuModel(t, 160, 40)))
 
 	days := m.bookDays()
 	if len(days) == 0 {
@@ -1122,9 +1120,7 @@ func TestBookMealRangeShowsOnTheCalendar(t *testing.T) {
 		t.Error("160 cells does not fit two months")
 	}
 	// Narrow, they stack instead, and the menu column gives up its cells first.
-	tight := bookCustom(t, mealMenuModel(t, 100, 40))
-	tight = send(t, tight, special(tea.KeyTab), runes("28"), special(tea.KeyTab), runes("3/9"),
-		special(tea.KeyTab))
+	tight := bookAcrossMonths(t, bookCustom(t, mealMenuModel(t, 100, 40)))
 	if tight.mealTwoUp() {
 		t.Error("100 cells claims to fit two months")
 	}
@@ -1145,9 +1141,7 @@ func TestBookMealRangeShowsOnTheCalendar(t *testing.T) {
 // rows in both — a barless week costing one row in one grid and two in the other slides the
 // months a line out of step from there on.
 func TestMealTwoMonthsLineUp(t *testing.T) {
-	m := bookCustom(t, mealMenuModel(t, 160, 40))
-	m = send(t, m, special(tea.KeyTab), runes("28"), special(tea.KeyTab), runes("3/9"),
-		special(tea.KeyTab))
+	m := bookAcrossMonths(t, bookCustom(t, mealMenuModel(t, 160, 40)))
 	next, twoUp := m.mealTwoMonths()
 	if !twoUp {
 		t.Fatal("a range into the next month did not put two months side by side")
@@ -1223,6 +1217,20 @@ func TestMealTailBringsNextMonth(t *testing.T) {
 	if _, spill := past.mealSpill(); spill {
 		t.Error("a past month spilled into the next one")
 	}
+}
+
+// bookAcrossMonths types a range from the last day of the month on screen into the first of
+// the next, whatever today is. The literal `28` and `3/9` it used to type only crossed a
+// boundary while today was in August; typed in September they are one day, in the same month.
+func bookAcrossMonths(t *testing.T, m Model) Model {
+	t.Helper()
+	at := m.mealViewed()
+	last := time.Date(at.Year(), at.Month()+1, 0, 0, 0, 0, 0, time.Local)
+	next := last.AddDate(0, 0, 1)
+	// The year goes in: `1/1` in December resolves to a January that has already been, and
+	// the booking line drops a day in the past.
+	return send(t, m, special(tea.KeyTab), runes(strconv.Itoa(last.Day())),
+		special(tea.KeyTab), runes("1/"+next.Format("1/06")), special(tea.KeyTab))
 }
 
 // bookCustom opens the booking line and steps its dropdown to the custom scope, the way the
