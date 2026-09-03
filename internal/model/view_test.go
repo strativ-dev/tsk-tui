@@ -12,6 +12,7 @@ import (
 	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/parse"
 	"github.com/tasnimAlam/tsk/internal/store"
+	"github.com/tasnimAlam/tsk/internal/theme"
 )
 
 // preview builds a model with content in it, at a known width.
@@ -341,6 +342,46 @@ func TestProgressCountsNewEntries(t *testing.T) {
 	m = send(t, m, special(tea.KeyCtrlU), runes("4:00"), special(tea.KeyTab), special(tea.KeyEnter))
 	if got, _ := m.todayMinutes(); got != 210 {
 		t.Errorf("after editing a pulled row: %d minutes, want 210 (no double count)", got)
+	}
+}
+
+// A day short of its eight hours says what is left, in the accent — that is the number there
+// is something to do about. A percentage is the right reading only at 100, where nothing is
+// owed and the line goes back to being dim.
+func TestTodayLineCountsDownWhatIsLeft(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	short := send(t, preview(t, 120), api.DayHoursMsg{Date: parse.Today(), Minutes: 420})
+	prog := short.progress()
+	if !strings.Contains(plain(prog), "REMAINING TODAY 1h") {
+		t.Errorf("seven hours logged does not say what is left:\n%s", plain(prog))
+	}
+	if !strings.Contains(prog, theme.MatchText.Render("REMAINING TODAY 1h")) {
+		t.Error("what is left is not in the accent")
+	}
+	// The count of tasks beside it is not the thing to act on, so it stays dim.
+	if !strings.Contains(prog, theme.Dim.Render(" · 3/3 tasks")) {
+		t.Errorf("the tasks count lost its own style:\n%s", prog)
+	}
+
+	// On the hour it reads as it always did.
+	for _, min := range []int{480, 510} {
+		full := send(t, preview(t, 120), api.DayHoursMsg{Date: parse.Today(), Minutes: min})
+		if got := plain(full.progress()); !strings.Contains(got, "TODAY 100%") ||
+			strings.Contains(got, "REMAINING") {
+			t.Errorf("%d minutes reads %q", min, got)
+		}
+	}
+
+	// And the header still fits: the field is sized against the widest this line gets, or a
+	// query would wrap inside its own box and shove the list down.
+	wide := send(t, preview(t, 80), api.DayHoursMsg{Date: parse.Today(), Minutes: 1})
+	for i, l := range strings.Split(wide.View(), "\n") {
+		if lipgloss.Width(l) > 80 {
+			t.Fatalf("line %d is %d cells of 80: %q", i, lipgloss.Width(l), plain(l))
+		}
 	}
 }
 

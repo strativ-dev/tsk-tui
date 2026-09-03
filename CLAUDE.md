@@ -1760,8 +1760,14 @@ Layout follows `Pictures/screenshots/tsk.png`:
   spanning the width. The list holds focus at launch, so the caret only appears
   once `i` or `ctrl+u` moves the cursor into the field.
 - Right of the box, a two-line progress cluster, right-aligned: bar (`█` / `░`)
-  plus bold `1h45m` and dim `/ 8h`, then `TODAY 22% · 6/6 tasks`. Turns green at
-  100%. Recomputed live.
+  plus bold `1h45m` and dim `/ 8h`, then the TODAY line. Turns green at 100%.
+  Recomputed live.
+- **The TODAY line counts down what is left, not up what is done**: `REMAINING TODAY 1h`
+  in the **accent** at seven hours logged, since the hour still owed is the number there is
+  something to do about. At eight or more it is `TODAY 100%` and dim again — nothing is owed,
+  so nothing on that line needs the colour. The task count beside it stays dim either way.
+  `progReserve` is sized against the longest this line gets (`REMAINING TODAY 7h59m · +12h30m
+  unsynced · 22/22 tasks`), or a query would wrap inside its own box and shove the list down.
 - A dim rule under the header, then the list, one blank line between tasks.
 - Task line: caret (`▸`/`▾`), title, tag chip (uppercase, `│ BACKEND │`), and on
   the right edge the entry count and the bold task total. The caret and the right

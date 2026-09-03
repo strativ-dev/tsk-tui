@@ -22,12 +22,12 @@ const (
 	// caretCol is the gutter in front of the search box: " ❯ " when the field has
 	// focus, three spaces when it does not, so the header never shifts sideways.
 	caretCol = 3
-	// progReserve is the widest the progress cluster gets — "TODAY 100% · +12h30m
-	// unsynced · 22/22 tasks" and a little room. The search field is sized against
-	// this rather than against the cluster as currently rendered: the box shrinks
-	// when the TODAY line grows, and a field wider than the box wraps inside it,
-	// which grows the header a line and shoves the whole list down.
-	progReserve = 46
+	// progReserve is the widest the progress cluster gets — "REMAINING TODAY 7h59m ·
+	// +12h30m unsynced · 22/22 tasks" and a little room. The search field is sized
+	// against this rather than against the cluster as currently rendered: the box
+	// shrinks when the TODAY line grows, and a field wider than the box wraps inside
+	// it, which grows the header a line and shoves the whole list down.
+	progReserve = 58
 	// gutter is the indent every line shares, one cell of which the focus border
 	// or the blur padding occupies.
 	gutter = 2
@@ -2950,13 +2950,21 @@ func (m Model) progress() string {
 	if m.syncing {
 		top += theme.Dim.Render(" ⟳")
 	}
-	line := fmt.Sprintf("TODAY %.0f%% · %d/%d tasks", pct*100, len(m.filtered()), len(m.tasks))
+	// A day short of its hours says **what is left**, in the accent, since that is the number
+	// there is something to do about: `REMAINING TODAY 1h` at seven hours logged. A percentage
+	// is the right reading only once it is 100 and nothing is owed.
+	head := theme.Dim.Render("TODAY 100%")
+	if done < DailyGoal {
+		head = theme.MatchText.Render("REMAINING TODAY " +
+			parse.FormatTotal(DailyGoal-done))
+	}
+	tail := fmt.Sprintf(" · %d/%d tasks", len(m.filtered()), len(m.tasks))
 	if pending > 0 {
-		line = fmt.Sprintf("TODAY %.0f%% · +%s unsynced · %d/%d tasks",
-			pct*100, parse.FormatTotal(pending), len(m.filtered()), len(m.tasks))
+		tail = fmt.Sprintf(" · +%s unsynced · %d/%d tasks",
+			parse.FormatTotal(pending), len(m.filtered()), len(m.tasks))
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Right, top, theme.Dim.Render(line))
+	return lipgloss.JoinVertical(lipgloss.Right, top, head+theme.Dim.Render(tail))
 }
 
 // todayMinutes is what the bar measures: the ERP's own total for today once a sync
