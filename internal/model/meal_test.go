@@ -182,11 +182,28 @@ func TestMealCancelAsksFirst(t *testing.T) {
 	if cmd == nil || !yes.mealCancelling {
 		t.Fatal("y did not send the cancellation")
 	}
-	// The answer re-reads the month rather than dropping the rows here: someone else can
-	// book or cancel for you in the web client.
-	done, cmd := sendCmd(t, yes, api.MealsDeletedMsg{Date: mealAt(1), N: 3})
+	// The confirmed ids come off the day at once — the re-read is three round trips away, and
+	// until it lands the day would draw bars for meals nobody is serving — and the month is
+	// re-read all the same, since someone else can book or cancel for you in the web client.
+	var ids []int
+	for _, b := range yes.mealsOn(mealAt(1)) {
+		ids = append(ids, b.ID)
+	}
+	done, cmd := sendCmd(t, yes, api.MealsDeletedMsg{Date: mealAt(1), IDs: ids, N: 3})
 	if cmd == nil || !done.mealLoading {
 		t.Error("a finished cancellation did not re-read the month")
+	}
+	if left := done.mealsOn(mealAt(1)); len(left) != 0 {
+		t.Errorf("%d meals still on the day the ERP confirmed empty: %v", len(left), left)
+	}
+	// And only those: a cancelled day does not take the rest of the month with it.
+	if len(done.mealBookings) != len(yes.mealBookings)-3 {
+		t.Errorf("%d bookings left of %d, want three gone",
+			len(done.mealBookings), len(yes.mealBookings))
+	}
+	// The model it was copied from still holds the month it was drawn from.
+	if len(yes.mealsOn(mealAt(1))) != 3 {
+		t.Error("the drop reached back into the model it came from")
 	}
 	if !strings.Contains(done.status, "cancelled 3 meals") {
 		t.Errorf("status = %q", done.status)
@@ -527,8 +544,18 @@ func TestBookMealSends(t *testing.T) {
 		t.Errorf("status = %q", sent.status)
 	}
 
-	// The answer closes the line and re-reads the month: what was booked is on the calendar.
-	done, cmd := sendCmd(t, sent, api.MealBookedMsg{Booked: 6})
+	// The answer closes the line and re-reads the month — and what it took is on the calendar
+	// before that answer lands, with the ids the ERP gave it.
+	// A day the fixture has nothing on: tomorrow is already booked there.
+	fresh := time.Now().AddDate(0, 0, 9).Format("2006-01-02")
+	done, cmd := sendCmd(t, sent, api.MealBookedMsg{Booked: 6, Rows: []api.MealBooking{
+		{ID: 4001, Date: fresh, TypeID: 2}, {ID: 4002, Date: fresh, TypeID: 1}}})
+	if got := done.mealsOn(fresh); len(got) != 2 || got[2].ID != 4001 || got[1].ID != 4002 {
+		t.Errorf("the booked meals are not on the day yet: %v", got)
+	}
+	if len(sent.mealsOn(fresh)) != 0 {
+		t.Error("the rows reached back into the model they came from")
+	}
 	if done.book.open || done.mode == ModeBook {
 		t.Error("a booked line stayed open")
 	}

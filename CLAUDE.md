@@ -795,6 +795,14 @@ save modal, which are not built — `b` books outright instead.
   answer **re-reads the month** rather than dropping the rows locally — someone can book or
   cancel for you in the web client, so the month is only ever what the ERP says it is. A
   refusal keeps the day on screen with what the ERP said in the status line.
+- **What the ERP confirmed comes off the day at once** (`withoutBookings`, and `rowIDs` for the
+  booking side): `MealsDeletedMsg` carries the **ids it unlinked** and `MealBookedMsg` the
+  **rows it created**, so the calendar is right the moment the answer lands rather than three
+  round trips later, when the re-read gets back. This is not a guess about what the ERP will
+  say — it has already said it — which is what separates it from writing the day locally and
+  hoping. The **re-read still happens** and replaces the month whole, for the reason it always
+  did: someone else can book or cancel for you in the web client. A **refusal** changes nothing
+  on screen.
 - The band is set on **every span** of the cursor's cell and stops before the gap after it:
   a background wrapped around the line dies at the first span that sets its own, which is the
   same trap the month panels on the time off calendar avoid.

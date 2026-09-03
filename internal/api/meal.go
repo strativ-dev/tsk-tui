@@ -255,9 +255,12 @@ func mealMenus(db string, uid int, key string, first, last time.Time) ([]MealMen
 	return out, nil
 }
 
-// MealsDeletedMsg answers a cancellation with how many rows went.
+// MealsDeletedMsg answers a cancellation with how many rows went, and which: the ERP has
+// confirmed those ids are gone, so the screen can take them off the day at once rather than
+// drawing meals nobody is serving until the re-read lands.
 type MealsDeletedMsg struct {
 	Date string
+	IDs  []int
 	N    int
 	Err  error
 }
@@ -294,7 +297,7 @@ func CancelMeals(key, login, db, date string, ids []int) tea.Cmd {
 		if err := json.Unmarshal(raw, &ok); err != nil || !ok {
 			return fail(errors.New("the ERP would not cancel it"))
 		}
-		return MealsDeletedMsg{Date: date, N: len(ids)}
+		return MealsDeletedMsg{Date: date, IDs: ids, N: len(ids)}
 	}
 }
 
@@ -303,10 +306,14 @@ func CancelMeals(key, login, db, date string, ids []int) tea.Cmd {
 // Booked and Skipped are counts because the request is a batch: one create per meal per day,
 // and a day the canteen will not take is not a failure of the others. Why is the first
 // refusal the ERP gave, verbatim — "already exists", "Booking is closed", and so on.
+// Rows are the ones it took, with the ids it gave them: the ERP has confirmed those, so the
+// screen can put them on the day at once instead of drawing an empty slot until the re-read
+// lands three round trips later.
 type MealBookedMsg struct {
 	Booked  int
 	Skipped int
 	Why     string
+	Rows    []MealBooking
 	Err     error
 }
 
@@ -357,6 +364,11 @@ func BookMeals(key, login, db string, days []string, types []int) tea.Cmd {
 					}
 				default:
 					out.Booked++
+					// The type's name is not in hand here and is not needed: the calendar
+					// draws a booked meal by its type id and takes the colour off the month's
+					// own type list.
+					out.Rows = append(out.Rows,
+						MealBooking{ID: id, Date: day, TypeID: t})
 				}
 			}
 		}

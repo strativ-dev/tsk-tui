@@ -799,8 +799,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.status = fmt.Sprintf("cancelled %d %s", msg.N, plural(msg.N, "meal", "meals"))
-		// Re-read rather than dropping the rows here: someone else can book or cancel for
-		// you in the web client, so the month is only ever what the ERP says it is.
+		// The unlinked rows come off the day **now**. This is not a guess about what the ERP
+		// will say — it has already said it, and the ids it confirmed are the ones dropped —
+		// and the alternative was a day still drawing bars for meals nobody is serving until
+		// the re-read landed, which is three round trips away.
+		m.mealBookings = withoutBookings(m.mealBookings, msg.IDs)
+		// Re-read all the same: someone else can book or cancel for you in the web client, so
+		// the month is only ever what the ERP says it is. The drop above is what the screen
+		// shows in the meantime, and the answer replaces it whole.
 		return m.loadMeal()
 
 	case api.MealBookedMsg:
@@ -829,8 +835,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// a rule this screen cannot see — a cutoff that passed while the line was open.
 			m.status += fmt.Sprintf(", %d refused: %s", msg.Skipped, msg.Why)
 		}
-		// Re-read rather than adding the rows here: someone else can book for you in the web
-		// client, so the month is only ever what the ERP says it is.
+		// What it took goes on the day **now**, with the ids the ERP gave them: the re-read is
+		// three round trips away, and until it landed the day drew open slots for meals that
+		// are booked. The re-read still happens and replaces the month whole — someone else
+		// can book for you in the web client, so the month is only ever what the ERP says.
+		m.mealBookings = append(withoutBookings(m.mealBookings, rowIDs(msg.Rows)), msg.Rows...)
 		return m.loadMeal()
 
 	case api.LeaveRequestedMsg:
@@ -4617,6 +4626,36 @@ func (m Model) openMealForm(drop bool) (tea.Model, tea.Cmd) {
 			"the ERP locks a day's meals at its cutoff"
 	}
 	return m, textinput.Blink
+}
+
+// rowIDs is the ids of a batch of bookings — what the calendar already holds of them, so a
+// row the ERP has just answered for cannot land on the day twice.
+func rowIDs(rows []api.MealBooking) []int {
+	out := make([]int, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+// withoutBookings is the month's bookings with the given ids gone. A new slice, since the
+// model is a value everywhere else in this app and the one it was copied from still holds the
+// month it was drawn from — the trap ticksWith documents for the maps.
+func withoutBookings(rows []api.MealBooking, ids []int) []api.MealBooking {
+	if len(ids) == 0 || len(rows) == 0 {
+		return rows
+	}
+	gone := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		gone[id] = true
+	}
+	out := make([]api.MealBooking, 0, len(rows))
+	for _, r := range rows {
+		if !gone[r.ID] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // dropScope is the scope the cancel line opens on: the first of today, tomorrow and the week
