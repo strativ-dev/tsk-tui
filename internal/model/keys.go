@@ -26,7 +26,7 @@ type keyMap struct {
 	TasksTab, DashTab, TimeTab     key.Binding
 	MealTab, BookMeal, DropMeal    key.Binding
 	EmpTab, ReqTab, ProjTab        key.Binding
-	Mine                           key.Binding
+	Mine, Copy                     key.Binding
 	Help, Clock, NewLeave          key.Binding
 	ConfirmHours                   key.Binding
 	PrevMonth, NextMonth           key.Binding
@@ -108,6 +108,10 @@ func defaultKeys() keyMap {
 		// wherever a screen has no use for Add. The label flips with the state, so the help
 		// text here is only the fallback one.
 		Mine: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all projects")),
+		// The held member's email onto the clipboard. y is the confirm modal's own yes, and
+		// the two never meet: a modal owns the keyboard, so nothing behind it is matched.
+		// The word it labels holds the letter, which is what puts the accent inside "copy".
+		Copy: key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy")),
 		// The book-meal line, b for the word it opens. Inside the line b is breakfast's own
 		// tick — the line owns the keyboard, so the two never meet.
 		BookMeal: key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "book meal")),

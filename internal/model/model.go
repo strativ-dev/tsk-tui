@@ -381,6 +381,11 @@ type Model struct {
 	projLoading bool
 	projWanted  bool
 	projHold    int
+	// projPeopleHold is the member row the keys are on inside the held project's own table,
+	// and **-1 is the project row itself**. An open project takes j/k for its people the way
+	// an expanded task takes them for its rows: the table is what you came for, and stepping
+	// past it onto the next project would walk off the thing being read.
+	projPeopleHold int
 	// projQuery is this tab's own filter — its own input, not the task list's, which filters
 	// tasks. projOpen is the rows showing their manager and their people; projMembers is what
 	// the ERP answered for them, read once per project, and projPulling the reads in flight so
@@ -509,6 +514,7 @@ func New() Model {
 	m.find.PromptStyle = theme.Prompt
 	m.find.Width = 32
 	m.projMine = true
+	m.projPeopleHold = -1
 	m.projOpen = map[int]bool{}
 	m.projMembers = map[int][]store.Member{}
 	m.projPulling = map[int]bool{}
@@ -1047,6 +1053,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.projMembers = withVal(m.projMembers, p.ID, p.People)
 			}
 		}
+		return m, nil
+
+	case copiedMsg:
+		// OSC 52 has no answer, so this reports what was **sent**: a terminal that does not
+		// implement it ignores the sequence, and claiming the clipboard holds the address
+		// would be a claim nothing here can check.
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.status = "could not copy: " + oneLine(msg.Err.Error())
+			return m, nil
+		}
+		m.status = "copied " + msg.Text
 		return m, nil
 
 	case api.ProjectMembersMsg:
@@ -2531,9 +2549,26 @@ func (m Model) updateProj(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(msg, m.k().Down):
+		// An open project's people take j before the list does, and the last of them is where
+		// j stops: the table is what `l` was pressed for, and walking out of its bottom onto
+		// the next project is what made it unreadable. `h` closes the row and gives the list
+		// its keys back.
+		if people := m.projPeople(); len(people) > 0 {
+			m.projPeopleHold = min(m.projPeopleHold+1, len(people)-1)
+			return m, nil
+		}
 		return m.holdProj(m.projHold + 1), nil
 	case key.Matches(msg, m.k().Up):
+		// Up off the first member lands on the project row (-1) rather than on the project
+		// above it, so the way out of the table is the way in, one key at a time.
+		if len(m.projPeople()) > 0 && m.projPeopleHold >= 0 {
+			m.projPeopleHold--
+			return m, nil
+		}
 		return m.holdProj(m.projHold - 1), nil
+
+	case key.Matches(msg, m.k().Copy):
+		return m.copyMemberEmail()
 	case key.Matches(msg, m.k().Top):
 		return m.holdProj(0), nil
 	case key.Matches(msg, m.k().Bottom):
@@ -2551,13 +2586,14 @@ func (m Model) updateProj(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p, ok := m.projAt(m.projHold); ok {
 			m.projOpen = withoutKey(m.projOpen, p.ID)
 		}
+		m.projPeopleHold = -1
 		return m, nil
 
 	case key.Matches(msg, m.k().Mine):
 		// The one thing on this screen that is not a motion: whose projects are on it. It
 		// costs no call — the ERP already said which are mine when it answered the list.
 		m.projMine = !m.projMine
-		m.projHold, m.projOpen = 0, map[int]bool{}
+		m.projHold, m.projOpen, m.projPeopleHold = 0, map[int]bool{}, -1
 		return m, nil
 
 	case key.Matches(msg, m.k().Search):
@@ -2737,7 +2773,7 @@ func (m Model) projFindHits() int {
 func (m Model) clearProjFilter() Model {
 	m.projQuery.SetValue("")
 	m.projQuery.Blur()
-	m.projFind, m.projOpen, m.projHold = "", map[int]bool{}, 0
+	m.projFind, m.projOpen, m.projHold, m.projPeopleHold = "", map[int]bool{}, 0, -1
 	if m.mode == ModeProjSearch {
 		m.mode = ModeList
 	}
@@ -2819,7 +2855,38 @@ func (m Model) projHay(p store.Project) string {
 
 func (m Model) holdProj(i int) Model {
 	m.projHold = min(max(i, 0), max(len(m.projRows())-1, 0))
+	// The row under the cursor is a different project, whose table is a different table.
+	m.projPeopleHold = -1
 	return m
+}
+
+// projPeople is the table the keys are in: the people of the project under the cursor, once its
+// row is open and the ERP has answered for them. Nothing read yet is no table, so the motions
+// stay on the list rather than pointing at rows that are not drawn.
+func (m Model) projPeople() []store.Member {
+	p, ok := m.projAt(m.projHold)
+	if !ok || !m.projOpen[p.ID] {
+		return nil
+	}
+	return m.projMembers[p.ID]
+}
+
+// copyMemberEmail puts the held member's work email on the clipboard. It is the one thing this
+// screen does that is not a motion, and it writes nothing to the ERP.
+func (m Model) copyMemberEmail() (tea.Model, tea.Cmd) {
+	people := m.projPeople()
+	if m.projPeopleHold < 0 || m.projPeopleHold >= len(people) {
+		// The key belongs to a row, and the cursor is on the project line or on a list with
+		// no table open. Saying so beats copying whatever happens to be first.
+		m.status = "no member row — " + m.k().Down.Help().Key + " walks the table"
+		return m, nil
+	}
+	who := people[m.projPeopleHold]
+	if who.Email == "" {
+		m.status = "no email on " + oneLine(who.Name)
+		return m, nil
+	}
+	return m, copyToClipboard(who.Email)
 }
 
 // --- the new-requisition line ------------------------------------------------

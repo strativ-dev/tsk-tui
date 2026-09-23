@@ -65,7 +65,7 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | `TabMeal` | `m` · `4` | this month's canteen meals, one bar per meal per day |
 | `TabEmp` | `e` · `5` | the office directory, a row per person, filtered by a `/` prompt |
 | `TabReq` | `r` · `6` | the requisitions you filed, a table, each row opening into its own fields |
-| `TabProj` | `p` · `7` | your projects (`a` for all); `l` opens one into its people, `/` finds one |
+| `TabProj` | `p` · `7` | your projects (`a` for all); `l` opens one into its people (`y` copies an email), `/` finds one |
 
 - The bar **gives up its words before it wraps** (`tabBar`, the `short` tier): five labels want
   63 cells, and the bar is the first line of every screen — wrapped, it pushes the whole UI down
@@ -1199,8 +1199,9 @@ One row between the count and the table's own heads, and the whole request is on
 
 The office's open projects, one row each: the name, the teams on it, and how many tasks it
 holds. It **opens on your own** and `a` toggles to all of them; `l` opens a row into who runs it
-and everyone on its teams, `i` focuses a query field over the list and `/` finds a person across
-the projects whose people have been read. `p` to open, `t` to go back. **Read only.**
+and everyone on its teams — where `j`/`k` walk the people and `y` copies the held one's email —
+`i` focuses a query field over the list and `/` finds a person across the projects whose people
+have been read. `p` to open, `t` to go back. **Read only**, the clipboard aside.
 
 - **Two reads, one message** (`api.FetchProjects` → `ProjectsMsg`), for the reason the employee
   detail needs its second: `project.project` `search_read` answers `team_ids` as a **many2many**,
@@ -1252,6 +1253,43 @@ closes it.
     `R` re-reads the list, which the ERP does answer, but not the people, which cost a read per
     project — so what is in hand stands unless that project's `Members` moved, where the names
     beside them would be somebody else's.
+- **An open project's people take `j`/`k`** (`Model.projPeopleHold`, `-1` for the project row
+  itself): the table is what `l` was pressed for, and stepping out of its bottom onto the next
+  project walked off the thing being read. So `j` stops on the last member; `k` off the **first**
+  one lands back on the project row and only then on the project above, which makes the way out
+  the way in. `h` closes the row and gives the list its keys back, and moving project — or the
+  `a` toggle, or `esc` — puts the keys back on the list, since another project's table is a
+  different table. `g`/`G` and `ctrl+f`/`ctrl+b` stay **list** motions: they are how you cross 89
+  projects, and a member list runs to twenty.
+  - The project's name **keeps the accent** while the keys are in its people, exactly as an
+    expanded task's title does — otherwise opening a row drops the only mark of which project
+    you are inside — and the focus border tracks the held **line** (`projRow` takes the two
+    separately). The held member row takes the accent whole, name and email, the rule the
+    directory's rows follow.
+- **`y` copies the held member's work email** (`keys.Copy`, `copyMemberEmail`), and the row says
+  so: `copy` sits four cells after the address with its own key picked out of the word — two
+  read as one word run into the next, and those cells (`projCopyCells`) come off the table's
+  room on **every** row, or a long email met the right edge and wrapped the hint onto the next
+  line, and sizing them per row would move the columns as the cursor walked down — on that row alone,
+  since advertised on all of them it would say the same thing once a person. The footer names it
+  only while the keys are on a member row. It is the one key on this screen that is not a motion,
+  and it still writes nothing to the ERP.
+  - **Both ways there are** (`internal/model/clipboard.go`), because neither covers every
+    terminal this runs in. **OSC 52**, the terminal's own copy sequence, written to stdout: no
+    dependency, no process, and the only one that works **over ssh**, since the terminal in
+    front of you answers it rather than the machine the app is on. And **the platform's own
+    helper** — `pbcopy` on macOS, `wl-copy` / `xclip` / `xsel` on Linux, the list tried in
+    order until one takes the text on stdin — because **macOS's own Terminal.app does not
+    implement OSC 52** and iTerm2 asks to have it switched on, so on a Mac the sequence alone
+    is often written into a terminal that ignores it. Bubble Tea v1 has no clipboard to ask.
+    Neither way is required and **the helper's own failure is not reported**: it is the
+    fallback for the case the sequence already covered, and a Linux box with no `xclip` in a
+    terminal that copied the address perfectly well should not be told the copy failed.
+  - The copy does **not** go through `View`: a sequence in the rendered string would re-copy on
+    every frame. And **there is no answer to read** from either half — tmux passes OSC 52 on
+    only with `set -g set-clipboard on` — so the status line says what was **sent** rather than
+    claiming the clipboard holds it. `clipboardOut` and `clipboardHelpers` are package vars, so
+    the suite reads the bytes and forks nothing instead of copying to whoever runs it.
 - **Ordered by name**, not by the order the ids arrived in: this is a table somebody reads down,
   where a project's `team_ids` order says something and a union of two teams' members says
   nothing.
@@ -1391,7 +1429,8 @@ Value-Driven Engagement, Internal Meetings & Tasks
     must not be able to lose another.
   - The task count is the one figure that goes stale between reads. That is what `R` is for, and
     a count a few hours old still answers "how big is this project".
-- `j`/`k`/`g`/`G`/`ctrl+f`/`ctrl+b` move the cursor, the same bindings every other list uses.
+- `j`/`k`/`g`/`G`/`ctrl+f`/`ctrl+b` move the cursor, the same bindings every other list uses —
+  `j`/`k` inside an open project's people, as above.
 - Opening it needs the key owner's **email**, exactly as every other RPC screen: `projWanted` is
   set, the day total is fetched, and the list continues when `DayHoursMsg.UserEmail` lands.
 - `projLoading` and `projPulling` are both in `busy()`, and the count in the head, the filtered

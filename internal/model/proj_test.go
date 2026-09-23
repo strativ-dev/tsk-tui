@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/store"
+	"github.com/tasnimAlam/tsk/internal/theme"
 )
 
 func sampleProjects() []store.Project {
@@ -797,4 +799,173 @@ func TestProjEmptyStateNamesTheKey(t *testing.T) {
 	if head := plain(strings.Join(empty.projHead(), "\n")); strings.Contains(head, "0 open") {
 		t.Errorf("an empty list still counts itself in the head: %q", head)
 	}
+}
+
+// An open project's people take j and k: the table is what l was pressed for, and stepping out
+// of its bottom onto the next project is what made it unreadable. k off the first member lands
+// back on the project row, which is the way out.
+func TestProjPeopleTakeTheMotions(t *testing.T) {
+	// All of them and the cursor one row down, so there is a project above the open one for k
+	// to reach once it is out of the table.
+	m := send(t, projModel(t, 120, 40), runes("a"), runes("j"), runes("l"))
+	m = send(t, m, api.ProjectMembersMsg{ID: 849, Members: sampleMembers()})
+	if m.projPeopleHold != -1 {
+		t.Fatalf("opening a row put the keys on member %d, want the project row",
+			m.projPeopleHold)
+	}
+	held, _ := m.projAt(m.projHold)
+
+	// Down the table, one member at a time, and the list does not move under it.
+	for i := range sampleMembers() {
+		m = send(t, m, runes("j"))
+		if m.projPeopleHold != i {
+			t.Fatalf("j %d times held member %d, want %d", i+1, m.projPeopleHold, i)
+		}
+		if at, _ := m.projAt(m.projHold); at.ID != held.ID {
+			t.Fatalf("j walked off %q onto %q", held.Name, at.Name)
+		}
+	}
+	// The last member is where j stops.
+	last := send(t, m, runes("j"), runes("j"))
+	if last.projPeopleHold != len(sampleMembers())-1 {
+		t.Errorf("j past the table held %d", last.projPeopleHold)
+	}
+	if at, _ := last.projAt(last.projHold); at.ID != held.ID {
+		t.Errorf("j past the table left the project on %q", at.Name)
+	}
+
+	// Back up through it, onto the project row, and only then onto the project above.
+	for i := len(sampleMembers()) - 2; i >= -1; i-- {
+		m = send(t, m, runes("k"))
+		if m.projPeopleHold != i {
+			t.Fatalf("k held member %d, want %d", m.projPeopleHold, i)
+		}
+	}
+	if up := send(t, m, runes("k")); up.projHold == m.projHold && len(m.projRows()) > 1 {
+		t.Error("k off the project row did not move the list")
+	}
+
+	// h closes the row and gives the list its keys back.
+	m = send(t, m, runes("j"), runes("j"))
+	shut := send(t, m, runes("h"))
+	if shut.projPeopleHold != -1 {
+		t.Errorf("h left the keys on member %d", shut.projPeopleHold)
+	}
+	if moved := send(t, shut, runes("j")); moved.projHold == shut.projHold &&
+		len(shut.projRows()) > 1 {
+		t.Error("j after h did not move the list")
+	}
+
+	// And so does walking onto another project: its table is a different table.
+	if away := send(t, send(t, m, runes("h")), runes("j")); away.projPeopleHold != -1 {
+		t.Errorf("the cursor moved project with the keys still on member %d",
+			away.projPeopleHold)
+	}
+}
+
+// The held member row says what the key on it does, and y puts that address on the clipboard.
+func TestProjCopiesTheHeldEmail(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	var out strings.Builder
+	old := clipboardOut
+	clipboardOut = &out
+	// And no helper: the suite forks nothing and sets nobody's clipboard.
+	helpers := clipboardHelpers
+	clipboardHelpers = nil
+	t.Cleanup(func() { clipboardOut, clipboardHelpers = old, helpers })
+
+	m := send(t, projModel(t, 120, 40), runes("l"))
+	m = send(t, m, api.ProjectMembersMsg{ID: 849, Members: sampleMembers()})
+
+	// On the project row the key has no row to act on, and says so rather than copying
+	// whatever happens to be first.
+	if none, cmd := sendCmd(t, m, runes("y")); cmd != nil ||
+		!strings.Contains(none.status, "no member row") {
+		t.Errorf("y off the table copied something: cmd = %v, status = %q", cmd != nil,
+			none.status)
+	}
+
+	m = send(t, m, runes("j"), runes("j")) // the second member
+	want := sampleMembers()[1]
+
+	// `copy` is on the held row and on no other, with its own key picked out of the word.
+	lines, _ := m.projDetailLines(mustProj(t, m), m.projPeopleHold)
+	if n := strings.Count(plain(strings.Join(lines, "\n")), "copy"); n != 1 {
+		t.Errorf("%d rows advertise the key, want the held one alone", n)
+	}
+	for _, l := range lines {
+		if !strings.Contains(plain(l), want.Email) {
+			continue
+		}
+		if !strings.Contains(l, theme.HintKey.Render("y")) {
+			t.Errorf("the key is not picked out of the word: %q", l)
+		}
+		if !strings.Contains(plain(l), want.Email+projCopyGap+"copy") {
+			t.Errorf("the hint is not after the email: %q", plain(l))
+		}
+	}
+
+	// y sends exactly that address, as OSC 52 — the terminal's own copy sequence, so it works
+	// over ssh and costs no dependency.
+	done, cmd := sendCmd(t, m, runes("y"))
+	if cmd == nil {
+		t.Fatal("y on a member row copied nothing")
+	}
+	msg, ok := cmd().(copiedMsg)
+	if !ok || msg.Err != nil || msg.Text != want.Email {
+		t.Fatalf("y answered %#v", msg)
+	}
+	if got := out.String(); got != "\x1b]52;c;"+
+		base64.StdEncoding.EncodeToString([]byte(want.Email))+"\a" {
+		t.Errorf("the escape sequence is %q", got)
+	}
+	// The status says what was sent: OSC 52 has no answer to read.
+	if said := send(t, done, msg); !strings.Contains(said.status, "copied "+want.Email) {
+		t.Errorf("status = %q", said.status)
+	}
+
+	// A member the ERP has no address for says so instead.
+	blank := send(t, projModel(t, 120, 40), runes("l"))
+	blank = send(t, blank, api.ProjectMembersMsg{ID: 849,
+		Members: []store.Member{{Name: "Nobody"}}}, runes("j"))
+	if got, cmd := sendCmd(t, blank, runes("y")); cmd != nil ||
+		!strings.Contains(got.status, "no email on Nobody") {
+		t.Errorf("a blank email copied: cmd = %v, status = %q", cmd != nil, got.status)
+	}
+}
+
+// An open table fits the terminal at every width, the held row's own hint included: sized
+// without it, a long email met the right edge and `copy` wrapped the row onto the next.
+func TestProjMemberRowsFitTheTerminal(t *testing.T) {
+	long := []store.Member{
+		{Name: "Ashik Ahamed Aman Rafat", Email: "ashik.ahamed.aman.rafat@strativ.se"},
+		{Name: "Md. Toufiqur Rahman Chowdhury", Email: "toufiqur.rahman.chowdhury@strativ.se"},
+	}
+	for _, w := range []int{60, 72, 80, 100, 120, 200} {
+		m := send(t, projModel(t, w, 40), runes("l"))
+		m = send(t, m, api.ProjectMembersMsg{ID: 849, Members: long}, runes("j"))
+		if m.projPeopleHold != 0 {
+			t.Fatalf("at %d cells the keys are on member %d", w, m.projPeopleHold)
+		}
+		for i, line := range strings.Split(m.View(), "\n") {
+			if got := lipgloss.Width(line); got > w {
+				t.Errorf("at %d cells line %d is %d wide: %q", w, i, got, plain(line))
+			}
+		}
+		if !strings.Contains(plain(m.View()), "copy") {
+			t.Errorf("at %d cells the held row lost its hint:\n%s", w, plain(m.View()))
+		}
+	}
+}
+
+func mustProj(t *testing.T, m Model) store.Project {
+	t.Helper()
+	p, ok := m.projAt(m.projHold)
+	if !ok {
+		t.Fatal("no project under the cursor")
+	}
+	return p
 }

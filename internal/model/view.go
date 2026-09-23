@@ -167,8 +167,13 @@ const (
 	// blank under it, and the status line it sits above.
 	projFoundChrome = 6
 	projIndent      = "     "
-	projLabelCells  = 10
-	projMemberName  = 34
+	// The gap between a member's email and the `copy` the held row carries, and what that
+	// costs the table: four cells reads as a space between two things where two read as one
+	// word run into the next.
+	projCopyGap    = "    "
+	projCopyCells  = len(projCopyGap) + len("copy")
+	projLabelCells = 10
+	projMemberName = 34
 )
 
 // View stacks a fixed header, a windowed list, and a fixed footer. The header and
@@ -1260,12 +1265,25 @@ func (m Model) projLines() ([]string, int) {
 	focus := -1
 	held := min(m.projHold, len(rows)-1)
 	for i, p := range rows {
-		if i == held {
+		// The name stays in the accent for the project the cursor is in, even once the keys
+		// have moved down into its people — otherwise opening a row drops the only mark of
+		// which project you are inside. The border and the background track the held **line**,
+		// which is the rule the task list's own rows follow.
+		inPeople := i == held && m.projPeopleHold >= 0
+		if i == held && !inPeople {
 			focus = len(out)
 		}
-		out = append(out, m.projRow(p, i == held))
+		out = append(out, m.projRow(p, i == held, i == held && !inPeople))
 		if m.projOpen[p.ID] {
-			out = append(out, m.projDetailLines(p)...)
+			people := -1
+			if inPeople {
+				people = m.projPeopleHold
+			}
+			lines, at := m.projDetailLines(p, people)
+			if at >= 0 {
+				focus = len(out) + at
+			}
+			out = append(out, lines...)
 		}
 		out = append(out, "") // one blank line between projects, as between tasks
 	}
@@ -1275,7 +1293,11 @@ func (m Model) projLines() ([]string, int) {
 // projDetailLines is the open row's own block: who runs the project, and everyone on its teams
 // as a table of names and work emails. Indented under the name, the way an employee's own
 // detail is.
-func (m Model) projDetailLines(p store.Project) []string {
+//
+// held is the member row the keys are on, or -1 when they are not in this table. It reports
+// back which of its lines that is, so the window can hold it on screen the way it holds a task
+// row — the block is drawn here, so the offset is only known here.
+func (m Model) projDetailLines(p store.Project, held int) ([]string, int) {
 	var out []string
 	if p.Manager != "" {
 		out = append(out, theme.Blur.Render(projIndent+
@@ -1294,29 +1316,49 @@ func (m Model) projDetailLines(p store.Project) []string {
 	case len(p.Members) == 0:
 		// Not a wait and not a failure: the ERP says the teams have nobody on them.
 		return append(out, theme.Blur.Render(projIndent+
-			theme.Dim.Render("no members on its teams")))
+			theme.Dim.Render("no members on its teams"))), -1
 	case !have && m.projPulling[p.ID]:
 		return append(out, theme.Blur.Render(projIndent+m.spin.View()+
-			theme.Dim.Render(" reading its people…")))
+			theme.Dim.Render(" reading its people…"))), -1
 	case !have:
 		return append(out, theme.Blur.Render(projIndent+
-			theme.Dim.Render("nothing read yet — l again")))
+			theme.Dim.Render("nothing read yet — l again"))), -1
 	case len(people) == 0:
 		return append(out, theme.Blur.Render(projIndent+
-			theme.Dim.Render("its people are not readable from here")))
+			theme.Dim.Render("its people are not readable from here"))), -1
 	}
 
 	// A table, because two facts a person read down two columns is a table — one sized to what
 	// it actually holds, so a list of short names does not pay for a column it never fills.
-	nameW, mailW := projMemberColumns(people, m.cols()-gutter-len(projIndent))
+	// The hint's own cells come off the room before the columns are sized, on every row rather
+	// than on the held one: sized without them a long email met the right edge and the `copy`
+	// beside it wrapped the row, and sized per row the table's own columns would move as the
+	// cursor walked down it.
+	nameW, mailW := projMemberColumns(people,
+		m.cols()-gutter-len(projIndent)-projCopyCells)
 	out = append(out, theme.Blur.Render(projIndent+theme.Header.Render(
 		pad("NAME", nameW)+trunc("EMAIL", mailW))))
-	for _, who := range people {
-		out = append(out, theme.Blur.Render(projIndent+
-			theme.DayLabel.Render(pad(trunc(who.Name, nameW-1), nameW))+
-			theme.Tag.Render(trunc(orDash(who.Email), mailW))))
+	at := -1
+	for i, who := range people {
+		// The held row takes the accent whole, name and email together: an accent name beside
+		// an email still in the tag's teal reads as two rows overlapping, which is the rule
+		// the directory's own rows follow.
+		name, mail := theme.DayLabel, theme.Tag
+		line := ""
+		if i == held {
+			at = len(out)
+			name, mail = theme.TitleFocus, theme.MatchText
+			// What the row can do, named where the row is. `copy` carries the key inside the
+			// word itself, the way every other hint on this screen does, and it is only on
+			// the row the key would act on — advertised on all of them it would be saying
+			// the same thing once a person.
+			line = projCopyGap + hinted("copy", m.k().Copy, theme.Dim, theme.HintKey)
+		}
+		out = append(out, row(projIndent+
+			name.Render(pad(trunc(who.Name, nameW-1), nameW))+
+			mail.Render(trunc(orDash(who.Email), mailW))+line, i == held))
 	}
-	return out
+	return out, at
 }
 
 // projMemberColumns sizes the two columns from the rows themselves, capped, and gives the name
@@ -1336,14 +1378,17 @@ func projMemberColumns(people []store.Member, room int) (name, mail int) {
 // projRow is one line: caret, name, the teams in a chip, and the task count against the right
 // edge. The same shape as a task line, since it answers the same kind of question — what this
 // is, whose it is, how much is in it.
-func (m Model) projRow(p store.Project, focused bool) string {
+// accent is the project the cursor is in, focused the line the keys are actually on: they are
+// the same row until the keys move down into its people, where the name keeps the accent and
+// the border follows the member row.
+func (m Model) projRow(p store.Project, accent, focused bool) string {
 	// No caret: the task list and the directory carry one because their rows open, and there
 	// is nothing to open here. The indent is theirs, so the names line up across the tabs.
 	caret := "   "
 	count := theme.Dim.Render(fmt.Sprintf("%d %s", p.Tasks, plural(p.Tasks, "task", "tasks")))
 
 	ink, chip := theme.DayLabel, theme.Chip
-	if focused {
+	if accent {
 		// The accent marks whatever holds the keys, and the whole row takes it — a name in
 		// the accent beside a chip still in the tag's teal reads as two rows overlapping,
 		// which is the rule the directory's own rows follow.
@@ -3443,12 +3488,20 @@ func (m Model) footer() string {
 		help = []key.Binding{m.k().Down, m.k().Up, m.k().Top, m.k().HalfDown,
 			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "manager + members")),
 			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
+		}
+		if m.projPeopleHold >= 0 {
+			// Only where it can fire: the key acts on a member row, so it is advertised while
+			// the keys are on one and nowhere else.
+			help = append(help,
+				key.NewBinding(key.WithHelp(m.k().Copy.Help().Key, "copy email")))
+		}
+		help = append(help,
 			key.NewBinding(key.WithHelp(m.k().Mine.Help().Key, mine)),
 			key.NewBinding(key.WithHelp(m.k().Search.Help().Key, "search")),
 			key.NewBinding(key.WithHelp(m.k().Jump.Help().Key, "find a person")),
 
 			key.NewBinding(key.WithHelp(m.k().Back.Help().Key, "clear + collapse")),
-			m.k().Refresh, m.k().Quit, m.k().Help}
+			m.k().Refresh, m.k().Quit, m.k().Help)
 	case m.tab == TabEmp:
 		// A filter and a window over it, and nothing that writes: r is the only key here that
 		// reaches the ERP.
