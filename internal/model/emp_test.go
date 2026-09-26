@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/tasnimAlam/tsk/internal/api"
 	"github.com/tasnimAlam/tsk/internal/store"
+	"github.com/tasnimAlam/tsk/internal/theme"
 )
 
 func sampleEmps() []store.Employee {
@@ -489,5 +491,75 @@ func TestEmpFilterPromptOpensAndCloses(t *testing.T) {
 	}
 	if len(shut.empRows()) != 4 || shut.empQuery.Value() != "" {
 		t.Errorf("esc kept %d rows and %q", len(shut.empRows()), shut.empQuery.Value())
+	}
+}
+
+// y copies the open row's work email, the same key on the same kind of value as the project
+// tab's member table — and the row says so, beside the address it acts on.
+func TestEmpCopiesTheOpenRowsEmail(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(restore)
+
+	var out strings.Builder
+	oldOut, helpers := clipboardOut, clipboardHelpers
+	clipboardOut, clipboardHelpers = &out, nil // the suite forks nothing and copies nothing
+	t.Cleanup(func() { clipboardOut, clipboardHelpers = oldOut, helpers })
+
+	m := empModel(t, 100, 30)
+
+	// Shut, the key has no address on screen to act on and says which one opens it.
+	if shut, cmd := sendCmd(t, m, runes("y")); cmd != nil ||
+		!strings.Contains(shut.status, "opens the row") {
+		t.Errorf("y on a shut row copied something: cmd = %v, status = %q", cmd != nil,
+			shut.status)
+	}
+
+	open := send(t, m, runes("l"), api.EmployeeMsg{ID: 121, Detail: sampleDetail()})
+	want := sampleDetail().Email
+
+	// The hint is on the email line of the row the keys are on, and on no other.
+	v := plain(open.View())
+	if !strings.Contains(v, want+copyGap+"copy") {
+		t.Errorf("the hint is not after the email:\n%s", v)
+	}
+	if n := strings.Count(v, "copy"); n != 1 {
+		t.Errorf("%d rows advertise the key, want the held one alone:\n%s", n, v)
+	}
+	if !strings.Contains(open.View(), theme.HintKey.Render("y")) {
+		t.Error("the key is not picked out of the word")
+	}
+	// Another row open, but not held: it carries the address and not the key.
+	two := send(t, open, runes("j"), runes("l"),
+		api.EmployeeMsg{ID: 162, Detail: store.EmployeeDetail{ID: 162,
+			Email: "abdullah.zayed@strativ.se"}})
+	if n := strings.Count(plain(two.View()), "copy"); n != 1 {
+		t.Errorf("%d open rows advertise the key, want the held one alone:\n%s",
+			n, plain(two.View()))
+	}
+
+	// And it sends exactly that address.
+	done, cmd := sendCmd(t, open, runes("y"))
+	if cmd == nil {
+		t.Fatal("y on an open row copied nothing")
+	}
+	msg, ok := cmd().(copiedMsg)
+	if !ok || msg.Err != nil || msg.Text != want {
+		t.Fatalf("y answered %#v", msg)
+	}
+	if !strings.Contains(out.String(), base64.StdEncoding.EncodeToString([]byte(want))) {
+		t.Errorf("the escape sequence is %q", out.String())
+	}
+	if said := send(t, done, msg); !strings.Contains(said.status, "copied "+want) {
+		t.Errorf("status = %q", said.status)
+	}
+
+	// A person the ERP has no address for says so rather than copying an empty line.
+	blank := send(t, empModel(t, 100, 30), runes("l"),
+		api.EmployeeMsg{ID: 121, Detail: store.EmployeeDetail{ID: 121, Phone: "+46"}})
+	blank.emps[0].Email = ""
+	if got, cmd := sendCmd(t, blank, runes("y")); cmd != nil ||
+		!strings.Contains(got.status, "no email on Abdul Alim Shohan") {
+		t.Errorf("a blank email copied: cmd = %v, status = %q", cmd != nil, got.status)
 	}
 }

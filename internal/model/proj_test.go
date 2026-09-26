@@ -903,7 +903,7 @@ func TestProjCopiesTheHeldEmail(t *testing.T) {
 		if !strings.Contains(l, theme.HintKey.Render("y")) {
 			t.Errorf("the key is not picked out of the word: %q", l)
 		}
-		if !strings.Contains(plain(l), want.Email+projCopyGap+"copy") {
+		if !strings.Contains(plain(l), want.Email+copyGap+"copy") {
 			t.Errorf("the hint is not after the email: %q", plain(l))
 		}
 	}

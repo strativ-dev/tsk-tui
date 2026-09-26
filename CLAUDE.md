@@ -63,7 +63,7 @@ Store minutes, never a formatted string. Totals and the daily progress bar are
 | `TabDash` | `d` · `2` | this month's hours per day, and the ERP's clock (`c`) |
 | `TabTime` | `o` · `3` | this year's time off: the calendar, the balances, the holidays |
 | `TabMeal` | `m` · `4` | this month's canteen meals, one bar per meal per day |
-| `TabEmp` | `e` · `5` | the office directory, a row per person, filtered by a `/` prompt |
+| `TabEmp` | `e` · `5` | the office directory, a row per person (`y` copies an email), filtered by a `/` prompt |
 | `TabReq` | `r` · `6` | the requisitions you filed, a table, each row opening into its own fields |
 | `TabProj` | `p` · `7` | your projects (`a` for all); `l` opens one into its people (`y` copies an email), `/` finds one |
 
@@ -1029,6 +1029,15 @@ field over it. `e` to open, `t` to go back. **Read only.**
     its ends. The fill is the raised surface with white ink, **not the accent**: a row of accent
     pills would say every project is the thing you are on. A cell of gap between them, or a run
     of fills reads as one long pill.
+- **`y` copies the open row's work email** (`keys.Copy`, `copyEmpEmail`), the same key on the
+  same kind of value as the project tab's member table — and the row says so: `copy` sits
+  `copyGap` after the address, its own key picked out of the word, on the row **the keys are
+  on** and no other, or a screen of open rows advertises it once a person. Its cells come off
+  that line's room, or a long address wraps the row. The key reads the **open** row only: the
+  address is what `l` opens to show, and a key that copied something invisible would be
+  guesswork, so a shut row says `l opens the row — the email is on it`. The detail's own
+  address once it has answered, the list's until then — the same field from the same read.
+  Both ways of copying, and why, are under the projects tab above.
 - **The filter is a prompt, not a field** (`/`, `ModeEmpSearch`): it costs the list no rows while
   it is not being typed into, and it renders above the status line exactly as the date jump's own
   prompt does. The two ways out say what happens to the query: **`esc` drops it** and gives the
@@ -1274,7 +1283,8 @@ closes it.
   since advertised on all of them it would say the same thing once a person. The footer names it
   only while the keys are on a member row. It is the one key on this screen that is not a motion,
   and it still writes nothing to the ERP.
-  - **Both ways there are** (`internal/model/clipboard.go`), because neither covers every
+  - **Both ways there are** (`internal/model/clipboard.go`), shared with the directory's own
+    `y`, because neither covers every
     terminal this runs in. **OSC 52**, the terminal's own copy sequence, written to stdout: no
     dependency, no process, and the only one that works **over ssh**, since the terminal in
     front of you answers it rather than the machine the app is on. And **the platform's own

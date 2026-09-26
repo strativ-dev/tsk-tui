@@ -167,11 +167,12 @@ const (
 	// blank under it, and the status line it sits above.
 	projFoundChrome = 6
 	projIndent      = "     "
-	// The gap between a member's email and the `copy` the held row carries, and what that
-	// costs the table: four cells reads as a space between two things where two read as one
-	// word run into the next.
-	projCopyGap    = "    "
-	projCopyCells  = len(projCopyGap) + len("copy")
+	// The gap between an email and the `copy` the held row carries, and what that costs the
+	// row it is on: four cells reads as a space between two things where two read as one word
+	// run into the next. Shared with the directory, which offers the same key on the same kind
+	// of value.
+	copyGap        = "    "
+	copyCells      = len(copyGap) + len("copy")
 	projLabelCells = 10
 	projMemberName = 34
 )
@@ -1335,7 +1336,7 @@ func (m Model) projDetailLines(p store.Project, held int) ([]string, int) {
 	// beside it wrapped the row, and sized per row the table's own columns would move as the
 	// cursor walked down it.
 	nameW, mailW := projMemberColumns(people,
-		m.cols()-gutter-len(projIndent)-projCopyCells)
+		m.cols()-gutter-len(projIndent)-copyCells)
 	out = append(out, theme.Blur.Render(projIndent+theme.Header.Render(
 		pad("NAME", nameW)+trunc("EMAIL", mailW))))
 	at := -1
@@ -1352,7 +1353,7 @@ func (m Model) projDetailLines(p store.Project, held int) ([]string, int) {
 			// word itself, the way every other hint on this screen does, and it is only on
 			// the row the key would act on — advertised on all of them it would be saying
 			// the same thing once a person.
-			line = projCopyGap + hinted("copy", m.k().Copy, theme.Dim, theme.HintKey)
+			line = copyGap + hinted("copy", m.k().Copy, theme.Dim, theme.HintKey)
 		}
 		out = append(out, row(projIndent+
 			name.Render(pad(trunc(who.Name, nameW-1), nameW))+
@@ -1920,7 +1921,7 @@ func (m Model) empLines() ([]string, int) {
 		}
 		out = append(out, m.empRow(e, i == held))
 		if m.empOpen[e.ID] {
-			out = append(out, m.empDetailLines(e)...)
+			out = append(out, m.empDetailLines(e, i == held)...)
 		}
 		out = append(out, "") // one blank line between people, as between tasks
 	}
@@ -1967,7 +1968,9 @@ func (m Model) empColumns() (name, job int) {
 
 // empDetailLines is the open row's own block: how to reach them, where they sit, and what they
 // are on. Indented under the name, one fact a line, and the projects as chips.
-func (m Model) empDetailLines(e store.Employee) []string {
+// held says the keys are on this row, which is the only row `y` can act on: the hint beside
+// the email goes there and nowhere else, or a screen of open rows advertises it once a person.
+func (m Model) empDetailLines(e store.Employee, held bool) []string {
 	d, have := m.empDetail[e.ID]
 	if !have {
 		if m.empPulling[e.ID] {
@@ -1978,24 +1981,34 @@ func (m Model) empDetailLines(e store.Employee) []string {
 	}
 
 	var out []string
-	add := func(label, value string) {
+	add := func(label, value, after string) {
 		if strings.TrimSpace(value) == "" {
 			return // a field the ERP left empty is left out rather than drawn as a dash
 		}
+		room := m.cols() - gutter - empLabelCells - 6
+		if after != "" {
+			room -= copyCells // the hint's own cells, or a long address wraps the row
+		}
 		out = append(out, theme.Blur.Render("    "+
 			theme.Dim.Render(pad(label, empLabelCells))+
-			theme.DayLabel.Render(trunc(oneLine(value), m.cols()-gutter-empLabelCells-6))))
+			theme.DayLabel.Render(trunc(oneLine(value), room))+after))
 	}
-	add("email", d.Email)
-	add("phone", d.Phone)
-	add("mobile", d.Mobile)
-	add("department", d.Department)
-	add("team lead", d.TeamLead)
-	add("project mgr", strings.Join(d.Managers, ", "))
-	add("time off", d.TimeOff)
-	add("stack mgr", d.StackManager)
-	add("coach", d.Coach)
-	add("location", d.Location)
+	// What the row can do, named on the value it acts on — the same hint the project tab's
+	// member rows carry, since it is the same key on the same kind of thing.
+	copyHint := ""
+	if held && strings.TrimSpace(d.Email) != "" {
+		copyHint = copyGap + hinted("copy", m.k().Copy, theme.Dim, theme.HintKey)
+	}
+	add("email", d.Email, copyHint)
+	add("phone", d.Phone, "")
+	add("mobile", d.Mobile, "")
+	add("department", d.Department, "")
+	add("team lead", d.TeamLead, "")
+	add("project mgr", strings.Join(d.Managers, ", "), "")
+	add("time off", d.TimeOff, "")
+	add("stack mgr", d.StackManager, "")
+	add("coach", d.Coach, "")
+	add("location", d.Location, "")
 
 	// The projects are chips rather than a sentence: they are a list of names, several of them
 	// long enough to be mistaken for a phrase, and the frames are what say where one ends.
@@ -3508,9 +3521,16 @@ func (m Model) footer() string {
 		help = []key.Binding{m.k().Down, m.k().Up, m.k().Top, m.k().HalfDown,
 			key.NewBinding(key.WithHelp(m.k().Expand.Help().Key, "details")),
 			key.NewBinding(key.WithHelp(m.k().Collapse.Help().Key, "close")),
+		}
+		if e, ok := m.empAt(m.empHold); ok && m.empOpen[e.ID] {
+			// Only where it can fire: the address it copies is on the open row.
+			help = append(help,
+				key.NewBinding(key.WithHelp(m.k().Copy.Help().Key, "copy email")))
+		}
+		help = append(help,
 			key.NewBinding(key.WithHelp(m.k().Jump.Help().Key, "filter")),
 			key.NewBinding(key.WithHelp(m.k().Back.Help().Key, "clear + collapse")),
-			m.k().Refresh, m.k().Quit, m.k().Help}
+			m.k().Refresh, m.k().Quit, m.k().Help)
 	case m.tab == TabMeal:
 		// It moves in months and nothing else: the calendar is read only for now, so there
 		// is no key here that changes a booking.

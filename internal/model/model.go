@@ -2237,9 +2237,14 @@ func (m Model) updateEmp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.openEmp()
 	case key.Matches(msg, m.k().Collapse):
 		if e, ok := m.empAt(m.empHold); ok {
-			delete(m.empOpen, e.ID)
+			// Copied, not deleted in place: the model is a value everywhere else in this app
+			// and a map inside it is a reference, which is the trap ticksWith documents.
+			m.empOpen = withoutKey(m.empOpen, e.ID)
 		}
 		return m, nil
+
+	case key.Matches(msg, m.k().Copy):
+		return m.copyEmpEmail()
 
 	case key.Matches(msg, m.k().Jump):
 		// / opens the filter, which is a prompt rather than a field on the screen: it belongs
@@ -2267,6 +2272,31 @@ func (m Model) updateEmp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// copyEmpEmail puts the held person's work email on the clipboard, the same key on the same
+// kind of value as the project tab's member table. It reads the **open** row only: the address
+// is what the row opens to show, and a key that copied something invisible would be guesswork.
+func (m Model) copyEmpEmail() (tea.Model, tea.Cmd) {
+	e, ok := m.empAt(m.empHold)
+	if !ok {
+		return m, nil
+	}
+	if !m.empOpen[e.ID] {
+		m.status = m.k().Expand.Help().Key + " opens the row — the email is on it"
+		return m, nil
+	}
+	// Whatever is on screen: the detail's own address once it has answered, and the list's
+	// until then, which is the same field read by the same call.
+	mail := e.Email
+	if d, have := m.empDetail[e.ID]; have && strings.TrimSpace(d.Email) != "" {
+		mail = d.Email
+	}
+	if strings.TrimSpace(mail) == "" {
+		m.status = "no email on " + oneLine(e.Name)
+		return m, nil
+	}
+	return m, copyToClipboard(mail)
 }
 
 // updateEmpSearch is the filter prompt: every key is a character, and the two ways out say what
